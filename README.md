@@ -1,5 +1,7 @@
 # SEMANTICA
 
+<img width="1600" height="715" alt="image" src="https://github.com/user-attachments/assets/3a8cd997-cca7-4fa0-b437-8df34740834f" />
+
 SEMANTICA is an R package for semantic-assisted psychometric scale construction. It combines LLM-based item generation, embedding-based semantic similarity diagnostics, ant colony optimization, exploratory structural equation modeling (ESEM), dynamic fit-index calibration, pseudo-factor-analysis diagnostics, and visualization tools.
 
 SEMANTICA is intended for item-pool development and structural screening. A
