@@ -123,6 +123,15 @@ public SEMANTICA function, including optimization and visualization controls.
 Individual function help remains available through, for example,
 `?ACO_with_ESEM` and `?semantica_full_pipeline`.
 
+A complete editable HEXACO full-pipeline example is installed with the
+package. Open it in R with:
+
+```r
+file.show(system.file(
+  "examples", "hexaco_full_pipeline_example.R", package = "SEMANTICA"
+))
+```
+
 ## Development Checks
 
 To validate changes locally, run:
