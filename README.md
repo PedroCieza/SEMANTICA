@@ -16,8 +16,6 @@ install.packages("devtools")
 devtools::install_github("PedroCieza/SEMANTICA")
 ```
 
-Package website: <https://PedroCieza.github.io/SEMANTICA/>
-
 Issues and feature requests: <https://github.com/PedroCieza/SEMANTICA/issues>
 
 ## Basic Workflow

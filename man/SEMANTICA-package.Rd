@@ -75,7 +75,6 @@ Dorigo, M., & Stutzle, T. (2004). \emph{Ant Colony Optimization}. MIT Press.
 \seealso{
 Useful links:
 \itemize{
-  \item \url{https://PedroCieza.github.io/SEMANTICA/}
   \item \url{https://github.com/PedroCieza/SEMANTICA}
   \item Report bugs at \url{https://github.com/PedroCieza/SEMANTICA/issues}
 }
