@@ -1,0 +1,11 @@
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+*.tar.gz
+*.Rcheck/
+docs/
+inst/doc/
+Meta/
+*.csv
+semantica_plots/

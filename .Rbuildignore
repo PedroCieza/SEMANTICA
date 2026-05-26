@@ -1,0 +1,16 @@
+^\.github$
+^\.gitignore$
+^README\.Rmd$
+^pkgdown$
+^CONTRIBUTING\.md$
+^CODE_OF_CONDUCT\.md$
+^GuenoleDursoSamoSun2024_extracted\.txt$
+^SEMANTICA\.Rproj$
+^\.Rproj\.user$
+^\.Rhistory$
+^\.RData$
+^\.Ruserdata$
+^docs$
+^_pkgdown\.yml$
+^SEMANTICA_.*\.tar\.gz$
+^SEMANTICA\.Rcheck$

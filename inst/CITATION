@@ -1,0 +1,14 @@
+citHeader("To cite SEMANTICA in publications, please use:")
+
+bibentry(
+  bibtype = "Manual",
+  title = "SEMANTICA: Semantic Item Generation and ACO-ESEM Scale Construction",
+  author = c(
+    person("Pedro", "Cieza-Liza"),
+    person("Reyniel", "Salas-Silva"),
+    person("José", "Gamarra-Moncayo")
+  ),
+  year = "2026",
+  note = "R package version 0.1.0",
+  url = "https://github.com/PedroCieza/SEMANTICA"
+)

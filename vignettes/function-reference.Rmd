@@ -1,0 +1,494 @@
+---
+title: "SEMANTICA Function Reference and Argument Guide"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{SEMANTICA Function Reference and Argument Guide}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>",
+  eval = FALSE
+)
+```
+
+## Purpose and Scope
+
+SEMANTICA supports early-stage scale construction by combining generated or
+existing item text, semantic embeddings, ant colony optimization (ACO), and
+sample-free ESEM/PFA diagnostics. Semantic and proxy-ESEM results assist
+content screening; they are not substitutes for fitting measurement models to
+item-response data in a suitable validation sample.
+
+This vignette documents the supported public API. Dot-prefixed functions and
+other unexported helpers are implementation details and should not be called
+from analysis scripts.
+
+## Offline Preparation Example
+
+The preparation, export, and reload utilities can be learned without an API
+key. This object is also used in the optimization examples below.
+
+```{r offline-preparation}
+library(SEMANTICA)
+
+items_tbl <- data.frame(
+  item_id = paste0("item_", 1:8),
+  factor = rep(c("Clarity", "Flexibility"), each = 4),
+  facet = rep(c("Expression", "Adaptation"), each = 4),
+  item_text = c(
+    "I organize my thoughts before I speak.",
+    "I can express a complex idea clearly.",
+    "I keep my explanations focused.",
+    "I notice when my reasoning loses clarity.",
+    "I adapt my thinking when evidence changes.",
+    "I can switch strategies when needed.",
+    "I consider a different approach when stuck.",
+    "I adjust plans when conditions change."
+  )
+)
+
+embeddings <- rbind(
+  c(1.00, 0.10, 0.06), c(0.98, 0.13, 0.05),
+  c(0.96, 0.17, 0.08), c(0.94, 0.19, 0.09),
+  c(0.09, 1.00, 0.08), c(0.12, 0.98, 0.06),
+  c(0.15, 0.96, 0.07), c(0.18, 0.94, 0.10)
+)
+rownames(embeddings) <- items_tbl$item_id
+
+standard_items <- semantica_standardize_item_metadata(
+  items_tbl,
+  id_col = "item_id",
+  dimension_col = "factor",
+  facet_col = "facet",
+  item_col = "item_text",
+  strict = TRUE
+)
+
+embedded <- list(
+  embeddings = embeddings,
+  items_tbl = items_tbl,
+  embed_model = "manual-example",
+  embedding_diagnostics = list(normalized = FALSE)
+)
+
+wrapped <- semantica_wrap(
+  embed_result = embedded,
+  items_tbl = items_tbl,
+  id_col = "item_id",
+  factor_col = "factor",
+  min_items_per_factor = 3L,
+  cosine_adjustment = "none",
+  semantic_calibration = NULL,
+  compute_cosine_sensitivity = TRUE,
+  verbose = FALSE
+)
+semantica_print_items(items_tbl, max_chars = 60L)
+
+prefix <- file.path(tempdir(), "cognitive_agility")
+semantica_export(wrapped, prefix = prefix)
+reloaded <- semantica_reload(
+  prefix = prefix,
+  i.per.f = c(Clarity = 3L, Flexibility = 3L),
+  default_i_per_f = 3L
+)
+```
+
+## Backend and Session Functions
+
+`SEMANTICA_BACKENDS` is a named registry rather than a function. It describes
+the supported generation and embedding protocols.
+
+| Function or object | Arguments | What it does |
+|---|---|---|
+| `SEMANTICA_BACKENDS` | None | Stores backend labels, endpoints, models, embedding support, and authentication settings. |
+| `semantica_list_backends()` | None | Prints and invisibly returns `SEMANTICA_BACKENDS`. |
+| `semantica_setup_conda()` | `env_name`, `conda`, `python_ver`, `packages`, `force`, `verbose` | Installs a Conda environment and optional extra Python packages for local Python backends. |
+| `semantica_activate_conda()` | `env_name`, `conda`, `verbose` | Selects an existing Conda environment for the R session. |
+| `semantica_connect()` | `backend`, `api_key`, `chat_model`, `embed_model`, `base_url`, `gguf_path`, `hf_token`, `timeout_s`, `verbose` | Creates a `semantica_session` for a cloud API, local server, or Python model. |
+| `print.semantica_session()` | `x`, `...` | Prints the backend and chat model for a session; `...` is accepted for S3 compatibility. |
+
+```{r sessions}
+names(SEMANTICA_BACKENDS)
+registry <- semantica_list_backends()
+
+# Network/local environment actions are intentional user actions:
+semantica_setup_conda(
+  env_name = "semantica",
+  conda = NULL,
+  python_ver = "3.11",
+  packages = character(0L),
+  force = FALSE,
+  verbose = TRUE
+)
+semantica_activate_conda(env_name = "semantica", conda = NULL, verbose = TRUE)
+
+session <- semantica_connect(
+  backend = "openai",
+  api_key = Sys.getenv("OPENAI_API_KEY"),
+  chat_model = NULL,
+  embed_model = "text-embedding-3-small",
+  base_url = NULL,
+  gguf_path = NULL,
+  hf_token = NULL,
+  timeout_s = 120L,
+  verbose = TRUE
+)
+print(session)
+```
+
+Use `base_url` with an OpenAI-compatible local server; use `gguf_path` for the
+`python_llamacpp` backend; use `hf_token` only for gated Hugging Face models.
+
+## Generation, Embedding, and Input Preparation
+
+| Function | Arguments | Result |
+|---|---|---|
+| `semantica_standardize_item_metadata()` | `x`, `id_col`, `dimension_col`, `facet_col`, `item_col`, `strict` | A canonical table with `ID`, `Dimension`, `Facet`, and `item`. |
+| `semantica_generate_items()` | `session`, `scale_name`, `scale_description`, `factors`, `response_format`, `item_style`, `language`, `n_per_factor`, `n_per_factor_override`, `overgenerate`, `max_retries`, `global_forbidden_max`, `temperature`, `verbose` | Candidate item text and item metadata. |
+| `semantica_embed()` | `items_tbl`, `session`, `embed_session`, `text_col`, `id_col`, `batch_size`, `normalize`, `verbose` | Dense embeddings plus embedding diagnostics. |
+| `semantica_wrap()` | `embed_result`, `items_tbl`, `id_col`, `factor_col`, `min_items_per_factor`, `cosine_adjustment`, `semantic_calibration`, `compute_cosine_sensitivity`, `verbose` | A cosine matrix, optimizer metadata, factor targets, and diagnostics. |
+| `semantica_print_items()` | `items_tbl`, `max_chars` | Console display of generated items grouped by factor. |
+| `semantica_export()` | `pipeline_result`, `prefix` | Three CSV files for items, optimizer metadata, and cosine similarities. |
+| `semantica_reload()` | `prefix`, `i.per.f`, `default_i_per_f` | Reloaded optimizer input list from those CSV files. |
+
+The `factors` argument can specify a simple dimension or facets within each
+dimension. Setting `n_per_factor_override = TRUE` allocates
+`n_per_factor` items across the declared facets rather than respecting nested
+item counts.
+
+```{r generation-and-embedding}
+factors <- list(
+  Clarity = list(
+    description = "Clear and coherent expression of thought.",
+    facets = list(
+      Organization = list(description = "Structuring ideas logically."),
+      Precision = list(description = "Expressing intended meaning precisely.")
+    ),
+    n_items = 12L
+  ),
+  Flexibility = list(
+    description = "Adapting thought to changing evidence.",
+    n_items = 12L
+  )
+)
+
+items <- semantica_generate_items(
+  session = session,
+  scale_name = "Cognitive Agility",
+  scale_description = "Clear and adaptive cognitive self-regulation.",
+  factors = factors,
+  response_format = "5-point Likert",
+  item_style = "first-person declarative sentence",
+  language = "English",
+  n_per_factor = 12L,
+  n_per_factor_override = TRUE,
+  overgenerate = 2,
+  max_retries = 3L,
+  global_forbidden_max = 40L,
+  temperature = 0.8,
+  verbose = TRUE
+)
+
+embedded <- semantica_embed(
+  items_tbl = items,
+  session = session,
+  embed_session = NULL,
+  text_col = "item_text",
+  id_col = "item_id",
+  batch_size = 64L,
+  normalize = TRUE,
+  verbose = TRUE
+)
+```
+
+## Preparation Pipeline
+
+`semantica_pipeline()` runs connection, generation, embedding, and wrapping.
+Arguments passed through `...` are generation controls such as
+`response_format`, `item_style`, `language`, `overgenerate`, `max_retries`,
+`global_forbidden_max`, and `temperature`.
+
+| Argument | Meaning |
+|---|---|
+| `backend`, `embed_backend` | Generation and optional separate embedding backend. |
+| `base_url`, `embed_base_url`, `api_key`, `embed_api_key`, `chat_model`, `embed_model`, `gguf_path` | Connection and model controls. |
+| `embed_batch_size` | Number of texts included in each embedding request. |
+| `scale_name`, `scale_description`, `factors`, `n_per_factor`, `n_per_factor_override` | Item-pool specification. |
+| `cosine_adjustment`, `semantic_calibration`, `compute_cosine_sensitivity` | Semantic-proxy transformation and diagnostics. |
+| `release_local_models`, `retain_embeddings` | Local-memory and retained-output controls. |
+| `verbose`, `...` | Output and additional item-generation controls. |
+
+```{r preparation-pipeline}
+prepared <- semantica_pipeline(
+  backend = "openai",
+  embed_backend = NULL,
+  base_url = NULL,
+  embed_base_url = NULL,
+  api_key = Sys.getenv("OPENAI_API_KEY"),
+  embed_api_key = NULL,
+  chat_model = NULL,
+  embed_model = "text-embedding-3-small",
+  embed_batch_size = 64L,
+  gguf_path = NULL,
+  scale_name = "Cognitive Agility",
+  scale_description = "Clear and adaptive cognitive self-regulation.",
+  factors = factors,
+  n_per_factor = 12L,
+  n_per_factor_override = TRUE,
+  cosine_adjustment = "none",
+  semantic_calibration = NULL,
+  compute_cosine_sensitivity = TRUE,
+  release_local_models = FALSE,
+  retain_embeddings = TRUE,
+  verbose = TRUE,
+  temperature = 0.8
+)
+```
+
+## ACO-ESEM Optimization
+
+`ACO_with_ESEM()` selects an item subset from a prepared cosine matrix.
+When `run_esem_during_search = TRUE`, solutions admitted to the ESEM-guided
+archive must be scored through the requested ESEM pathway unless the user
+explicitly chooses `esem_failure_policy = "semantic_fallback"`.
+
+```{r optimization}
+result <- ACO_with_ESEM(
+  cosine_sim_matrix = wrapped$cosine_sim_matrix,
+  df = wrapped$df,
+  model_type = "correlated",
+  i.per.f = c(Clarity = 3L, Flexibility = 3L),
+  ants = 20L,
+  max.iter = 10L,
+  max_total_iter = NULL,
+  max_esem_fits = NULL,
+  esem_every = 5L,
+  run_esem_during_search = FALSE,
+  esem_weight = 0.50,
+  esem_failure_policy = "stop",
+  esem_sample_size = "auto",
+  elite_k = 10L,
+  dfi_mode = "heuristic_semantic",
+  pfa_mode = "diagnostic",
+  semantic_n_sensitivity = FALSE,
+  final_dddfi = FALSE,
+  final_equivtest = FALSE,
+  history_mode = "summary",
+  use_parallel = FALSE,
+  verbose = FALSE
+)
+```
+
+### Optimization Argument Catalogue
+
+| Argument group | Arguments | Use |
+|---|---|---|
+| Inputs | `cosine_sim_matrix`, `df`, `model_type`, `i.per.f` | Semantic input matrix, item metadata, backward-compatible model label, and number of retained items per factor. |
+| Search budget | `ants`, `max.iter`, `max_total_iter`, `archive_stable_window`, `elite_k` | Colony size, patience/iteration bounds, early stopping, and archive size. |
+| Search-time ESEM | `esem_every`, `run_esem_during_search`, `max_esem_fits`, `esem_weight`, `esem_failure_policy`, `esem_eval_top_k`, `fast_esem`, `fast_esem_iter_max`, `full_esem_iter_max` | Frequency, computational budget, scoring weight, fallback behavior, and fit precision. |
+| ESEM specification | `esem_sample_size`, `rotation`, `rotation_args`, `data_type`, `original_data`, `target_loadings`, `target_factor_cors` | Proxy sample size, rotation, observed-data type, and DFI target population settings. |
+| Dynamic-fit calibration | `dfi_reps`, `dfi_level`, `dfi_criterion`, `dfi_mode`, `dfi_esem_reps`, `dfi_search_reps`, `dfi_roc_misspec_strength`, `dfi_esem_strategy`, `dfi_adaptive_min_reps`, `dfi_adaptive_batch_reps`, `dfi_adaptive_tol`, `dfi_adaptive_stable_batches`, `dfi_fallback_policy` | Simulation mode, replication budgets, adaptive stopping, and fallback order. |
+| Final DFI diagnostics | `final_dfi_recalibrate`, `final_dfi_reps`, `final_dddfi`, `final_dddfi_reps`, `final_dddfi_mad_target`, `final_equivtest`, `loading_pattern`, `embed_reliability`, `residual_inflation`, `dfi_warmup_iters` | Optional final recalibration and companion approximate-fit diagnostics. |
+| Semantic screening | `redundancy_threshold`, `dup_threshold`, `htmt_threshold`, `cohesion_quantile`, `cohesion_retention`, `within_similarity_target`, `within_similarity_band`, `facet_coverage_weight` | Redundancy control, content-pool retention, target similarity, and facet coverage. |
+| Structural guard | `psychometric_guard_weight`, `psychometric_guard_min_ave`, `psychometric_guard_min_loading`, `psychometric_guard_min_primary_ge_50` | Soft penalties for weak convergent structure or improper solutions. |
+| PFA diagnostics | `pfa_mode`, `pfa_weight`, `pfa_extraction`, `pfa_final_extraction`, `pfa_rotation`, `pfa_min_loading`, `pfa_min_margin` | Sample-free factor-structure diagnostic settings. |
+| Reference-N checks | `reference_rmsea_close`, `reference_rmsea_poor`, `reference_power`, `reference_alpha`, `reference_max_n`, `semantic_n_sensitivity`, `semantic_n_grid`, `semantic_n_multipliers`, `semantic_n_iter_max` | Proxy reference sample-size calculation and sensitivity refits. |
+| Scoring mode | `semantic_esem_score_mode`, `sigmoid_center`, `sigmoid_steepness`, `heuristic_beta`, `pheromone_update`, `fixed_evaporation`, `elite_pareto_rerank` | Objective weighting and ACO update behavior. |
+| Validation planning | `validation_n_diagnostic`, `validation_n_reps`, `validation_n_grid`, `validation_n_max`, `validation_n_convergence`, `validation_n_max_heywood`, `validation_n_min_recovery`, `validation_n_max_loading_error`, `validation_n_min_dominance`, `validation_n_max_cross_error`, `validation_n_max_factor_cor_error`, `validation_data`, `validation_ordered` | Monte Carlo planning and optional final response-data validation fit. |
+| Storage and computation | `debug_mode`, `keep_solution_history`, `history_mode`, `use_parallel`, `n.cores`, `verbose`, `...` | Runtime, retained history, and output. `n.cores` is capped at two parallel workers for resource-conscious execution. |
+
+Use the semantic-only search in a quick dry run to examine item-pool behavior.
+For substantive use, justify the ESEM/DFI settings, inspect convergence and
+guard diagnostics, and validate the chosen indicators on response data.
+
+## Multiple Seeds and Reports
+
+| Function | Arguments | Use |
+|---|---|---|
+| `run_multi_seed_semantica()` | `seeds`, `cosine_sim_matrix`, `df`, `i.per.f`, `verbose_seeds`, `...` | Repeats `ACO_with_ESEM()` and reports selection stability; `...` supplies optimizer controls. |
+| `report_semantica_v2()` | `result`, `digits` | Prints a compact model and optimization report. |
+| `inspect_elite_archive()` | `result`, `top_n` | Prints top unique archived item selections. |
+| `inspect_solution_history()` | `result`, `top_n`, `sort_by` | Prints retained search-history summaries ranked by an objective column. |
+
+```{r reporting}
+multi <- run_multi_seed_semantica(
+  seeds = 1:3,
+  cosine_sim_matrix = wrapped$cosine_sim_matrix,
+  df = wrapped$df,
+  i.per.f = c(Clarity = 3L, Flexibility = 3L),
+  verbose_seeds = TRUE,
+  ants = 20L,
+  max.iter = 10L,
+  run_esem_during_search = FALSE,
+  dfi_mode = "heuristic_semantic",
+  use_parallel = FALSE,
+  verbose = FALSE
+)
+
+report_semantica_v2(result = result, digits = 3L)
+inspect_elite_archive(result = result, top_n = 5L)
+inspect_solution_history(result = result, top_n = 10L, sort_by = "total")
+```
+
+## Visualization API
+
+All visualization functions consume an `ACO_with_ESEM()` result. Plots that
+display item relationships also take the original cosine similarity matrix.
+
+| Function | Arguments | Display |
+|---|---|---|
+| `plot_pheromone_heatmap()` | `result` | Pheromone trails and selected-item intensity. |
+| `plot_fitness_evolution()` | `result` | Objective progression across iterations. |
+| `plot_semantic_networks()` | `result`, `cosine_sim_matrix`, `edge_threshold_before`, `edge_threshold_after`, `df`, `max_before_items` | Before/after semantic networks. |
+| `plot_esem_loadings()` | `result` | Rotated ESEM loading heatmap. |
+| `plot_loading_profiles()` | `result` | Loading profiles with interval displays. |
+| `plot_dfi_gauges()` | `result` | Fit measures compared with DFI cutoffs. |
+| `plot_score_radar()` | `result` | Score-component radar chart. |
+| `plot_semantic_discrimination()` | `result`, `cosine_sim_matrix` | Within- versus between-factor similarity. |
+| `plot_interactive_semantic_space()` | `result`, `cosine_sim_matrix`, `label_all`, `mode`, `max_pool_items` | Interactive 2D or 3D MDS item map. |
+| `plot_esem_path_diagrams()` | `result`, `cosine_sim_matrix`, `min_loading_show`, `show_crossloadings`, `df`, `min_factor_cor_show`, `max_factor_cor_edges`, `before_model`, `before_refit_max_items`, `before_proxy_max_items` | Before/after path diagrams using a proxy or an explicitly requested refit. |
+| `plot_item_selection_frequency()` | `result`, `multi_result` | Item frequency in archive or repeated runs; supply at least one input. |
+| `plot_crossloading_specificity()` | `result`, `ratio_cap`, `danger_ratio` | Cross-loading specificity diagnostic. |
+| `plot_pfa_diagnostics()` | `result` | Sample-free PFA loading diagnostic. |
+| `plot_semantic_n_sensitivity()` | `result` | Proxy reference-N sensitivity; may return `NULL` if not calculated. |
+| `plot_summary_of_results()` | `result`, `cosine_sim_matrix` | Summary dashboard; cosine matrix is optional and enriches semantic panels. |
+| `the_coolest_plot_ever()` | `result`, `cosine_sim_matrix`, `max_background_items`, `edge_quantile` | Presentation-oriented semantic distillation map. |
+
+```{r individual-plots}
+plot_pheromone_heatmap(result)
+plot_fitness_evolution(result)
+plot_semantic_networks(
+  result, wrapped$cosine_sim_matrix,
+  edge_threshold_before = 0.45,
+  edge_threshold_after = 0.30,
+  df = wrapped$df,
+  max_before_items = 200L
+)
+plot_esem_loadings(result)
+plot_loading_profiles(result)
+plot_dfi_gauges(result)
+plot_score_radar(result)
+plot_semantic_discrimination(result, wrapped$cosine_sim_matrix)
+plot_interactive_semantic_space(
+  result, wrapped$cosine_sim_matrix,
+  label_all = FALSE, mode = "2d", max_pool_items = 250L
+)
+paths <- plot_esem_path_diagrams(
+  result, wrapped$cosine_sim_matrix,
+  min_loading_show = 0.10,
+  show_crossloadings = TRUE,
+  df = wrapped$df,
+  min_factor_cor_show = 0.05,
+  max_factor_cor_edges = 15L,
+  before_model = "proxy",
+  before_refit_max_items = 60L,
+  before_proxy_max_items = 150L
+)
+plot_item_selection_frequency(result = result, multi_result = multi)
+plot_crossloading_specificity(result, ratio_cap = 10, danger_ratio = 1.5)
+plot_pfa_diagnostics(result)
+plot_semantic_n_sensitivity(result)
+plot_summary_of_results(result, cosine_sim_matrix = wrapped$cosine_sim_matrix)
+the_coolest_plot_ever(
+  result, cosine_sim_matrix = wrapped$cosine_sim_matrix,
+  max_background_items = 260L, edge_quantile = 0.65
+)
+```
+
+`semantica_plot_all()` orchestrates the regular diagnostic set. It does not
+call `the_coolest_plot_ever()` because that plot is intended as an optional
+presentation aid.
+
+| Argument | Meaning |
+|---|---|
+| `result`, `cosine_sim_matrix`, `df`, `multi_result` | Optimizer and optional repeated-run inputs. |
+| `interactive_mode`, `include_interactive` | Type and inclusion of interactive MDS output. |
+| `before_path_model`, `before_path_refit_max_items`, `network_max_items`, `mds_max_items`, `path_proxy_max_items` | Performance and path-display bounds. |
+| `save`, `out_dir`, `device`, `width`, `height`, `dpi` | Plot file output options. |
+| `progress` | Per-plot progress messages. |
+
+```{r plot-wrapper}
+plots <- semantica_plot_all(
+  result = result,
+  cosine_sim_matrix = wrapped$cosine_sim_matrix,
+  df = wrapped$df,
+  multi_result = multi,
+  interactive_mode = "2d",
+  save = FALSE,
+  out_dir = "semantica_plots",
+  device = "png",
+  width = 12,
+  height = 8,
+  dpi = 180,
+  before_path_model = "proxy",
+  before_path_refit_max_items = 60L,
+  network_max_items = 200L,
+  mds_max_items = 250L,
+  path_proxy_max_items = 150L,
+  include_interactive = TRUE,
+  progress = TRUE
+)
+```
+
+## One-Call Workflow
+
+`semantica_full_pipeline()` combines generation, embedding, wrapping,
+optimization, reporting outputs, and optional visualization. It accepts:
+
+| Argument group | Arguments |
+|---|---|
+| Connection and generation | `backend`, `embed_backend`, `api_key`, `embed_api_key`, `chat_model`, `embed_model`, `embed_batch_size`, `base_url`, `gguf_path`, `scale_name`, `scale_description`, `factors`, `n_per_factor`, `n_per_factor_override`, `...` |
+| Semantic input preparation | `cosine_adjustment`, `semantic_calibration`, `compute_cosine_sensitivity`, `release_local_models`, `retain_embeddings` |
+| Selection target | `i.per.f` |
+| ACO-ESEM and validation | All applicable `ACO_with_ESEM()` controls in the Optimization Argument Catalogue, except `cosine_sim_matrix`, `df`, `model_type`, and `original_data`; additionally `pfa_unit_diagnostics` controls facet/unit-level PFA summaries. |
+| Plot generation | `generate_plots`, `interactive_mode`, `save_plots`, `plot_out_dir`, `plot_device`, `plot_width`, `plot_height`, `plot_dpi`, `plot_before_path_model`, `plot_before_path_refit_max_items`, `plot_network_max_items`, `plot_mds_max_items`, `plot_path_proxy_max_items`, `include_interactive_plot`, `plot_progress` |
+| Runtime output | `verbose` |
+
+```{r full-workflow}
+full <- semantica_full_pipeline(
+  backend = "openai",
+  embed_backend = NULL,
+  api_key = Sys.getenv("OPENAI_API_KEY"),
+  embed_api_key = NULL,
+  chat_model = NULL,
+  embed_model = "text-embedding-3-small",
+  embed_batch_size = 64L,
+  base_url = NULL,
+  gguf_path = NULL,
+  cosine_adjustment = "none",
+  semantic_calibration = NULL,
+  compute_cosine_sensitivity = TRUE,
+  release_local_models = FALSE,
+  retain_embeddings = TRUE,
+  scale_name = "Cognitive Agility",
+  scale_description = "Clear and adaptive cognitive self-regulation.",
+  factors = factors,
+  n_per_factor = 12L,
+  n_per_factor_override = TRUE,
+  i.per.f = c(Clarity = 4L, Flexibility = 4L),
+  ants = 60L,
+  max.iter = 30L,
+  run_esem_during_search = TRUE,
+  dfi_mode = "auto",
+  pfa_unit_diagnostics = TRUE,
+  history_mode = "summary",
+  generate_plots = TRUE,
+  include_interactive_plot = TRUE,
+  save_plots = FALSE,
+  verbose = TRUE
+)
+```
+
+## Interpretation and Reporting Boundaries
+
+The semantic similarity matrix encodes wording/content proximity produced by
+an embedding model. The ESEM and PFA diagnostics fitted to that proxy can help
+find redundant, poorly differentiated, or structurally weak candidate item
+sets. They do not establish factor structure in respondents. A final scale
+requires response-data analyses, including appropriate ESEM/CFA estimation,
+reliability and validity evidence, measurement invariance where relevant, and
+replication.

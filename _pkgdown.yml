@@ -1,0 +1,46 @@
+url: https://PedroCieza.github.io/SEMANTICA/
+template:
+  bootstrap: 5
+home:
+  title: "SEMANTICA: Semantic Item Generation and ACO-ESEM Scale Construction"
+articles:
+  - title: "Guides"
+    navbar: ~
+    contents:
+      - semantica-workflow
+      - function-reference
+reference:
+  - title: "Package Overview"
+    contents:
+      - SEMANTICA-package
+      - SEMANTICA_BACKENDS
+  - title: "Generation and Embeddings"
+    contents:
+      - semantica_connect
+      - print.semantica_session
+      - semantica_generate_items
+      - semantica_embed
+      - semantica_wrap
+      - semantica_pipeline
+      - semantica_full_pipeline
+  - title: "Optimization and Reporting"
+    contents:
+      - ACO_with_ESEM
+      - run_multi_seed_semantica
+      - report_semantica_v2
+      - inspect_elite_archive
+      - inspect_solution_history
+  - title: "Visualization"
+    contents:
+      - starts_with("plot_")
+      - the_coolest_plot_ever
+      - semantica_plot_all
+  - title: "Utilities"
+    contents:
+      - semantica_standardize_item_metadata
+      - semantica_print_items
+      - semantica_export
+      - semantica_reload
+      - semantica_list_backends
+      - semantica_setup_conda
+      - semantica_activate_conda

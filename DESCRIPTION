@@ -1,0 +1,75 @@
+Package: SEMANTICA
+Title: Semantic Item Generation and ACO-ESEM Scale Construction
+Version: 0.1.0
+Authors@R:
+    c(
+        person(
+            given = "Pedro",
+            family = "Cieza-Liza",
+            email = "pedrocieza24@gmail.com",
+            role = c("aut", "cre", "cph")
+        ),
+        person(
+            given = "Reyniel",
+            family = "Salas-Silva",
+            email = "reynielsalas0225@gmail.com",
+            role = "aut"
+        ),
+        person(
+            given = "José",
+            family = "Gamarra-Moncayo",
+            email = "gamarramoncayoj@gmail.com",
+            role = c("aut", "ctb")
+        )
+    )
+Description: Provides a workflow for psychometric scale construction that
+    combines large language model item generation, semantic embeddings, ant
+    colony optimization, exploratory structural equation modeling with
+    'lavaan', dynamic fit-index calibration, pseudo-factor-analysis diagnostics,
+    and publication-ready visualizations. The package supports cloud and local
+    model backends while keeping network-dependent examples optional during
+    automated checks.
+License: MIT + file LICENSE
+URL: https://PedroCieza.github.io/SEMANTICA/,
+    https://github.com/PedroCieza/SEMANTICA
+BugReports: https://github.com/PedroCieza/SEMANTICA/issues
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 8.0.0
+Depends:
+    R (>= 4.1.0)
+Imports:
+    doParallel,
+    dynamic,
+    foreach,
+    ggforce,
+    ggplot2,
+    ggraph,
+    GPArotation,
+    grDevices,
+    grid,
+    htmlwidgets,
+    httr2,
+    igraph,
+    lavaan,
+    Matrix,
+    parallel,
+    patchwork,
+    plotly,
+    reticulate,
+    rlang,
+    scales,
+    stats,
+    stringr,
+    tibble,
+    tidygraph,
+    utils
+Suggests:
+    knitr,
+    rmarkdown,
+    testthat (>= 3.0.0)
+VignetteBuilder: knitr
+Config/testthat/edition: 3
+SystemRequirements: Optional Conda/Python (>= 3.11) for local Hugging Face and
+    llama-cpp-python backends; optional local LLM servers for Ollama,
+    llama.cpp, or OpenAI-compatible endpoints.
