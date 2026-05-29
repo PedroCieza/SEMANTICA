@@ -2,73 +2,151 @@
 
 <img width="1600" height="715" alt="image" src="https://github.com/user-attachments/assets/3a8cd997-cca7-4fa0-b437-8df34740834f" />
 
-SEMANTICA is an R package for semantic-assisted psychometric scale construction. It combines LLM-based item generation, embedding-based semantic similarity diagnostics, ant colony optimization, exploratory structural equation modeling (ESEM), dynamic fit-index calibration, pseudo-factor-analysis diagnostics, and visualization tools.
+SEMANTICA is an R package for semantic-assisted psychometric scale construction. It is designed around a one-call workflow that starts from a construct specification, generates candidate items with an LLM, embeds the item pool, screens semantic redundancy, selects items with ant colony optimization, evaluates the candidate structure with ESEM, and returns diagnostic plots and summaries.
 
-SEMANTICA is intended for item-pool development and structural screening. A
-selected item set still requires validation using participant response data;
-semantic similarity and proxy-ESEM/PFA diagnostics do not by themselves
-establish construct validity.
+SEMANTICA is intended for item-pool development and early structural screening. A selected item set still requires validation using participant response data; semantic similarity, proxy-ESEM, and sample-free PFA diagnostics do not by themselves establish construct validity.
 
 ## Installation
 
-From GitHub:
+Install the development version from GitHub:
 
 ```r
 install.packages("remotes")
 remotes::install_github("PedroCieza/SEMANTICA")
 ```
 
+```r
+library(SEMANTICA)
+```
+
 Issues and feature requests: <https://github.com/PedroCieza/SEMANTICA/issues>
 
-## Basic Workflow
+## Recommended Workflow
+
+For most users, start with `semantica_full_pipeline()`. It runs the complete SEMANTICA workflow:
+
+1. Connect to generation and embedding backends.
+2. Generate candidate psychometric items from factor prompts.
+3. Embed the generated item pool.
+4. Build semantic similarity matrices.
+5. Select a reduced item set with ACO.
+6. Evaluate the selected solution with ESEM and fit diagnostics.
+7. Return selected items, summaries, diagnostics, and plots.
+
+The lower-level functions (`semantica_connect()`, `semantica_generate_items()`, `semantica_embed()`, `semantica_wrap()`, `ACO_with_ESEM()`, and `semantica_plot_all()`) remain available for advanced workflows, debugging, or reusing existing item pools.
+
+## Simple Full-Pipeline Example
+
+This example uses Groq for item generation and OpenAI for embeddings. Store real API keys in `.Renviron` rather than typing them directly into scripts.
 
 ```r
 library(SEMANTICA)
 
+groq_key <- Sys.getenv("GROQ_API_KEY")
+openai_key <- Sys.getenv("OPENAI_API_KEY")
+
 factors <- list(
   Clarity = list(
-    description = "Clear, focused, and organized thinking.",
-    n_items = 12
+    description = "Clear, focused, and organized thinking."
   ),
   Flexibility = list(
-    description = "Adaptable thinking across changing demands.",
-    n_items = 12
+    description = "Adaptive thinking when information or circumstances change."
   )
 )
 
-# Network/API steps are shown but not run here.
-# Sys.setenv(OPENAI_API_KEY = "...")
-# session <- semantica_connect("openai")
-# items <- semantica_generate_items(
-#   session = session,
-#   scale_name = "Cognitive Agility",
-#   scale_description = "Adaptive, clear, and flexible cognitive self-regulation.",
-#   factors = factors
-# )
-# embedded <- semantica_embed(items, session)
-# wrapped <- semantica_wrap(embedded)
-# result <- ACO_with_ESEM(
-#   cosine_sim_matrix = wrapped$cosine_sim_matrix,
-#   df = wrapped$df,
-#   i.per.f = c(Clarity = 4, Flexibility = 4),
-#   ants = 60,
-#   max.iter = 30
-# )
-# report_semantica_v2(result)
-# plots <- semantica_plot_all(result, wrapped$cosine_sim_matrix)
-# plots$plot_summary_of_results
-# the_coolest_plot_ever(result, wrapped$cosine_sim_matrix)
+i_per_factor <- c(
+  Clarity = 3L,
+  Flexibility = 3L
+)
+
+set.seed(123)
+
+result <- semantica_full_pipeline(
+  # LLM setup
+  backend       = "groq",
+  embed_backend = "openai",
+  api_key       = groq_key,
+  embed_api_key = openai_key,
+  chat_model    = "meta-llama/llama-4-scout-17b-16e-instruct",
+  embed_model   = "text-embedding-3-small",
+  temperature   = 1,
+
+  # Scale specification
+  scale_name = "Cognitive Agility",
+  scale_description = paste(
+    "A brief self-report scale for adaptive, organized,",
+    "and flexible thinking in everyday problem solving."
+  ),
+  factors      = factors,
+  n_per_factor = 10L,
+  i.per.f      = i_per_factor,
+
+  # Faster exploratory run
+  dfi_mode = "heuristic_semantic",
+
+  # ACO-ESEM search
+  ants                   = 50L,
+  max.iter               = 20L,
+  esem_every             = 10L,
+  run_esem_during_search = TRUE,
+  esem_weight            = 0.50,
+
+  # Parallelization request
+  use_parallel = TRUE,
+  n.cores      = 6L
+)
 ```
 
-`semantica_plot_all()` returns the standard diagnostic set plus
-`plot_summary_of_results`, a one-screen summary of optimization scores,
-fit checks, ESEM/PFA structure diagnostics, and semantic before/after change.
+Inspect the selected items and main diagnostics:
 
-The ESEM path diagram now also displays factor-correlation rails when available.
+```r
+result$best_items
+result$factor_assignment
+result$selected_item_metadata
+result$fit_indices[c("cfi", "rmsea", "srmr", "htmt_max")]
+result$semantic_score
+result$summary
+names(result$plots)
+```
+
+Notes on the main arguments:
+
+- `backend` controls the LLM used for item generation.
+- `embed_backend` controls the model provider used for embeddings. If `NULL`, SEMANTICA uses the same backend as `backend`.
+- `factors` is the named construct specification used as prompt material.
+- `n_per_factor` controls the generated candidate item count per factor.
+- `i.per.f` controls the number of selected final items per factor.
+- `dfi_mode = "heuristic_semantic"` skips simulated DFI calibration for a faster exploratory run.
+- `run_esem_during_search = TRUE` allows ESEM diagnostics to guide the ACO search.
+- `esem_weight` controls how much the ESEM component contributes to the search objective.
+- `generate_plots` defaults to `TRUE`, so diagnostic plot objects are returned in `result$plots`.
+- `final_dddfi` defaults to `FALSE`, so final DDDFI cutoffs are not computed unless explicitly requested.
+
+## Complete HEXACO Example
+
+The package includes an editable simple full-pipeline example with a HEXACO factor specification:
+
+```r
+file.show(system.file(
+  "examples",
+  "simple_full_pipeline_example.R",
+  package = "SEMANTICA"
+))
+```
+
+A longer worked HEXACO example is also installed:
+
+```r
+file.show(system.file(
+  "examples",
+  "hexaco_full_pipeline_example.R",
+  package = "SEMANTICA"
+))
+```
 
 ## Existing Item Pools
 
-If you already have item text and embeddings, you can skip generation:
+If item text and embeddings already exist, generation can be skipped. In that case, use `semantica_wrap()` to prepare the item pool and `ACO_with_ESEM()` to run selection:
 
 ```r
 items_tbl <- data.frame(
@@ -105,37 +183,42 @@ embed_result <- list(
   embedding_diagnostics = list(normalized = FALSE)
 )
 
-wrapped <- semantica_wrap(embed_result, min_items_per_factor = 3, verbose = FALSE)
-wrapped$i.per.f
+wrapped <- semantica_wrap(
+  embed_result,
+  min_items_per_factor = 3,
+  verbose = FALSE
+)
+
+result <- ACO_with_ESEM(
+  cosine_sim_matrix = wrapped$cosine_sim_matrix,
+  df = wrapped$df,
+  i.per.f = c(Clarity = 3L, Flexibility = 3L),
+  dfi_mode = "heuristic_semantic",
+  run_esem_during_search = FALSE,
+  verbose = FALSE
+)
 ```
 
 ## Documentation
 
-The package includes two vignettes:
+Function help is available inside R:
+
+```r
+?semantica_full_pipeline
+?ACO_with_ESEM
+?semantica_wrap
+```
+
+The package includes vignettes:
 
 ```r
 vignette("semantica-workflow", package = "SEMANTICA")
 vignette("function-reference", package = "SEMANTICA")
 ```
 
-`semantica-workflow` explains the generation-to-reporting workflow.
-`function-reference` provides a call example and argument guide for every
-public SEMANTICA function, including optimization and visualization controls.
-Individual function help remains available through, for example,
-`?ACO_with_ESEM` and `?semantica_full_pipeline`.
-
-A complete editable HEXACO full-pipeline example is installed with the
-package. Open it in R with:
-
-```r
-file.show(system.file(
-  "examples", "hexaco_full_pipeline_example.R", package = "SEMANTICA"
-))
-```
-
 ## Development Checks
 
-To validate changes locally, run:
+To validate local changes:
 
 ```r
 devtools::document()
