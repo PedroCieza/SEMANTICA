@@ -60,7 +60,7 @@ semantica_full_pipeline(
   dfi_adaptive_tol = 0.002,
   dfi_adaptive_stable_batches = 2L,
   dfi_fallback_policy = c("conservative", "requested_only"),
-  final_dddfi = TRUE,
+  final_dddfi = FALSE,
   final_dddfi_reps = 250L,
   final_dddfi_mad_target = c("close", "fair", "mediocre"),
   final_equivtest = TRUE,
@@ -89,7 +89,7 @@ semantica_full_pipeline(
   pfa_min_margin = NULL,
   pfa_unit_diagnostics = TRUE,
   reference_rmsea_close = 0.05,
-  reference_rmsea_poor = 0.08,
+  reference_rmsea_poor = 0.06,
   reference_power = 0.8,
   reference_alpha = 0.05,
   reference_max_n = 5000L,
@@ -287,7 +287,9 @@ extra ESEM DFI fallback calibrations for explicitly requested non-\code{"auto"}
 modes if their requested DFI calibration is unusable.}
 
 \item{final_dddfi}{Logical; compute \code{dynamic::DDDFI()} for the final ESEM
-solution as an approximate-fit diagnostic.}
+solution as an approximate-fit diagnostic. The default is \code{FALSE} so final
+reporting compares the selected solution to the DFI cutoffs already used by
+the search unless DDDFI is explicitly requested.}
 
 \item{final_dddfi_reps}{Replications for final DDDFI.}
 

@@ -4641,7 +4641,9 @@ fit.function.v2 <- function(selected_vector, run_esem_now = FALSE, effective_ese
 #' @param final_dfi_reps Optional replication count for final recalibration.
 #'   `NULL` reuses `dfi_esem_reps`.
 #' @param final_dddfi Logical; compute `dynamic::DDDFI()` for the final ESEM
-#'   solution as an approximate-fit diagnostic.
+#'   solution as an approximate-fit diagnostic. The default is `FALSE` so final
+#'   reporting compares the selected solution to the DFI cutoffs already used by
+#'   the search unless DDDFI is explicitly requested.
 #' @param final_dddfi_reps Replications for final DDDFI.
 #' @param final_dddfi_mad_target Which DDDFI MAD benchmark to use in the final
 #'   verbose comparison (`"close"`, `"fair"`, or `"mediocre"`).
@@ -4791,7 +4793,7 @@ ACO_with_ESEM <- function(
     dfi_adaptive_min_reps = NULL, dfi_adaptive_batch_reps = 50L,
     dfi_adaptive_tol = 0.002, dfi_adaptive_stable_batches = 2L,
     dfi_fallback_policy = c("conservative", "requested_only"),
-    final_dddfi = TRUE, final_dddfi_reps = 250L,
+    final_dddfi = FALSE, final_dddfi_reps = 250L,
     final_dddfi_mad_target = c("close", "fair", "mediocre"),
     final_equivtest = TRUE,
     loading_pattern = "varied",
@@ -4811,7 +4813,7 @@ ACO_with_ESEM <- function(
     pfa_min_loading = psychometric_guard_min_loading,
     pfa_min_margin = NULL,
     reference_rmsea_close = 0.05,
-    reference_rmsea_poor = 0.08,
+    reference_rmsea_poor = 0.06,
     reference_power = 0.80,
     reference_alpha = 0.05,
     reference_max_n = 5000L,
