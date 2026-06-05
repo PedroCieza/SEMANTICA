@@ -107,23 +107,17 @@ tfeq_item_rules <- paste(
 
 factors_tfeq <- list(
   Cognitive_Restraint = list(
-    description = paste(
-      "Conscious effort to limit food intake in order to manage body weight."
-    ),
+    description = "Conscious effort to limit food intake in order to manage body weight.",
     extra_instructions = tfeq_item_rules
   ),
 
   Uncontrolled_Eating = list(
-    description = paste(
-      "Tendency to eat in response to internal cues regardless of dietary plans."
-    ),
+    description = "Tendency to eat in response to internal cues regardless of dietary plans.",
     extra_instructions = tfeq_item_rules
   ),
 
   Emotional_Eating = list(
-    description = paste(
-      "Tendency to consume food in response to negative emotions."
-    ),
+    description = "Tendency to consume food in response to negative emotions.",
     extra_instructions = tfeq_item_rules
   )
 )
