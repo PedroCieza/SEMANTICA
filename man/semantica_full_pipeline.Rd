@@ -5,470 +5,79 @@
 \title{One-Call SEMANTICA Pipeline: Generation to ACO-ESEM to Visualization}
 \usage{
 semantica_full_pipeline(
-  backend = "openai",
-  embed_backend = NULL,
-  api_key = NULL,
-  embed_api_key = NULL,
-  chat_model = NULL,
-  embed_model = NULL,
-  embed_batch_size = 64L,
-  base_url = NULL,
-  gguf_path = NULL,
-  cosine_adjustment = c("none", "mean_center"),
-  semantic_calibration = NULL,
-  compute_cosine_sensitivity = TRUE,
-  release_local_models = FALSE,
-  retain_embeddings = TRUE,
   scale_name,
   scale_description,
   factors,
-  n_per_factor = 15L,
-  n_per_factor_override = !missing(n_per_factor),
-  i.per.f = NULL,
-  ants = 90,
-  max.iter = 50,
-  esem_every = 10,
-  run_esem_during_search = TRUE,
-  max_total_iter = NULL,
-  max_esem_fits = NULL,
-  esem_weight = 0.5,
-  esem_failure_policy = c("stop", "semantic_fallback"),
-  esem_sample_size = "auto",
-  elite_k = 10,
-  esem_eval_top_k = NULL,
-  fast_esem = TRUE,
-  fast_esem_iter_max = 500L,
-  full_esem_iter_max = 2000L,
-  rotation = "geomin",
-  rotation_args = list(geomin.epsilon = 0.5),
-  data_type = "continuous",
-  target_loadings = 0.7,
-  target_factor_cors = NULL,
-  dfi_reps = 500,
-  dfi_level = 1,
-  dfi_criterion = "Sensitivity",
-  dfi_mode = c("auto", "semantic_roc_dfi", "semantic_approx_dfi", "esem_parametric_dfi",
-    "strict_cfa_dfi", "heuristic_semantic"),
-  dfi_esem_reps = NULL,
-  dfi_search_reps = NULL,
-  final_dfi_recalibrate = FALSE,
-  final_dfi_reps = NULL,
-  dfi_roc_misspec_strength = 1,
-  dfi_esem_strategy = c("fixed", "adaptive"),
-  dfi_adaptive_min_reps = NULL,
-  dfi_adaptive_batch_reps = 50L,
-  dfi_adaptive_tol = 0.002,
-  dfi_adaptive_stable_batches = 2L,
-  dfi_fallback_policy = c("conservative", "requested_only"),
-  final_dddfi = FALSE,
-  final_dddfi_reps = 250L,
-  final_dddfi_mad_target = c("close", "fair", "mediocre"),
-  final_equivtest = TRUE,
-  loading_pattern = "varied",
-  embed_reliability = 1,
-  residual_inflation = 0,
-  dfi_warmup_iters = 5L,
-  redundancy_threshold = 0.85,
-  dup_threshold = 0.9,
-  htmt_threshold = 0.85,
-  cohesion_quantile = NULL,
-  cohesion_retention = 0.75,
-  within_similarity_target = NULL,
-  within_similarity_band = 0.08,
-  facet_coverage_weight = 0.15,
-  psychometric_guard_weight = 0.5,
-  psychometric_guard_min_ave = 0.3,
-  psychometric_guard_min_loading = 0.4,
-  psychometric_guard_min_primary_ge_50 = 0.7,
-  pfa_mode = c("diagnostic", "objective", "off"),
-  pfa_weight = 0.2,
-  pfa_extraction = c("principal", "ml"),
-  pfa_final_extraction = c("ml", "principal"),
-  pfa_rotation = c("promax", "target_oblique", "oblimin", "varimax", "none"),
-  pfa_min_loading = psychometric_guard_min_loading,
-  pfa_min_margin = NULL,
-  pfa_unit_diagnostics = TRUE,
-  reference_rmsea_close = 0.05,
-  reference_rmsea_poor = 0.06,
-  reference_power = 0.8,
-  reference_alpha = 0.05,
-  reference_max_n = 5000L,
-  semantic_n_sensitivity = TRUE,
-  semantic_n_grid = NULL,
-  semantic_n_multipliers = c(0.5, 1, 1.5, 2),
-  semantic_n_iter_max = 800L,
-  semantic_esem_score_mode = c("current", "structure_weighted"),
-  validation_n_diagnostic = FALSE,
-  validation_n_reps = 20L,
-  validation_n_grid = NULL,
-  validation_n_max = 2000L,
-  validation_n_convergence = 0.9,
-  validation_n_max_heywood = 0.05,
-  validation_n_min_recovery = 0.9,
-  validation_n_max_loading_error = 0.1,
-  validation_n_min_dominance = NULL,
-  validation_n_max_cross_error = NULL,
-  validation_n_max_factor_cor_error = NULL,
-  sigmoid_center = 0.15,
-  elite_pareto_rerank = TRUE,
-  validation_data = NULL,
-  validation_ordered = NULL,
-  sigmoid_steepness = 10,
-  heuristic_beta = 0.5,
-  archive_stable_window = 8L,
-  pheromone_update = c("top_elite", "best_ant"),
-  fixed_evaporation = NULL,
-  debug_mode = FALSE,
-  keep_solution_history = TRUE,
-  history_mode = c("summary", "full", "none"),
-  use_parallel = TRUE,
-  n.cores = 2L,
-  generate_plots = TRUE,
-  interactive_mode = c("2d", "3d"),
-  save_plots = FALSE,
-  plot_out_dir = "semantica_plots/",
-  plot_device = "png",
-  plot_width = 12,
-  plot_height = 8,
-  plot_dpi = 180,
-  plot_before_path_model = c("proxy", "refit"),
-  plot_before_path_refit_max_items = 60L,
-  plot_network_max_items = 200L,
-  plot_mds_max_items = 250L,
-  plot_path_proxy_max_items = 150L,
-  include_interactive_plot = TRUE,
-  plot_progress = verbose,
+  backend = "openai",
+  candidate_items_per_factor = 15L,
+  items_per_factor = NULL,
+  generation_options = list(),
+  optimization_options = list(),
+  dfi_options = list(),
+  pfa_options = list(),
+  validation_options = list(),
+  plot_options = list(),
   verbose = TRUE,
   ...
 )
 }
 \arguments{
-\item{backend}{Generation backend (see \code{semantica_connect()}).}
-
-\item{embed_backend}{Embedding backend. \code{NULL} = same as backend.}
-
-\item{api_key, embed_api_key}{API keys for generation/embedding.}
-
-\item{chat_model, embed_model}{Override default model names.}
-
-\item{embed_batch_size}{Items per embedding backend request. Lower values
-reduce peak request memory for local embedding models.}
-
-\item{base_url, gguf_path}{Server overrides or GGUF path.}
-
-\item{cosine_adjustment}{Embedding cosine preprocessing passed to
-\code{semantica_pipeline()}.}
-
-\item{semantic_calibration}{Optional matrix or function used to calibrate
-the semantic cosine proxy before ACO/ESEM.}
-
-\item{compute_cosine_sensitivity}{Logical; compute the optional
-none-versus-mean-centered embedding diagnostic.}
-
-\item{release_local_models}{Logical; release cached Python llama.cpp models
-after item generation and embedding to reduce retained RAM in one-shot
-local workflows.}
-
-\item{retain_embeddings}{Logical; retain dense embeddings in the returned
-generation object. Keep this \code{TRUE} when \code{pfa_unit_diagnostics} is needed.}
-
 \item{scale_name}{Short name of the scale.}
 
 \item{scale_description}{One-paragraph construct description.}
 
 \item{factors}{Named list of factor specs (\verb{$description}, \verb{$n_items}, etc.).}
 
-\item{n_per_factor}{Retained items per factor. When explicitly supplied,
-this overrides nested dimension/facet item counts and is distributed
-across facets; when omitted, counts stored in \code{factors} keep precedence.}
-
-\item{n_per_factor_override}{Logical; override nested factor/facet counts
-using \code{n_per_factor}. Defaults to \code{TRUE} only when \code{n_per_factor} is
-explicitly supplied.}
-
-\item{i.per.f}{Named integer vector of items to select per factor for ACO.
-If \code{NULL}, defaults to 3 items per factor.}
-
-\item{ants}{Number of ants in the colony.}
-
-\item{max.iter}{Maximum consecutive non-improving iterations before patience
-stopping.}
-
-\item{esem_every}{Base interval for ESEM evaluations during ACO search.}
-
-\item{run_esem_during_search}{Logical; if \code{FALSE}, ACO selection is based on
-semantic redundancy only and ESEM is run only for final diagnostics.}
-
-\item{max_total_iter}{Optional hard ceiling for all ACO iterations. \code{NULL}
-preserves the legacy patience-only stopping behavior; use a positive
-integer to impose a resource budget.}
-
-\item{max_esem_fits}{Optional hard ceiling for ESEM fits attempted during
-ACO search checkpoints. \code{NULL} imposes no separate checkpoint-fit ceiling.}
-
-\item{esem_weight}{Weight for the ESEM component in the objective function.}
-
-\item{esem_failure_policy}{Behavior when an ESEM-guided search checkpoint
-produces no usable ESEM solutions. \code{"stop"} prevents a semantic-only
-selection from being mislabeled as ESEM-guided; \code{"semantic_fallback"}
-continues explicitly as a semantic/PFA-only search and records a warning.}
-
-\item{esem_sample_size}{Sample size for DFI simulation and ESEM estimation.
-\code{"auto"} chooses a non-arbitrary reference N by RMSEA power analysis for
-detecting poor approximate fit (\code{reference_rmsea_poor}) against close fit
-(\code{reference_rmsea_close}).}
-
-\item{elite_k}{Number of solutions to retain in the elite archive.}
-
-\item{esem_eval_top_k}{Number of semantically best ants to evaluate with ESEM
-during ESEM iterations. \code{NULL} uses a conservative adaptive subset.}
-
-\item{fast_esem}{Use a faster single-pass ESEM fit during ACO search. Final
-archive and final clean fits still use full ESEM fitting.}
-
-\item{fast_esem_iter_max}{Iteration cap for fast ACO ESEM fits.}
-
-\item{full_esem_iter_max}{Iteration cap for full final/archive ESEM fits.}
-
-\item{rotation}{Rotation method for ESEM (\code{"geomin"}, \code{"oblimin"}).}
-
-\item{rotation_args}{Named list passed to \code{lavaan::sem(rotation.args)}.}
-
-\item{data_type}{Data type for DFI (\code{"continuous"}, \code{"categorical"}, etc.).}
-
-\item{target_loadings}{Target mean loading for DFI population model.}
-
-\item{target_factor_cors}{Target factor correlation matrix for DFI.}
-
-\item{dfi_reps}{Replications for DFI simulation.}
-
-\item{dfi_level}{DFI cutoff level.}
-
-\item{dfi_criterion}{DFI criterion (\code{"Sensitivity"}, \code{"Specificity"}).}
-
-\item{dfi_mode}{Cutoff calibration mode. \code{"auto"} first tries semantic-ROC
-ESEM DFI, then semantic-approximate ESEM DFI, then exact ESEM-parametric
-DFI, then strict CFA-style DFI. \code{"semantic_roc_dfi"} calibrates cutoffs
-using acceptable and intentionally misspecified semantic-ESEM proxy
-populations. \code{"semantic_approx_dfi"} calibrates an ESEM approximate-fit
-population from the warm-up semantic residual structure. \code{"esem_parametric_dfi"}
-uses exact-H0 ESEM-parametric calibration, \code{"strict_cfa_dfi"} preserves the
-earlier CFA-style dynamic-fit calibration, and \code{"heuristic_semantic"} skips
-DFI simulation during search.}
-
-\item{dfi_esem_reps}{Replications for ESEM DFI calibration. \code{NULL} uses a
-bounded value derived from \code{dfi_reps} to avoid excessive ESEM refits.}
-
-\item{dfi_search_reps}{Optional explicit replication budget for search-time
-ESEM DFI calibration. When non-\code{NULL}, this overrides \code{dfi_esem_reps};
-\code{final_dfi_reps} separately controls optional final recalibration.}
-
-\item{final_dfi_recalibrate}{Logical; if \code{TRUE}, recalibrate the selected
-semantic-proxy ESEM after ACO using the active ESEM DFI mode and fallback
-policy. The default is \code{FALSE} so final reporting uses the DFI cutoffs that
-guided the ACO search.}
-
-\item{final_dfi_reps}{Optional replication count for final recalibration.
-\code{NULL} reuses \code{dfi_esem_reps}.}
-
-\item{dfi_roc_misspec_strength}{Strength of the structured misspecification
-alternatives used by \code{"semantic_roc_dfi"}.}
-
-\item{dfi_esem_strategy}{ESEM DFI simulation strategy. \code{"fixed"} preserves
-the fixed replication budget; \code{"adaptive"} can stop opt-in batched ESEM DFI
-calibration only after simulated cutoffs stay within \code{dfi_adaptive_tol}.}
-
-\item{dfi_adaptive_min_reps, dfi_adaptive_batch_reps, dfi_adaptive_tol, dfi_adaptive_stable_batches}{Opt-in adaptive ESEM DFI controls. \code{NULL} minimum reps uses a conservative
-floor relative to the requested ESEM DFI replication budget.}
-
-\item{dfi_fallback_policy}{DFI fallback policy. \code{"conservative"} preserves
-SEMANTICA's ordered fallback calibration ladder; \code{"requested_only"} avoids
-extra ESEM DFI fallback calibrations for explicitly requested non-\code{"auto"}
-modes if their requested DFI calibration is unusable.}
-
-\item{final_dddfi}{Logical; compute \code{dynamic::DDDFI()} for the final ESEM
-solution as an approximate-fit diagnostic. The default is \code{FALSE} so final
-reporting compares the selected solution to the DFI cutoffs already used by
-the search unless DDDFI is explicitly requested.}
-
-\item{final_dddfi_reps}{Replications for final DDDFI.}
-
-\item{final_dddfi_mad_target}{Which DDDFI MAD benchmark to use in the final
-verbose comparison (\code{"close"}, \code{"fair"}, or \code{"mediocre"}).}
-
-\item{final_equivtest}{Logical; compute \code{dynamic::equivTest()} as a final
-equivalence-testing companion diagnostic when available.}
-
-\item{loading_pattern}{Loading pattern for DFI fallback (\code{"varied"}, \code{"uniform"}).}
-
-\item{embed_reliability}{Spearman attenuation factor (Fix B).}
-
-\item{residual_inflation}{Residual inflation for DFI (Fix B).}
-
-\item{dfi_warmup_iters}{Warm-up iterations before DFI calibration.}
-
-\item{redundancy_threshold}{Semantic redundancy threshold.}
-
-\item{dup_threshold}{Near-duplicate detection threshold.}
-
-\item{htmt_threshold}{HTMT validity threshold.}
-
-\item{cohesion_quantile}{Deprecated inverse form of \code{cohesion_retention}.
-When supplied, retention is computed as \code{1 - cohesion_quantile}.}
-
-\item{cohesion_retention}{Proportion of generated items nearest their
-factor's within-similarity target retained as ACO candidates before the
-minimum-pool safeguard is applied. Higher values retain broader content.}
-
-\item{within_similarity_target}{Target within-factor semantic similarity.
-\code{NULL} estimates a dimension-specific target from the generated item pool.}
-
-\item{within_similarity_band}{Tolerance around \code{within_similarity_target}.}
-
-\item{facet_coverage_weight}{Soft weight rewarding coverage of distinct facets
-within each dimension.}
-
-\item{psychometric_guard_weight}{Soft penalty strength for ESEM solutions with
-weak loadings, very low AVE, high HTMT, or improper standardized parameters.}
-
-\item{psychometric_guard_min_ave, psychometric_guard_min_loading, psychometric_guard_min_primary_ge_50}{Minimum convergent-validity diagnostics used by the soft psychometric guard.}
-
-\item{pfa_mode}{Sample-free pseudo-factor-analysis mode. \code{"diagnostic"}
-(the default) reports PFA diagnostics without adding them to the ACO
-objective, \code{"objective"} includes PFA simple-structure diagnostics in the
-ACO objective, and \code{"off"} disables them.}
-
-\item{pfa_weight}{Weight for the PFA component in the semantic/PFA part of
-the ACO objective. The ESEM weight is applied after this composite is formed.}
-
-\item{pfa_extraction}{Extraction used for ACO PFA scoring (\code{"principal"} is
-fast and sample-free; \code{"ml"} uses covariance-matrix ML via \code{factanal}).}
-
-\item{pfa_final_extraction}{Extraction used for final reported PFA diagnostics.}
-
-\item{pfa_rotation}{Rotation for PFA diagnostics. \code{"target_oblique"} uses
-fully specified oblique target rotation when \code{GPArotation} is available;
-\code{"oblimin"} uses direct oblimin via \code{GPArotation}; \code{"promax"} is an
-uninformed oblique fallback, \code{"varimax"} is orthogonal, and \code{"none"} is
-unrotated.}
-
-\item{pfa_min_loading, pfa_min_margin}{Simple-structure thresholds for PFA.
-\code{pfa_min_margin = NULL} uses half of \code{pfa_min_loading}.}
-
-\item{pfa_unit_diagnostics}{Logical; compute sample-free PFA on averaged
-facet/unit embeddings when facet metadata are available.}
-
-\item{reference_rmsea_close, reference_rmsea_poor, reference_power, reference_alpha}{RMSEA-power settings used when \code{esem_sample_size = "auto"}.}
-
-\item{reference_max_n}{Maximum reference N searched by the RMSEA-power solver.}
-
-\item{semantic_n_sensitivity}{Logical; refit the final selected semantic-proxy
-ESEM over nearby reference-N anchors and report fit/structure stability.}
-
-\item{semantic_n_grid}{Optional integer grid for semantic proxy N-sensitivity.
-\code{NULL} derives the grid from the chosen semantic reference N.}
-
-\item{semantic_n_multipliers}{Multipliers applied to the reference N when
-\code{semantic_n_grid = NULL}.}
-
-\item{semantic_n_iter_max}{Iteration cap for final semantic proxy
-N-sensitivity refits.}
-
-\item{semantic_esem_score_mode}{ESEM score mode. \code{"current"} preserves the
-existing fit-index-weighted score; \code{"structure_weighted"} gives semantic
-factorial-structure diagnostics more weight.}
-
-\item{validation_n_diagnostic}{Logical; estimate a response-data planning N
-from a PFA-derived population using fast Wishart Monte Carlo ESEM refits.}
-
-\item{validation_n_reps}{Number of Monte Carlo replications per candidate N.}
-
-\item{validation_n_grid}{Optional integer grid of candidate validation sample
-sizes. \code{NULL} uses an adaptive indicators-per-N grid.}
-
-\item{validation_n_max}{Maximum candidate N for the validation-N diagnostic.}
-
-\item{validation_n_convergence, validation_n_max_heywood, validation_n_min_recovery, validation_n_max_loading_error}{Monte Carlo criteria for the recommended validation N.}
-
-\item{validation_n_min_dominance, validation_n_max_cross_error, validation_n_max_factor_cor_error}{Optional extra response-data planning criteria for dominance recovery,
-cross-loading recovery, and factor-correlation recovery. \code{NULL} reports
-the metric without using it to pass/fail the candidate N.}
-
-\item{sigmoid_center}{Sigmoid center for semantic scoring.}
-
-\item{elite_pareto_rerank}{Logical; use final elite-archive ESEM diagnostics
-to rerank solutions with a Pareto-style quality bonus.}
-
-\item{validation_data}{Optional item-response dataset for a final response-data
-ESEM validation fit using the selected items.}
-
-\item{validation_ordered}{Optional ordered item names for ordinal response-data
-validation.}
-
-\item{sigmoid_steepness}{Sigmoid steepness for semantic scoring.}
-
-\item{heuristic_beta}{Heuristic influence in ACO probability.}
-
-\item{archive_stable_window}{Iterations of stable archive to trigger early stop.}
-
-\item{pheromone_update}{Pheromone update mode (\code{"top_elite"}, \code{"best_ant"}).}
-
-\item{fixed_evaporation}{Fixed evaporation rate (NULL = adaptive).}
-
-\item{debug_mode}{Simplified debug settings.}
-
-\item{keep_solution_history}{Record evaluation history. Retained for
-backward compatibility; \code{FALSE} forces \code{history_mode = "none"}.}
-
-\item{history_mode}{History retention policy passed to \code{ACO_with_ESEM()}.
-This high-level pipeline defaults to \code{"summary"} to avoid retaining every
-ant evaluation; use \code{"full"} for legacy candidate-level traces.}
-
-\item{use_parallel}{Enable parallel processing.}
-
-\item{n.cores}{Requested number of parallel workers. Values greater than
-\code{2} are capped at two workers for resource-conscious execution.}
-
-\item{generate_plots}{Logical; generate diagnostic plots?}
-
-\item{interactive_mode}{\code{"2d"} or \code{"3d"} for Plot 9.}
-
-\item{save_plots}{Logical; save plots to disk?}
-
-\item{plot_out_dir}{Directory for saved plots.}
-
-\item{plot_device}{Image format for saved plots (e.g., \code{"png"}, \code{"pdf"}).}
-
-\item{plot_width}{Plot width in inches.}
-
-\item{plot_height}{Plot height in inches.}
-
-\item{plot_dpi}{Resolution for saved images.}
-
-\item{plot_before_path_model}{How to build Plot 10's BEFORE panel:
-\code{"proxy"} (default) uses a bounded sample-free proxy; \code{"refit"} opts into
-a new guarded full-pool ESEM estimation during plotting.}
-
-\item{plot_before_path_refit_max_items}{Maximum pool size for the optional
-Plot 10 BEFORE ESEM refit.}
-
-\item{plot_network_max_items}{Maximum number of BEFORE-pool items rendered
-in the semantic network plot. Selected items are always retained.}
-
-\item{plot_mds_max_items}{Maximum number of pool items included in the
-interactive MDS plot. Selected items are always retained.}
-
-\item{plot_path_proxy_max_items}{Maximum number of pool items represented in
-the fast BEFORE path-diagram proxy. Selected items are always retained.}
-
-\item{include_interactive_plot}{Logical; construct Plot 9's interactive MDS
-widget. Disable this when only static diagnostics are needed.}
-
-\item{plot_progress}{Logical; print per-plot elapsed-time progress.}
+\item{backend}{Generation backend (see \code{semantica_connect()}).}
+
+\item{candidate_items_per_factor}{Generated candidate items per factor.
+When explicitly supplied, this overrides nested dimension/facet item counts
+and is distributed across facets; when omitted, counts stored in \code{factors}
+keep precedence.}
+
+\item{items_per_factor}{Named integer vector of final selected items per
+factor. If \code{NULL}, defaults to 3 items per factor.}
+
+\item{generation_options}{Named list of generation and embedding options
+passed through to \code{semantica_pipeline()}, such as \code{embed_backend},
+\code{api_key}, \code{embed_api_key}, \code{chat_model}, \code{embed_model},
+\code{embed_batch_size}, \code{base_url}, \code{gguf_path}, \code{cosine_adjustment},
+\code{semantic_calibration}, \code{compute_cosine_sensitivity},
+\code{release_local_models}, \code{retain_embeddings}, \code{temperature}, \code{language},
+or \code{response_format}.}
+
+\item{optimization_options}{Named list of ACO/ESEM search controls passed to
+\code{ACO_with_ESEM()}, such as \code{ants}, \code{max.iter}, \code{esem_every},
+\code{run_esem_during_search}, \code{esem_weight}, \code{rotation}, \code{elite_k},
+\code{history_mode}, \code{use_parallel}, or \code{n.cores}.}
+
+\item{dfi_options}{Named list of dynamic-fit-index and semantic proxy
+calibration controls, such as \code{dfi_mode}, \code{dfi_reps},
+\code{dfi_esem_reps}, \code{final_dfi_recalibrate}, \code{final_dddfi},
+\code{final_equivtest}, \code{reference_rmsea_close}, \code{reference_rmsea_poor},
+or \code{semantic_n_sensitivity}.}
+
+\item{pfa_options}{Named list of sample-free PFA controls, such as
+\code{pfa_mode}, \code{pfa_weight}, \code{pfa_extraction}, \code{pfa_rotation},
+\code{pfa_min_loading}, \code{pfa_min_margin}, or \code{pfa_unit_diagnostics}.}
+
+\item{validation_options}{Named list of optional respondent-data validation
+and validation-sample-size planning controls, such as
+\code{validation_n_diagnostic}, \code{validation_n_reps}, \code{validation_data}, or
+\code{validation_ordered}.}
+
+\item{plot_options}{Named list of plotting controls. Use either legacy names
+(\code{generate_plots}, \code{save_plots}, \code{plot_out_dir}, \code{plot_device},
+\code{plot_width}, \code{plot_height}, \code{plot_dpi}, \code{include_interactive_plot}) or
+concise aliases (\code{generate}, \code{save}, \code{out_dir}, \code{device}, \code{width},
+\code{height}, \code{dpi}, \code{include_interactive}).}
 
 \item{verbose}{Print progress messages.}
 
-\item{...}{Additional arguments passed to \code{semantica_pipeline()}.}
+\item{...}{Backward-compatible legacy arguments. Any argument accepted by
+the previous long-form \code{semantica_full_pipeline()} signature can still be
+supplied by name here. Unknown named arguments are forwarded to
+\code{semantica_pipeline()} as generation options.}
 }
 \value{
 A named list containing:
@@ -511,21 +120,33 @@ Executes the complete psychometric scale construction workflow in a single
 function call: LLM item generation, semantic embedding, ACO-ESEM optimization
 with DFI calibration, and comprehensive diagnostic plotting.
 }
+\details{
+The compact interface is a wrapper around the original full-pipeline
+implementation. Option lists are resolved to the same internal arguments that
+were previously exposed one by one, so statistical defaults and returned
+objects are unchanged.
+
+Advanced users can still supply the previous long-form argument names
+directly through \code{...}, for example \code{n_per_factor}, \code{i.per.f}, \code{dfi_mode},
+\code{pfa_mode}, \code{generate_plots}, or \code{plot_out_dir}. Prefer the grouped option
+lists for new code because they keep routine calls focused on the scale
+specification and selection target.
+}
 \examples{
 \dontrun{
 # Requires valid API credentials or an available local backend.
 result <- semantica_full_pipeline(
-  backend = "openai",
   scale_name = "Cognitive Agility",
   scale_description = "Clear and adaptive thinking.",
   factors = list(
     Clarity = list(description = "Clear thinking.", n_items = 8L),
     Flexibility = list(description = "Adaptive thinking.", n_items = 8L)
   ),
-  i.per.f = c(Clarity = 3L, Flexibility = 3L),
-  ants = 20L,
-  max.iter = 10L,
-  generate_plots = TRUE,
+  backend = "openai",
+  candidate_items_per_factor = 8L,
+  items_per_factor = c(Clarity = 3L, Flexibility = 3L),
+  optimization_options = list(ants = 20L, max.iter = 10L),
+  plot_options = list(generate = TRUE),
   verbose = FALSE
 )
 }

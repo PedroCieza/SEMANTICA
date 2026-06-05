@@ -62,38 +62,40 @@ i_per_factor <- c(
 set.seed(123)
 
 result <- semantica_full_pipeline(
-  # LLM setup
-  backend       = "groq",
-  embed_backend = "openai",
-  api_key       = groq_key,
-  embed_api_key = openai_key,
-  chat_model    = "meta-llama/llama-4-scout-17b-16e-instruct",
-  embed_model   = "text-embedding-3-small",
-  temperature   = 1,
-
   # Scale specification
   scale_name = "Cognitive Agility",
   scale_description = paste(
     "A brief self-report scale for adaptive, organized,",
     "and flexible thinking in everyday problem solving."
   ),
-  factors      = factors,
-  n_per_factor = 10L,
-  i.per.f      = i_per_factor,
+  factors = factors,
+  backend = "groq",
+  candidate_items_per_factor = 10L,
+  items_per_factor = i_per_factor,
+
+  # LLM and embedding setup
+  generation_options = list(
+    embed_backend = "openai",
+    api_key = groq_key,
+    embed_api_key = openai_key,
+    chat_model = "meta-llama/llama-4-scout-17b-16e-instruct",
+    embed_model = "text-embedding-3-small",
+    temperature = 1
+  ),
 
   # Faster exploratory run
-  dfi_mode = "heuristic_semantic",
+  dfi_options = list(dfi_mode = "heuristic_semantic"),
 
   # ACO-ESEM search
-  ants                   = 50L,
-  max.iter               = 20L,
-  esem_every             = 10L,
-  run_esem_during_search = TRUE,
-  esem_weight            = 0.50,
-
-  # Parallelization request
-  use_parallel = TRUE,
-  n.cores      = 6L
+  optimization_options = list(
+    ants = 50L,
+    max.iter = 20L,
+    esem_every = 10L,
+    run_esem_during_search = TRUE,
+    esem_weight = 0.50,
+    use_parallel = TRUE,
+    n.cores = 6L
+  )
 )
 ```
 
@@ -112,15 +114,15 @@ names(result$plots)
 Notes on the main arguments:
 
 - `backend` controls the LLM used for item generation.
-- `embed_backend` controls the model provider used for embeddings. If `NULL`, SEMANTICA uses the same backend as `backend`.
+- `generation_options$embed_backend` controls the model provider used for embeddings. If omitted, SEMANTICA uses the same backend as `backend`.
 - `factors` is the named construct specification used as prompt material.
-- `n_per_factor` controls the generated candidate item count per factor.
-- `i.per.f` controls the number of selected final items per factor.
-- `dfi_mode = "heuristic_semantic"` skips simulated DFI calibration for a faster exploratory run.
-- `run_esem_during_search = TRUE` allows ESEM diagnostics to guide the ACO search.
-- `esem_weight` controls how much the ESEM component contributes to the search objective.
-- `generate_plots` defaults to `TRUE`, so diagnostic plot objects are returned in `result$plots`.
-- `final_dddfi` defaults to `FALSE`, so final DDDFI cutoffs are not computed unless explicitly requested.
+- `candidate_items_per_factor` controls the generated candidate item count per factor.
+- `items_per_factor` controls the number of selected final items per factor.
+- `dfi_options = list(dfi_mode = "heuristic_semantic")` skips simulated DFI calibration for a faster exploratory run.
+- `optimization_options$run_esem_during_search = TRUE` allows ESEM diagnostics to guide the ACO search.
+- `optimization_options$esem_weight` controls how much the ESEM component contributes to the search objective.
+- Plots default to `TRUE`; use `plot_options = list(generate = FALSE)` to skip plot generation.
+- `dfi_options$final_dddfi` defaults to `FALSE`, so final DDDFI cutoffs are not computed unless explicitly requested.
 
 ## Complete HEXACO Example
 

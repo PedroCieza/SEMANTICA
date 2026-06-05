@@ -139,20 +139,19 @@ prepared <- semantica_pipeline(
 )
 ```
 
-### `semantica_full_pipeline(...)`
+### `semantica_full_pipeline(scale_name, scale_description, factors, backend, ...)`
 
-Runs generation, embedding, ACO-ESEM optimization, and optional plotting in one call. Its arguments combine the generation, embedding, optimizer, and visualization controls.
+Runs generation, embedding, ACO-ESEM optimization, and optional plotting in one call. The visible interface keeps the construct definition and selection targets up front; generation, optimizer, DFI/PFA, validation, and plotting controls live in named option lists. Legacy long-form arguments are still accepted by name through `...`.
 
 ```r
 full <- semantica_full_pipeline(
-  backend = "openai",
   scale_name = "Cognitive Agility",
   scale_description = "Adaptive and clear cognitive self-regulation.",
   factors = factors,
-  i.per.f = c(Clarity = 4, Flexibility = 4),
-  ants = 60,
-  max.iter = 30,
-  generate_plots = TRUE
+  backend = "openai",
+  items_per_factor = c(Clarity = 4, Flexibility = 4),
+  optimization_options = list(ants = 60, max.iter = 30),
+  plot_options = list(generate = TRUE)
 )
 ```
 

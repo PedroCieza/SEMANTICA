@@ -441,44 +441,43 @@ optimization, reporting outputs, and optional visualization. It accepts:
 
 | Argument group | Arguments |
 |---|---|
-| Connection and generation | `backend`, `embed_backend`, `api_key`, `embed_api_key`, `chat_model`, `embed_model`, `embed_batch_size`, `base_url`, `gguf_path`, `scale_name`, `scale_description`, `factors`, `n_per_factor`, `n_per_factor_override`, `...` |
-| Semantic input preparation | `cosine_adjustment`, `semantic_calibration`, `compute_cosine_sensitivity`, `release_local_models`, `retain_embeddings` |
-| Selection target | `i.per.f` |
-| ACO-ESEM and validation | All applicable `ACO_with_ESEM()` controls in the Optimization Argument Catalogue, except `cosine_sim_matrix`, `df`, `model_type`, and `original_data`; additionally `pfa_unit_diagnostics` controls facet/unit-level PFA summaries. |
-| Plot generation | `generate_plots`, `interactive_mode`, `save_plots`, `plot_out_dir`, `plot_device`, `plot_width`, `plot_height`, `plot_dpi`, `plot_before_path_model`, `plot_before_path_refit_max_items`, `plot_network_max_items`, `plot_mds_max_items`, `plot_path_proxy_max_items`, `include_interactive_plot`, `plot_progress` |
+| Scale specification | `scale_name`, `scale_description`, `factors`, `backend`, `candidate_items_per_factor`, `items_per_factor` |
+| Generation and embedding | `generation_options = list(embed_backend, api_key, embed_api_key, chat_model, embed_model, embed_batch_size, base_url, gguf_path, cosine_adjustment, semantic_calibration, compute_cosine_sensitivity, release_local_models, retain_embeddings, ...)` |
+| ACO-ESEM search | `optimization_options = list(ants, max.iter, esem_every, run_esem_during_search, esem_weight, rotation, elite_k, history_mode, use_parallel, n.cores, ...)` |
+| DFI and semantic proxy calibration | `dfi_options = list(dfi_mode, dfi_reps, dfi_esem_reps, final_dfi_recalibrate, final_dddfi, reference_rmsea_close, semantic_n_sensitivity, ...)` |
+| PFA diagnostics | `pfa_options = list(pfa_mode, pfa_weight, pfa_extraction, pfa_rotation, pfa_unit_diagnostics, ...)` |
+| Validation planning | `validation_options = list(validation_n_diagnostic, validation_n_reps, validation_data, validation_ordered, ...)` |
+| Plot generation | `plot_options = list(generate, interactive_mode, save, out_dir, device, width, height, dpi, include_interactive, ...)` |
 | Runtime output | `verbose` |
+
+For backward compatibility, legacy long-form names such as `n_per_factor`,
+`i.per.f`, `dfi_mode`, and `generate_plots` can still be supplied directly by
+name through `...`.
 
 ```{r full-workflow}
 full <- semantica_full_pipeline(
-  backend = "openai",
-  embed_backend = NULL,
-  api_key = Sys.getenv("OPENAI_API_KEY"),
-  embed_api_key = NULL,
-  chat_model = NULL,
-  embed_model = "text-embedding-3-small",
-  embed_batch_size = 64L,
-  base_url = NULL,
-  gguf_path = NULL,
-  cosine_adjustment = "none",
-  semantic_calibration = NULL,
-  compute_cosine_sensitivity = TRUE,
-  release_local_models = FALSE,
-  retain_embeddings = TRUE,
   scale_name = "Cognitive Agility",
   scale_description = "Clear and adaptive cognitive self-regulation.",
   factors = factors,
-  n_per_factor = 12L,
-  n_per_factor_override = TRUE,
-  i.per.f = c(Clarity = 4L, Flexibility = 4L),
-  ants = 60L,
-  max.iter = 30L,
-  run_esem_during_search = TRUE,
-  dfi_mode = "auto",
-  pfa_unit_diagnostics = TRUE,
-  history_mode = "summary",
-  generate_plots = TRUE,
-  include_interactive_plot = TRUE,
-  save_plots = FALSE,
+  backend = "openai",
+  candidate_items_per_factor = 12L,
+  items_per_factor = c(Clarity = 4L, Flexibility = 4L),
+  generation_options = list(
+    api_key = Sys.getenv("OPENAI_API_KEY"),
+    embed_model = "text-embedding-3-small",
+    embed_batch_size = 64L,
+    cosine_adjustment = "none",
+    retain_embeddings = TRUE
+  ),
+  optimization_options = list(
+    ants = 60L,
+    max.iter = 30L,
+    run_esem_during_search = TRUE,
+    history_mode = "summary"
+  ),
+  dfi_options = list(dfi_mode = "auto"),
+  pfa_options = list(pfa_unit_diagnostics = TRUE),
+  plot_options = list(generate = TRUE, include_interactive = TRUE, save = FALSE),
   verbose = TRUE
 )
 ```

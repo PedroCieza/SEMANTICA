@@ -2,71 +2,276 @@ if (!exists("%||%", mode = "function")) {
   `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0L) a else b
 }
 
+.semantica_option_list <- function(options, arg_name, allowed = NULL,
+                                   aliases = NULL, allow_unknown = FALSE) {
+  if (is.null(options)) return(list())
+  if (!is.list(options)) {
+    stop(sprintf("`%s` must be a named list.", arg_name), call. = FALSE)
+  }
+  if (length(options) == 0L) return(list())
+
+  option_names <- names(options)
+  if (is.null(option_names) || any(!nzchar(option_names))) {
+    stop(sprintf("All entries in `%s` must be named.", arg_name), call. = FALSE)
+  }
+
+  if (!is.null(aliases)) {
+    for (alias in names(aliases)) {
+      if (alias %in% names(options)) {
+        target <- aliases[[alias]]
+        if (!(target %in% names(options))) {
+          options[target] <- options[alias]
+        }
+        options[alias] <- NULL
+      }
+    }
+  }
+
+  if (!allow_unknown) {
+    unknown <- setdiff(names(options), allowed)
+    if (length(unknown) > 0L) {
+      stop(
+        sprintf(
+          "Unknown option(s) in `%s`: %s.",
+          arg_name,
+          paste(unknown, collapse = ", ")
+        ),
+        call. = FALSE
+      )
+    }
+  }
+
+  options
+}
+
+.semantica_merge_options <- function(...) {
+  merged <- list()
+  for (options in list(...)) {
+    if (length(options) == 0L) next
+    for (name in names(options)) {
+      merged[name] <- options[name]
+    }
+  }
+  merged
+}
+
+.semantica_full_pipeline_resolve_args <- function(
+    scale_name, scale_description, factors, backend,
+    candidate_items_per_factor, candidate_items_per_factor_supplied,
+    items_per_factor, generation_options, optimization_options, dfi_options,
+    pfa_options, validation_options, plot_options, verbose, legacy_args) {
+  generation_options <- .semantica_option_list(
+    generation_options,
+    "generation_options",
+    aliases = c(candidate_items_per_factor = "n_per_factor"),
+    allow_unknown = TRUE
+  )
+
+  optimization_options <- .semantica_option_list(
+    optimization_options,
+    "optimization_options",
+    allowed = c(
+      "i.per.f", "ants", "max.iter", "esem_every",
+      "run_esem_during_search", "max_total_iter", "max_esem_fits",
+      "esem_weight", "esem_failure_policy", "esem_sample_size", "elite_k",
+      "esem_eval_top_k", "fast_esem", "fast_esem_iter_max",
+      "full_esem_iter_max", "rotation", "rotation_args", "data_type",
+      "target_loadings", "target_factor_cors", "loading_pattern",
+      "redundancy_threshold", "dup_threshold", "htmt_threshold",
+      "cohesion_quantile", "cohesion_retention", "within_similarity_target",
+      "within_similarity_band", "facet_coverage_weight",
+      "psychometric_guard_weight", "psychometric_guard_min_ave",
+      "psychometric_guard_min_loading",
+      "psychometric_guard_min_primary_ge_50", "sigmoid_center",
+      "sigmoid_steepness", "heuristic_beta", "elite_pareto_rerank",
+      "archive_stable_window", "pheromone_update", "fixed_evaporation",
+      "debug_mode", "keep_solution_history", "history_mode",
+      "use_parallel", "n.cores", "cfa_every", "cfa_weight",
+      "cfa_sample_size"
+    )
+  )
+
+  dfi_options <- .semantica_option_list(
+    dfi_options,
+    "dfi_options",
+    allowed = c(
+      "dfi_reps", "dfi_level", "dfi_criterion", "dfi_mode",
+      "dfi_esem_reps", "dfi_search_reps", "final_dfi_recalibrate",
+      "final_dfi_reps", "dfi_roc_misspec_strength", "dfi_esem_strategy",
+      "dfi_adaptive_min_reps", "dfi_adaptive_batch_reps",
+      "dfi_adaptive_tol", "dfi_adaptive_stable_batches",
+      "dfi_fallback_policy", "final_dddfi", "final_dddfi_reps",
+      "final_dddfi_mad_target", "final_equivtest", "embed_reliability",
+      "residual_inflation", "dfi_warmup_iters", "reference_rmsea_close",
+      "reference_rmsea_poor", "reference_power", "reference_alpha",
+      "reference_max_n", "semantic_n_sensitivity", "semantic_n_grid",
+      "semantic_n_multipliers", "semantic_n_iter_max",
+      "semantic_esem_score_mode"
+    )
+  )
+
+  pfa_options <- .semantica_option_list(
+    pfa_options,
+    "pfa_options",
+    allowed = c(
+      "pfa_mode", "pfa_weight", "pfa_extraction",
+      "pfa_final_extraction", "pfa_rotation", "pfa_min_loading",
+      "pfa_min_margin", "pfa_unit_diagnostics"
+    )
+  )
+
+  validation_options <- .semantica_option_list(
+    validation_options,
+    "validation_options",
+    allowed = c(
+      "validation_n_diagnostic", "validation_n_reps", "validation_n_grid",
+      "validation_n_max", "validation_n_convergence",
+      "validation_n_max_heywood", "validation_n_min_recovery",
+      "validation_n_max_loading_error", "validation_n_min_dominance",
+      "validation_n_max_cross_error", "validation_n_max_factor_cor_error",
+      "validation_data", "validation_ordered"
+    )
+  )
+
+  plot_options <- .semantica_option_list(
+    plot_options,
+    "plot_options",
+    allowed = c(
+      "generate_plots", "interactive_mode", "save_plots", "plot_out_dir",
+      "plot_device", "plot_width", "plot_height", "plot_dpi",
+      "plot_before_path_model", "plot_before_path_refit_max_items",
+      "plot_network_max_items", "plot_mds_max_items",
+      "plot_path_proxy_max_items", "include_interactive_plot",
+      "plot_progress"
+    ),
+    aliases = c(
+      generate = "generate_plots",
+      save = "save_plots",
+      out_dir = "plot_out_dir",
+      device = "plot_device",
+      width = "plot_width",
+      height = "plot_height",
+      dpi = "plot_dpi",
+      before_path_model = "plot_before_path_model",
+      before_path_refit_max_items = "plot_before_path_refit_max_items",
+      network_max_items = "plot_network_max_items",
+      mds_max_items = "plot_mds_max_items",
+      path_proxy_max_items = "plot_path_proxy_max_items",
+      include_interactive = "include_interactive_plot",
+      progress = "plot_progress"
+    )
+  )
+
+  legacy_args <- .semantica_option_list(
+    legacy_args,
+    "...",
+    aliases = c(candidate_items_per_factor = "n_per_factor",
+                items_per_factor = "i.per.f"),
+    allow_unknown = TRUE
+  )
+
+  if (candidate_items_per_factor_supplied &&
+      "n_per_factor" %in% names(legacy_args)) {
+    stop(
+      "Use either `candidate_items_per_factor` or legacy `n_per_factor`, not both.",
+      call. = FALSE
+    )
+  }
+  if (!is.null(items_per_factor) && "i.per.f" %in% names(legacy_args)) {
+    stop(
+      "Use either `items_per_factor` or legacy `i.per.f`, not both.",
+      call. = FALSE
+    )
+  }
+
+  n_override <- candidate_items_per_factor_supplied ||
+    "n_per_factor" %in% names(generation_options) ||
+    "n_per_factor" %in% names(legacy_args)
+
+  core_args <- list(
+    backend = backend,
+    scale_name = scale_name,
+    scale_description = scale_description,
+    factors = factors,
+    n_per_factor = candidate_items_per_factor,
+    n_per_factor_override = n_override,
+    i.per.f = items_per_factor,
+    verbose = verbose
+  )
+
+  .semantica_merge_options(
+    core_args,
+    generation_options,
+    optimization_options,
+    dfi_options,
+    pfa_options,
+    validation_options,
+    plot_options,
+    legacy_args
+  )
+}
+
 #' One-Call SEMANTICA Pipeline: Generation to ACO-ESEM to Visualization
 #'
 #' Executes the complete psychometric scale construction workflow in a single
 #' function call: LLM item generation, semantic embedding, ACO-ESEM optimization
 #' with DFI calibration, and comprehensive diagnostic plotting.
 #'
-#' @inheritParams ACO_with_ESEM
-#' @inheritParams semantica_plot_all
-#' @param backend Generation backend (see `semantica_connect()`).
-#' @param embed_backend Embedding backend. `NULL` = same as backend.
-#' @param api_key,embed_api_key API keys for generation/embedding.
-#' @param chat_model,embed_model Override default model names.
-#' @param embed_batch_size Items per embedding backend request. Lower values
-#'   reduce peak request memory for local embedding models.
-#' @param base_url,gguf_path Server overrides or GGUF path.
-#' @param cosine_adjustment Embedding cosine preprocessing passed to
-#'   `semantica_pipeline()`.
-#' @param semantic_calibration Optional matrix or function used to calibrate
-#'   the semantic cosine proxy before ACO/ESEM.
-#' @param compute_cosine_sensitivity Logical; compute the optional
-#'   none-versus-mean-centered embedding diagnostic.
-#' @param release_local_models Logical; release cached Python llama.cpp models
-#'   after item generation and embedding to reduce retained RAM in one-shot
-#'   local workflows.
-#' @param retain_embeddings Logical; retain dense embeddings in the returned
-#'   generation object. Keep this `TRUE` when `pfa_unit_diagnostics` is needed.
 #' @param scale_name Short name of the scale.
 #' @param scale_description One-paragraph construct description.
 #' @param factors Named list of factor specs (`$description`, `$n_items`, etc.).
-#' @param n_per_factor Retained items per factor. When explicitly supplied,
-#'   this overrides nested dimension/facet item counts and is distributed
-#'   across facets; when omitted, counts stored in `factors` keep precedence.
-#' @param n_per_factor_override Logical; override nested factor/facet counts
-#'   using `n_per_factor`. Defaults to `TRUE` only when `n_per_factor` is
-#'   explicitly supplied.
-#' @param i.per.f Named integer vector of items to select per factor for ACO.
-#'   If `NULL`, defaults to 3 items per factor.
-#' @param generate_plots Logical; generate diagnostic plots?
-#' @param save_plots Logical; save plots to disk?
-#' @param plot_device Image format for saved plots (e.g., `"png"`, `"pdf"`).
-#' @param plot_width  Plot width in inches.
-#' @param plot_height Plot height in inches.
-#' @param plot_dpi    Resolution for saved images.
-#' @param plot_out_dir Directory for saved plots.
-#' @param plot_before_path_model How to build Plot 10's BEFORE panel:
-#'   `"proxy"` (default) uses a bounded sample-free proxy; `"refit"` opts into
-#'   a new guarded full-pool ESEM estimation during plotting.
-#' @param plot_before_path_refit_max_items Maximum pool size for the optional
-#'   Plot 10 BEFORE ESEM refit.
-#' @param plot_network_max_items Maximum number of BEFORE-pool items rendered
-#'   in the semantic network plot. Selected items are always retained.
-#' @param plot_mds_max_items Maximum number of pool items included in the
-#'   interactive MDS plot. Selected items are always retained.
-#' @param plot_path_proxy_max_items Maximum number of pool items represented in
-#'   the fast BEFORE path-diagram proxy. Selected items are always retained.
-#' @param include_interactive_plot Logical; construct Plot 9's interactive MDS
-#'   widget. Disable this when only static diagnostics are needed.
-#' @param plot_progress Logical; print per-plot elapsed-time progress.
-#' @param pfa_unit_diagnostics Logical; compute sample-free PFA on averaged
-#'   facet/unit embeddings when facet metadata are available.
-#' @param history_mode History retention policy passed to `ACO_with_ESEM()`.
-#'   This high-level pipeline defaults to `"summary"` to avoid retaining every
-#'   ant evaluation; use `"full"` for legacy candidate-level traces.
+#' @param backend Generation backend (see `semantica_connect()`).
+#' @param candidate_items_per_factor Generated candidate items per factor.
+#'   When explicitly supplied, this overrides nested dimension/facet item counts
+#'   and is distributed across facets; when omitted, counts stored in `factors`
+#'   keep precedence.
+#' @param items_per_factor Named integer vector of final selected items per
+#'   factor. If `NULL`, defaults to 3 items per factor.
+#' @param generation_options Named list of generation and embedding options
+#'   passed through to `semantica_pipeline()`, such as `embed_backend`,
+#'   `api_key`, `embed_api_key`, `chat_model`, `embed_model`,
+#'   `embed_batch_size`, `base_url`, `gguf_path`, `cosine_adjustment`,
+#'   `semantic_calibration`, `compute_cosine_sensitivity`,
+#'   `release_local_models`, `retain_embeddings`, `temperature`, `language`,
+#'   or `response_format`.
+#' @param optimization_options Named list of ACO/ESEM search controls passed to
+#'   `ACO_with_ESEM()`, such as `ants`, `max.iter`, `esem_every`,
+#'   `run_esem_during_search`, `esem_weight`, `rotation`, `elite_k`,
+#'   `history_mode`, `use_parallel`, or `n.cores`.
+#' @param dfi_options Named list of dynamic-fit-index and semantic proxy
+#'   calibration controls, such as `dfi_mode`, `dfi_reps`,
+#'   `dfi_esem_reps`, `final_dfi_recalibrate`, `final_dddfi`,
+#'   `final_equivtest`, `reference_rmsea_close`, `reference_rmsea_poor`,
+#'   or `semantic_n_sensitivity`.
+#' @param pfa_options Named list of sample-free PFA controls, such as
+#'   `pfa_mode`, `pfa_weight`, `pfa_extraction`, `pfa_rotation`,
+#'   `pfa_min_loading`, `pfa_min_margin`, or `pfa_unit_diagnostics`.
+#' @param validation_options Named list of optional respondent-data validation
+#'   and validation-sample-size planning controls, such as
+#'   `validation_n_diagnostic`, `validation_n_reps`, `validation_data`, or
+#'   `validation_ordered`.
+#' @param plot_options Named list of plotting controls. Use either legacy names
+#'   (`generate_plots`, `save_plots`, `plot_out_dir`, `plot_device`,
+#'   `plot_width`, `plot_height`, `plot_dpi`, `include_interactive_plot`) or
+#'   concise aliases (`generate`, `save`, `out_dir`, `device`, `width`,
+#'   `height`, `dpi`, `include_interactive`).
 #' @param verbose Print progress messages.
-#' @param ... Additional arguments passed to `semantica_pipeline()`.
+#' @param ... Backward-compatible legacy arguments. Any argument accepted by
+#'   the previous long-form `semantica_full_pipeline()` signature can still be
+#'   supplied by name here. Unknown named arguments are forwarded to
+#'   `semantica_pipeline()` as generation options.
+#'
+#' @details
+#' The compact interface is a wrapper around the original full-pipeline
+#' implementation. Option lists are resolved to the same internal arguments that
+#' were previously exposed one by one, so statistical defaults and returned
+#' objects are unchanged.
+#'
+#' Advanced users can still supply the previous long-form argument names
+#' directly through `...`, for example `n_per_factor`, `i.per.f`, `dfi_mode`,
+#' `pfa_mode`, `generate_plots`, or `plot_out_dir`. Prefer the grouped option
+#' lists for new code because they keep routine calls focused on the scale
+#' specification and selection target.
 #'
 #' @return A named list containing:
 #'   * `generation`: Output from `semantica_pipeline()`.
@@ -106,22 +311,58 @@ if (!exists("%||%", mode = "function")) {
 #' \dontrun{
 #' # Requires valid API credentials or an available local backend.
 #' result <- semantica_full_pipeline(
-#'   backend = "openai",
 #'   scale_name = "Cognitive Agility",
 #'   scale_description = "Clear and adaptive thinking.",
 #'   factors = list(
 #'     Clarity = list(description = "Clear thinking.", n_items = 8L),
 #'     Flexibility = list(description = "Adaptive thinking.", n_items = 8L)
 #'   ),
-#'   i.per.f = c(Clarity = 3L, Flexibility = 3L),
-#'   ants = 20L,
-#'   max.iter = 10L,
-#'   generate_plots = TRUE,
+#'   backend = "openai",
+#'   candidate_items_per_factor = 8L,
+#'   items_per_factor = c(Clarity = 3L, Flexibility = 3L),
+#'   optimization_options = list(ants = 20L, max.iter = 10L),
+#'   plot_options = list(generate = TRUE),
 #'   verbose = FALSE
 #' )
 #' }
 semantica_full_pipeline <- function(
-    # LLM & Embedding Setup
+  scale_name, scale_description, factors,
+  backend = "openai",
+  candidate_items_per_factor = 15L,
+  items_per_factor = NULL,
+  generation_options = list(),
+  optimization_options = list(),
+  dfi_options = list(),
+  pfa_options = list(),
+  validation_options = list(),
+  plot_options = list(),
+  verbose = TRUE,
+  ...
+) {
+  candidate_items_per_factor_supplied <- !missing(candidate_items_per_factor)
+  args <- .semantica_full_pipeline_resolve_args(
+    scale_name = scale_name,
+    scale_description = scale_description,
+    factors = factors,
+    backend = backend,
+    candidate_items_per_factor = candidate_items_per_factor,
+    candidate_items_per_factor_supplied = candidate_items_per_factor_supplied,
+    items_per_factor = items_per_factor,
+    generation_options = generation_options,
+    optimization_options = optimization_options,
+    dfi_options = dfi_options,
+    pfa_options = pfa_options,
+    validation_options = validation_options,
+    plot_options = plot_options,
+    verbose = verbose,
+    legacy_args = list(...)
+  )
+
+  do.call(.semantica_full_pipeline_impl, args)
+}
+
+.semantica_full_pipeline_impl <- function(
+  # LLM & Embedding Setup
   backend = "openai", embed_backend = NULL, api_key = NULL, embed_api_key = NULL,
   chat_model = NULL, embed_model = NULL, embed_batch_size = 64L,
   base_url = NULL, gguf_path = NULL,

@@ -50,19 +50,41 @@
 
 library(SEMANTICA)
 
-# This example uses Groq for item generation and OpenAI for embeddings.
-# Put keys in your .Renviron file, not below. A convenient interactive method is:
+# This example uses Groq for item generation. Embeddings default to a free
+# local open-source backend (Ollama with nomic-embed-text), so OpenAI credits
+# are not required unless you explicitly choose `embedding_mode <- "openai"`.
+# Put API keys in your .Renviron file, not below. A convenient interactive
+# method is:
 #
 #   install.packages("usethis")             # once only
 #   usethis::edit_r_environ()               # opens a private environment file
 #
-# Then add these lines, using your own current keys:
+# Then add these lines, using your own current keys. OPENAI_API_KEY is optional
+# and only needed for `embedding_mode <- "openai"`:
 #
 #   GROQ_API_KEY=your_groq_key_here
 #   OPENAI_API_KEY=your_openai_key_here
 #
 # Save .Renviron and restart R before running this script.
-required_keys <- c("GROQ_API_KEY", "OPENAI_API_KEY")
+#
+# Free local embedding modes:
+#
+# - "ollama": recommended on Windows. Install Ollama, then run:
+#             ollama pull nomic-embed-text
+#             Keep the Ollama app open or run `ollama serve`.
+#
+# - "python_hf": uses Hugging Face sentence-transformers locally.
+#                One-time setup:
+#                semantica_setup_conda("semantica")
+#                Restart R, then run semantica_activate_conda("semantica").
+#
+# - "openai": paid API fallback using text-embedding-3-small.
+embedding_mode <- "ollama"
+
+required_keys <- c(
+  "GROQ_API_KEY",
+  if (identical(embedding_mode, "openai")) "OPENAI_API_KEY"
+)
 missing_keys <- required_keys[
   !nzchar(Sys.getenv(required_keys, unset = ""))
 ]
@@ -75,9 +97,35 @@ if (length(missing_keys) > 0L) {
   )
 }
 
-# Keys are deliberately not assigned to visible R objects. Because `api_key`
-# and `embed_api_key` are left as NULL in the pipeline call below, SEMANTICA
-# retrieves GROQ_API_KEY and OPENAI_API_KEY from the environment when needed.
+# The Groq key is deliberately not assigned to a visible R object. Because
+# `api_key` is left as NULL in the pipeline call below, SEMANTICA retrieves
+# GROQ_API_KEY from the environment when needed.
+#
+# Build embedding options once and reuse them in the pipeline call. Local modes
+# use no OpenAI credits.
+if (identical(embedding_mode, "ollama")) {
+  embedding_generation_options <- list(
+    embed_backend = "ollama",
+    embed_model = "nomic-embed-text",
+    embed_batch_size = 1L
+  )
+} else if (identical(embedding_mode, "python_hf")) {
+  semantica_activate_conda("semantica")
+  embedding_generation_options <- list(
+    embed_backend = "python_hf",
+    embed_model = "sentence-transformers/all-MiniLM-L6-v2",
+    embed_batch_size = 1L
+  )
+} else if (identical(embedding_mode, "openai")) {
+  embedding_generation_options <- list(
+    embed_backend = "openai",
+    embed_api_key = NULL,
+    embed_model = "text-embedding-3-small",
+    embed_batch_size = 64L
+  )
+} else {
+  stop("Unknown embedding_mode. Use 'ollama', 'python_hf', or 'openai'.")
+}
 
 
 # ==============================================================================
@@ -630,11 +678,11 @@ if (example_mode == "quick") {
   final_equivtest_for_run <- TRUE
 }
 
-# Setting `n_per_factor_override = TRUE` in the pipeline call below tells
-# SEMANTICA to allocate `generated_items_per_dimension` across the four facets
-# in each included dimension. Alternatively, remove `n_per_factor` from the
-# call and set `n_per_factor_override = FALSE` to respect each dimension's
-# stored `n_items` value independently.
+# Setting `generation_options = list(n_per_factor_override = TRUE)` in the
+# pipeline call below tells SEMANTICA to allocate `candidate_items_per_factor`
+# across the four facets in each included dimension. Alternatively, omit
+# `candidate_items_per_factor` and set `n_per_factor_override = FALSE` to
+# respect each dimension's stored `n_items` value independently.
 run_plan <- data.frame(
   dimension = names(factors_for_run),
   generated_target = generated_items_per_dimension,
@@ -654,22 +702,6 @@ set.seed(2026)
 
 hexaco_reduction <- semantica_full_pipeline(
   # ---------------------------------------------------------------------------
-  # Backends and credentials
-  # ---------------------------------------------------------------------------
-  # Generation and embedding can come from different services. API keys are
-  # NULL so that SEMANTICA reads GROQ_API_KEY and OPENAI_API_KEY from .Renviron.
-  backend = "groq",
-  embed_backend = "openai",
-  api_key = NULL,
-  embed_api_key = NULL,
-
-  # `NULL` uses SEMANTICA's backend default chat model. Specify a model string
-  # here only if it is available from your provider at the time of execution.
-  chat_model = NULL,
-  embed_model = "text-embedding-3-small",
-  embed_batch_size = 64L,
-
-  # ---------------------------------------------------------------------------
   # Construct and item pool
   # ---------------------------------------------------------------------------
   scale_name = "HEXACO-S",
@@ -678,105 +710,136 @@ hexaco_reduction <- semantica_full_pipeline(
     "adapted for English-speaking adult populations."
   ),
   factors = factors_for_run,
+  backend = "groq",
 
-  # `n_per_factor` is the generated candidate count per included dimension.
-  # It differs from `i.per.f`, which is the final selected item count.
-  n_per_factor = generated_items_per_dimension,
-  n_per_factor_override = TRUE,
-  i.per.f = items_to_select,
-
-  # These arguments are forwarded to item generation through `...`.
-  language = "English",
-  item_style = "first-person declarative sentence",
-  response_format = "5-point Likert (1 = Strongly disagree to 5 = Strongly agree)",
-  temperature = 0.80,
-  overgenerate = 2.0,
-  max_retries = 5L,
-  global_forbidden_max = 40L,
+  # `candidate_items_per_factor` is the generated candidate count per included
+  # dimension. It differs from `items_per_factor`, which is the final selected
+  # item count.
+  candidate_items_per_factor = generated_items_per_dimension,
+  items_per_factor = items_to_select,
 
   # ---------------------------------------------------------------------------
-  # Embedding-derived semantic proxy
+  # Generation, embedding, and semantic proxy preparation
   # ---------------------------------------------------------------------------
-  # "none" uses standard cosine similarity. A later sensitivity analysis can
-  # compare mean-centered cosine without changing the primary result.
-  cosine_adjustment = "none",
-  semantic_calibration = NULL,
-  compute_cosine_sensitivity = TRUE,
-  retain_embeddings = TRUE,
+  # Generation and embedding can come from different services. `api_key = NULL`
+  # tells SEMANTICA to read GROQ_API_KEY from .Renviron. Embedding settings are
+  # supplied by `embedding_generation_options`, defined near the top of this
+  # script.
+  generation_options = c(
+    list(
+      api_key = NULL,
+
+      # `NULL` uses SEMANTICA's backend default chat model. Specify a model string
+      # here only if it is available from your provider at the time of execution.
+      chat_model = NULL,
+      n_per_factor_override = TRUE,
+
+      # These arguments are forwarded to item generation.
+      language = "English",
+      item_style = "first-person declarative sentence",
+      response_format = "5-point Likert (1 = Strongly disagree to 5 = Strongly agree)",
+      temperature = 0.80,
+      overgenerate = 2.0,
+      max_retries = 5L,
+      global_forbidden_max = 40L,
+
+      # "none" uses standard cosine similarity. A later sensitivity analysis can
+      # compare mean-centered cosine without changing the primary result.
+      cosine_adjustment = "none",
+      semantic_calibration = NULL,
+      compute_cosine_sensitivity = TRUE,
+      retain_embeddings = TRUE
+    ),
+    embedding_generation_options
+  ),
 
   # ---------------------------------------------------------------------------
   # ACO search and ESEM guidance
   # ---------------------------------------------------------------------------
-  ants = ants_for_run,
-  max.iter = max_iterations_for_run,
-  esem_every = 10L,
-  run_esem_during_search = TRUE,
-  esem_weight = 0.30,
-  esem_eval_top_k = esem_top_k_for_run,
-  elite_k = 10L,
-  elite_pareto_rerank = TRUE,
-  esem_failure_policy = "stop",
+  optimization_options = list(
+    ants = ants_for_run,
+    max.iter = max_iterations_for_run,
+    esem_every = 10L,
+    run_esem_during_search = TRUE,
+    esem_weight = 0.30,
+    esem_eval_top_k = esem_top_k_for_run,
+    elite_k = 10L,
+    elite_pareto_rerank = TRUE,
+    esem_failure_policy = "stop",
 
-  # ---------------------------------------------------------------------------
-  # ESEM model specification and proxy reference sample size
-  # ---------------------------------------------------------------------------
-  rotation = "target",
-  rotation_args = list(),
-  data_type = "continuous",
-  target_loadings = 0.60,
-  esem_sample_size = "auto",
-  reference_rmsea_close = 0.05,
-  reference_rmsea_poor = 0.06,
-  reference_power = 0.80,
-  reference_alpha = 0.05,
-  reference_max_n = 5000L,
+    # ESEM model specification
+    rotation = "target",
+    rotation_args = list(),
+    data_type = "continuous",
+    target_loadings = 0.60,
+    esem_sample_size = "auto",
+
+    # Semantic/psychometric safeguards
+    within_similarity_target = 0.30,
+    within_similarity_band = 0.06,
+    facet_coverage_weight = 0.10,
+    psychometric_guard_weight = 0.75,
+    psychometric_guard_min_ave = 0.30,
+    psychometric_guard_min_loading = 0.40,
+    psychometric_guard_min_primary_ge_50 = 0.70,
+    redundancy_threshold = 0.85,
+    dup_threshold = 0.90,
+    htmt_threshold = 0.85,
+
+    # Computation
+    pheromone_update = "top_elite",
+    use_parallel = TRUE,
+    n.cores = 2L  # SEMANTICA limits parallel work to two workers.
+  ),
 
   # ---------------------------------------------------------------------------
   # DFI calibration and reference-N sensitivity
   # ---------------------------------------------------------------------------
   # In "quick" mode, heuristic semantic cutoffs make the first run faster.
   # In "full" mode, semantic ROC DFI performs simulation-based calibration.
-  dfi_mode = dfi_mode_for_run,
-  dfi_esem_reps = NULL,
-  dfi_level = 1,
-  dfi_criterion = "Sensitivity",
-  dfi_warmup_iters = 5L,
-  dfi_roc_misspec_strength = 1.0,
-  final_dfi_recalibrate = final_dfi_recalibrate_for_run,
-  semantic_n_sensitivity = semantic_n_sensitivity_for_run,
-  semantic_n_grid = NULL,
-  semantic_n_multipliers = c(0.50, 1.00, 1.50, 2.00),
-  semantic_n_iter_max = 800L,
-  semantic_esem_score_mode = "structure_weighted",
+  dfi_options = list(
+    reference_rmsea_close = 0.05,
+    reference_rmsea_poor = 0.06,
+    reference_power = 0.80,
+    reference_alpha = 0.05,
+    reference_max_n = 5000L,
+    dfi_mode = dfi_mode_for_run,
+    dfi_esem_reps = NULL,
+    dfi_level = 1,
+    dfi_criterion = "Sensitivity",
+    dfi_warmup_iters = 5L,
+    dfi_roc_misspec_strength = 1.0,
+    final_dfi_recalibrate = final_dfi_recalibrate_for_run,
+    semantic_n_sensitivity = semantic_n_sensitivity_for_run,
+    semantic_n_grid = NULL,
+    semantic_n_multipliers = c(0.50, 1.00, 1.50, 2.00),
+    semantic_n_iter_max = 800L,
+    semantic_esem_score_mode = "structure_weighted",
 
-  # Keep proxy unreliability assumptions neutral in this initial analysis.
-  # These can be changed in a planned sensitivity analysis.
-  embed_reliability = 1.00,
-  residual_inflation = 0.00,
+    # Keep proxy unreliability assumptions neutral in this initial analysis.
+    # These can be changed in a planned sensitivity analysis.
+    embed_reliability = 1.00,
+    residual_inflation = 0.00,
+
+    # Companion final diagnostic. It is disabled during the quick test and
+    # enabled in full mode through `final_equivtest_for_run`.
+    final_dddfi = FALSE,
+    final_equivtest = final_equivtest_for_run
+  ),
 
   # ---------------------------------------------------------------------------
-  # Sample-free PFA diagnostic and semantic/psychometric safeguards
+  # Sample-free PFA diagnostic
   # ---------------------------------------------------------------------------
-  pfa_mode = "diagnostic",
-  pfa_weight = 0.20,
-  pfa_extraction = "principal",
-  pfa_final_extraction = "ml",
-  pfa_rotation = "oblimin",
-  pfa_min_loading = 0.40,
-  pfa_min_margin = 0.20,
-  pfa_unit_diagnostics = TRUE,
-
-  within_similarity_target = 0.30,
-  within_similarity_band = 0.06,
-  facet_coverage_weight = 0.10,
-  psychometric_guard_weight = 0.75,
-  psychometric_guard_min_ave = 0.30,
-  psychometric_guard_min_loading = 0.40,
-  psychometric_guard_min_primary_ge_50 = 0.70,
-
-  redundancy_threshold = 0.85,
-  dup_threshold = 0.90,
-  htmt_threshold = 0.85,
+  pfa_options = list(
+    pfa_mode = "diagnostic",
+    pfa_weight = 0.20,
+    pfa_extraction = "principal",
+    pfa_final_extraction = "ml",
+    pfa_rotation = "oblimin",
+    pfa_min_loading = 0.40,
+    pfa_min_margin = 0.20,
+    pfa_unit_diagnostics = TRUE
+  ),
 
   # ---------------------------------------------------------------------------
   # Optional respondent-sample planning and validation
@@ -784,35 +847,31 @@ hexaco_reduction <- semantica_full_pipeline(
   # These are disabled in the first test. Enable `validation_n_diagnostic`
   # when you want a Monte Carlo planning diagnostic, and supply
   # `validation_data` only when real respondent data are available.
-  validation_n_diagnostic = FALSE,
-  validation_n_reps = 20L,
-  validation_n_grid = NULL,
-  validation_n_max = 2000L,
-  validation_n_convergence = 0.90,
-  validation_n_max_heywood = 0.05,
-  validation_n_min_recovery = 0.90,
-  validation_n_max_loading_error = 0.10,
-  validation_n_min_dominance = NULL,
-  validation_n_max_cross_error = NULL,
-  validation_n_max_factor_cor_error = NULL,
-  validation_data = NULL,
-  validation_ordered = NULL,
-
-  # Companion final diagnostic. It is disabled during the quick test and
-  # enabled in full mode through `final_equivtest_for_run`.
-  final_dddfi = FALSE,
-  final_equivtest = final_equivtest_for_run,
+  validation_options = list(
+    validation_n_diagnostic = FALSE,
+    validation_n_reps = 20L,
+    validation_n_grid = NULL,
+    validation_n_max = 2000L,
+    validation_n_convergence = 0.90,
+    validation_n_max_heywood = 0.05,
+    validation_n_min_recovery = 0.90,
+    validation_n_max_loading_error = 0.10,
+    validation_n_min_dominance = NULL,
+    validation_n_max_cross_error = NULL,
+    validation_n_max_factor_cor_error = NULL,
+    validation_data = NULL,
+    validation_ordered = NULL
+  ),
 
   # ---------------------------------------------------------------------------
-  # Computation and plots
+  # Plots
   # ---------------------------------------------------------------------------
-  pheromone_update = "top_elite",
-  use_parallel = TRUE,
-  n.cores = 2L,  # SEMANTICA limits parallel work to two workers.
-  generate_plots = TRUE,
-  interactive_mode = "2d",
-  include_interactive_plot = FALSE,
-  save_plots = FALSE,
+  plot_options = list(
+    generate = TRUE,
+    interactive_mode = "2d",
+    include_interactive = FALSE,
+    save = FALSE
+  ),
   verbose = TRUE
 )
 
@@ -855,7 +914,7 @@ if (!is.null(hexaco_reduction$plots)) {
 
 
 # ==============================================================================
-# 7. Optional export: avoid repeating paid API generation and embedding calls
+# 7. Optional export: avoid repeating generation and embedding
 # ==============================================================================
 
 # Set to TRUE only when you want CSV files in your current working directory.
@@ -867,7 +926,8 @@ if (export_generated_pool) {
   output_prefix <- paste0("hexaco_semantica_", example_mode)
   semantica_export(hexaco_reduction$generation, prefix = output_prefix)
 
-  # Later, reload the generated/embedded pool without calling either API:
+  # Later, reload the generated/embedded pool without repeating generation or
+  # embedding:
   # reloaded <- semantica_reload(output_prefix, i.per.f = items_to_select)
 }
 
@@ -881,15 +941,16 @@ if (export_generated_pool) {
 #
 # 2. Item-pool size:
 #    Increase/decrease `generated_items_per_dimension`. More candidates improve
-#    content exploration but increase generation, embedding, and search costs.
+#    content exploration but increase generation calls, local embedding runtime,
+#    and search cost.
 #
 # 3. Short-form length:
 #    Change `items_to_select`. Retaining more items can protect content breadth,
 #    but changes the ESEM specification and interpretation.
 #
 # 4. Backends:
-#    Change `backend`, `embed_backend`, and model names according to providers
-#    you can access. Keep credentials in environment variables.
+#    Change `backend`, `embedding_mode`, and model names according to providers
+#    and local tools you can access. Keep credentials in environment variables.
 #
 # 5. Computation budget:
 #    Raise `ants_for_run` and `max_iterations_for_run` for more extensive
