@@ -165,6 +165,7 @@ result <- semantica_full_pipeline(
     api_key = groq_key,
     chat_model = "meta-llama/llama-4-scout-17b-16e-instruct", # content generation
     temperature = 1, # generation variability
+    language = "English", # item text language
 
     # Embeddings, option 1: Ollama, free and local.
     embed_backend = "ollama",

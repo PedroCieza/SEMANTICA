@@ -80,7 +80,8 @@ result <- semantica_full_pipeline(
     embed_api_key = openai_key,
     chat_model = "meta-llama/llama-4-scout-17b-16e-instruct",
     embed_model = "text-embedding-3-small",
-    temperature = 1
+    temperature = 1,
+    language = "English"
   ),
 
   # Faster exploratory run
