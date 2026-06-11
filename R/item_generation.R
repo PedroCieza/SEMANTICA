@@ -306,6 +306,211 @@ print.semantica_session <- function(x, ...) {
 }
 
 #' @keywords internal
+.semantica_request_clock <- new.env(parent = emptyenv())
+
+#' @keywords internal
+.semantica_resp_header <- function(resp, name) {
+  headers <- tryCatch(httr2::resp_headers(resp), error = function(e) NULL)
+  if (is.null(headers) || length(headers) == 0L) return(NULL)
+  idx <- which(tolower(names(headers)) == tolower(name))
+  if (length(idx) == 0L) return(NULL)
+  headers[[idx[[1L]]]]
+}
+
+#' @keywords internal
+.semantica_parse_wait_s <- function(x) {
+  if (is.null(x) || length(x) == 0L || is.na(x[[1L]])) return(NA_real_)
+  x <- trimws(as.character(x[[1L]]))
+  if (!nzchar(x)) return(NA_real_)
+
+  numeric_wait <- suppressWarnings(as.numeric(x))
+  if (is.finite(numeric_wait)) return(max(0, numeric_wait))
+
+  date_wait <- suppressWarnings(as.POSIXct(x, format = "%a, %d %b %Y %H:%M:%S", tz = "GMT"))
+  if (!is.na(date_wait)) return(max(0, as.numeric(difftime(date_wait, Sys.time(), units = "secs"))))
+  date_wait <- suppressWarnings(as.POSIXct(x, format = "%a, %d %b %Y %H:%M:%S %Z", tz = "GMT"))
+  if (!is.na(date_wait)) return(max(0, as.numeric(difftime(date_wait, Sys.time(), units = "secs"))))
+
+  matches <- gregexpr("[0-9]+(?:\\.[0-9]+)?\\s*(ms|s|m|h)", tolower(x), perl = TRUE)
+  parts <- regmatches(tolower(x), matches)[[1L]]
+  if (length(parts) == 0L || identical(parts, character(0L))) return(NA_real_)
+
+  total <- 0
+  for (part in parts) {
+    value <- suppressWarnings(as.numeric(sub("^([0-9]+(?:\\.[0-9]+)?).*", "\\1", part, perl = TRUE)))
+    unit <- sub("^[0-9]+(?:\\.[0-9]+)?\\s*", "", part, perl = TRUE)
+    if (!is.finite(value)) next
+    total <- total + switch(unit, ms = value / 1000, s = value, m = value * 60, h = value * 3600, 0)
+  }
+  if (is.finite(total) && total >= 0) total else NA_real_
+}
+
+#' @keywords internal
+.semantica_default_request_spacing_s <- function(session, rate_limit_margin = 0.85) {
+  margin <- suppressWarnings(as.numeric(rate_limit_margin[[1L]]))
+  if (!is.finite(margin) || margin <= 0 || margin > 1) margin <- 0.85
+  backend <- tolower(session$backend %||% "")
+  model <- tolower(session$chat_model %||% "")
+  chat_url <- tolower(session$chat_url %||% "")
+
+  if (backend %in% c("ollama", "llamacpp", "python_hf", "python_llamacpp") ||
+      grepl("localhost|127\\.0\\.0\\.1", chat_url)) {
+    return(0)
+  }
+
+  if (identical(backend, "groq") || grepl("groq\\.com", chat_url)) {
+    rpm <- if (grepl("qwen/qwen3-32b", model)) 60 else 30
+    return((60 / rpm) / margin)
+  }
+
+  0
+}
+
+#' @keywords internal
+.semantica_normalize_request_spacing_s <- function(request_spacing_s, session, rate_limit_margin = 0.85) {
+  if (is.null(request_spacing_s)) return(0)
+  if (is.character(request_spacing_s) &&
+      length(request_spacing_s) == 1L &&
+      identical(tolower(trimws(request_spacing_s)), "auto")) {
+    return(.semantica_default_request_spacing_s(session, rate_limit_margin))
+  }
+  out <- suppressWarnings(as.numeric(request_spacing_s[[1L]]))
+  if (!is.finite(out) || out < 0) stop("'request_spacing_s' must be a non-negative number or \"auto\".")
+  out
+}
+
+#' @keywords internal
+.semantica_wait_for_request_slot <- function(session, request_spacing_s, rate_limit_margin = 0.85) {
+  spacing <- .semantica_normalize_request_spacing_s(request_spacing_s, session, rate_limit_margin)
+  if (!is.finite(spacing) || spacing <= 0) return(invisible(0))
+
+  key <- paste(session$backend %||% "", session$chat_url %||% "", session$chat_model %||% "", sep = "|")
+  last <- get0(key, envir = .semantica_request_clock, inherits = FALSE, ifnotfound = NA_real_)
+  now <- as.numeric(Sys.time())
+  if (is.finite(last)) {
+    wait_s <- spacing - (now - last)
+    if (is.finite(wait_s) && wait_s > 0) Sys.sleep(wait_s)
+  }
+  assign(key, as.numeric(Sys.time()), envir = .semantica_request_clock)
+  invisible(spacing)
+}
+
+#' @keywords internal
+.semantica_normalize_retry_policy <- function(rate_limit_policy) {
+  if (is.null(rate_limit_policy)) return("auto")
+  match.arg(as.character(rate_limit_policy[[1L]]), c("auto", "none"))
+}
+
+#' @keywords internal
+.semantica_retry_wait_s <- function(resp = NULL, retry_index = 1L,
+                                   api_initial_wait_s = 1,
+                                   api_max_wait_s = 120) {
+  initial <- suppressWarnings(as.numeric(api_initial_wait_s[[1L]]))
+  if (!is.finite(initial) || initial < 0) initial <- 1
+  max_wait <- suppressWarnings(as.numeric(api_max_wait_s[[1L]]))
+  if (!is.finite(max_wait) || max_wait < 0) max_wait <- 120
+
+  header_wait <- NA_real_
+  if (!is.null(resp)) {
+    retry_after <- .semantica_parse_wait_s(.semantica_resp_header(resp, "retry-after"))
+    reset_tokens <- .semantica_parse_wait_s(.semantica_resp_header(resp, "x-ratelimit-reset-tokens"))
+    reset_requests <- .semantica_parse_wait_s(.semantica_resp_header(resp, "x-ratelimit-reset-requests"))
+    if (is.finite(retry_after)) {
+      header_wait <- retry_after
+    } else if (is.finite(reset_tokens)) {
+      header_wait <- reset_tokens
+    } else if (is.finite(reset_requests)) {
+      header_wait <- reset_requests
+    }
+  }
+
+  if (is.finite(header_wait)) {
+    wait_s <- header_wait
+  } else {
+    retry_index <- suppressWarnings(as.integer(retry_index[[1L]]))
+    if (!is.finite(retry_index) || retry_index < 1L) retry_index <- 1L
+    wait_s <- initial * (2 ^ min(retry_index - 1L, 10L))
+  }
+
+  wait_s <- min(max_wait, max(0, wait_s))
+  jitter <- stats::runif(1L, min = 0, max = min(1, max(0, wait_s * 0.15)))
+  wait_s + jitter
+}
+
+#' @keywords internal
+.semantica_perform_request <- function(session, req,
+                                       rate_limit_policy = "auto",
+                                       api_max_retries = 6L,
+                                       api_initial_wait_s = 1,
+                                       api_max_wait_s = 120,
+                                       api_retry_statuses = c(408L, 409L, 429L, 500L, 502L, 503L, 504L),
+                                       request_spacing_s = 0,
+                                       rate_limit_margin = 0.85,
+                                       verbose = session$verbose) {
+  rate_limit_policy <- .semantica_normalize_retry_policy(rate_limit_policy)
+  api_max_retries <- suppressWarnings(as.integer(api_max_retries[[1L]]))
+  if (!is.finite(api_max_retries) || api_max_retries < 0L) stop("'api_max_retries' must be a non-negative integer.")
+  retry_statuses <- suppressWarnings(as.integer(api_retry_statuses))
+  retry_statuses <- retry_statuses[is.finite(retry_statuses)]
+
+  attempt <- 1L
+  repeat {
+    .semantica_wait_for_request_slot(session, request_spacing_s, rate_limit_margin)
+    resp <- tryCatch(
+      req |> httr2::req_error(is_error = function(r) FALSE) |> httr2::req_perform(),
+      error = function(e) e
+    )
+
+    retries_used <- attempt - 1L
+    can_retry <- identical(rate_limit_policy, "auto") && retries_used < api_max_retries
+
+    if (inherits(resp, "error")) {
+      if (can_retry) {
+        wait_s <- .semantica_retry_wait_s(NULL, attempt, api_initial_wait_s, api_max_wait_s)
+        if (isTRUE(verbose)) {
+          message(sprintf("  API transport error. Waiting %.1fs before retry %d/%d: %s",
+                          wait_s, retries_used + 1L, api_max_retries, conditionMessage(resp)))
+        }
+        Sys.sleep(wait_s)
+        attempt <- attempt + 1L
+        next
+      }
+      stop(conditionMessage(resp), call. = FALSE)
+    }
+
+    status <- httr2::resp_status(resp)
+    if (!identical(rate_limit_policy, "auto") || !(status %in% retry_statuses) || !can_retry) {
+      return(resp)
+    }
+
+    wait_s <- .semantica_retry_wait_s(resp, attempt, api_initial_wait_s, api_max_wait_s)
+    if (isTRUE(verbose)) {
+      message(sprintf("  API status %d. Waiting %.1fs before retry %d/%d.",
+                      status, wait_s, retries_used + 1L, api_max_retries))
+    }
+    Sys.sleep(wait_s)
+    attempt <- attempt + 1L
+  }
+}
+
+#' @keywords internal
+.semantica_error_message <- function(prefix, parsed, resp) {
+  status <- tryCatch(httr2::resp_status(resp), error = function(e) NA_integer_)
+  status_desc <- tryCatch(httr2::resp_status_desc(resp), error = function(e) NULL)
+  err <- parsed$error
+  msg <- NULL
+  if (is.list(err)) {
+    msg <- err$message %||% err$type %||% unlist(err, use.names = FALSE)
+  } else if (!is.null(err)) {
+    msg <- err
+  }
+  msg <- msg %||% status_desc %||% status
+  if (is.list(msg)) msg <- unlist(msg, use.names = FALSE)
+  msg <- paste(as.character(msg), collapse = " ")
+  paste0(prefix, msg)
+}
+
+#' @keywords internal
 .ping_backend <- function(session) {
   proto <- session$protocol
   if (proto == "python_hf") { reticulate::import("transformers"); return(TRUE) }
@@ -320,12 +525,17 @@ print.semantica_session <- function(x, ...) {
     resp <- tryCatch(httr2::request(ping_url) |> httr2::req_timeout(8L) |> httr2::req_perform(), error = function(e) NULL)
     if (!is.null(resp) && httr2::resp_status(resp) < 400L) return(TRUE)
   }
-  .call_chat(session, messages = list(list(role = "user", content = "ping")), max_tokens = 1L)
+  .call_chat(session, messages = list(list(role = "user", content = "ping")), max_tokens = 1L,
+             rate_limit_policy = "none", api_max_retries = 0L)
   TRUE
 }
 
 #' @keywords internal
-.call_chat <- function(session, messages, max_tokens = 2048L, temperature = 0.7, system_prompt = NULL) {
+.call_chat <- function(session, messages, max_tokens = 2048L, temperature = 0.7, system_prompt = NULL,
+                       rate_limit_policy = "auto", api_max_retries = 6L,
+                       api_initial_wait_s = 1, api_max_wait_s = 120,
+                       api_retry_statuses = c(408L, 409L, 429L, 500L, 502L, 503L, 504L),
+                       request_spacing_s = 0, rate_limit_margin = 0.85) {
   proto <- session$protocol
   if (proto == "python_hf") return(.py_hf_chat(session, messages, max_tokens, temperature, system_prompt))
   if (proto == "python_llamacpp") return(.py_llamacpp_chat(session, messages, max_tokens, temperature, system_prompt))
@@ -333,9 +543,15 @@ print.semantica_session <- function(x, ...) {
   if (proto == "anthropic") {
     body <- list(model = session$chat_model, max_tokens = max_tokens, messages = messages)
     if (!is.null(system_prompt)) body$system <- system_prompt
-    resp <- .build_request(session, session$chat_url, body) |> httr2::req_error(is_error = function(r) FALSE) |> httr2::req_perform()
+    resp <- .semantica_perform_request(
+      session, .build_request(session, session$chat_url, body),
+      rate_limit_policy = rate_limit_policy, api_max_retries = api_max_retries,
+      api_initial_wait_s = api_initial_wait_s, api_max_wait_s = api_max_wait_s,
+      api_retry_statuses = api_retry_statuses, request_spacing_s = request_spacing_s,
+      rate_limit_margin = rate_limit_margin
+    )
     parsed <- httr2::resp_body_json(resp, simplifyVector = FALSE)
-    if (httr2::resp_status(resp) >= 400L) stop("Anthropic error: ", parsed$error$message %||% httr2::resp_status(resp))
+    if (httr2::resp_status(resp) >= 400L) stop(.semantica_error_message("Anthropic error: ", parsed, resp))
     txt <- parsed$content[[1L]]$text
     if (is.null(txt) || length(txt) == 0L) stop("Empty Anthropic response.")
     return(as.character(txt))
@@ -346,9 +562,15 @@ print.semantica_session <- function(x, ...) {
   body <- list(model = session$chat_model, messages = msgs, max_tokens = max_tokens, temperature = temperature)
   if (proto == "ollama") { body$stream <- FALSE; body$options <- list(temperature = temperature, num_predict = max_tokens); body$max_tokens <- NULL }
 
-  resp <- .build_request(session, session$chat_url, body) |> httr2::req_error(is_error = function(r) FALSE) |> httr2::req_perform()
+  resp <- .semantica_perform_request(
+    session, .build_request(session, session$chat_url, body),
+    rate_limit_policy = rate_limit_policy, api_max_retries = api_max_retries,
+    api_initial_wait_s = api_initial_wait_s, api_max_wait_s = api_max_wait_s,
+    api_retry_statuses = api_retry_statuses, request_spacing_s = request_spacing_s,
+    rate_limit_margin = rate_limit_margin
+  )
   parsed <- httr2::resp_body_json(resp, simplifyVector = FALSE)
-  if (httr2::resp_status(resp) >= 400L) stop("LLM API error: ", parsed$error$message %||% parsed$error %||% httr2::resp_status(resp))
+  if (httr2::resp_status(resp) >= 400L) stop(.semantica_error_message("LLM API error: ", parsed, resp))
   txt <- if (proto == "ollama") parsed$message$content else parsed$choices[[1L]]$message$content
   if (is.null(txt) || length(txt) == 0L) stop("Empty response from backend '", session$backend, "'.")
   as.character(txt)
@@ -785,6 +1007,22 @@ semantica_standardize_item_metadata <- function(x, id_col = NULL, dimension_col 
 #' @param global_forbidden_max Maximum number of previously generated items to
 #'   include as anti-duplicate examples in subsequent prompts.
 #' @param temperature      LLM temperature.
+#' @param rate_limit_policy Transport retry policy. `"auto"` retries temporary
+#'   API rate limits and transient server errors using provider headers and
+#'   exponential backoff; `"none"` preserves fail-fast behavior.
+#' @param api_max_retries Maximum number of transport-level retries for one LLM
+#'   request. These retries do not consume `max_retries`, which remains reserved
+#'   for short or unusable LLM content.
+#' @param api_initial_wait_s,api_max_wait_s Initial and maximum wait, in seconds,
+#'   for exponential backoff when a provider does not return retry timing.
+#' @param api_retry_statuses HTTP status codes treated as temporary transport
+#'   failures when `rate_limit_policy = "auto"`.
+#' @param request_spacing_s Minimum seconds between chat request starts for the
+#'   same backend/model. `NULL` uses `"auto"` when `rate_limit_policy = "auto"`
+#'   and no spacing when `rate_limit_policy = "none"`. Use `"auto"` explicitly
+#'   for conservative backend-specific spacing.
+#' @param rate_limit_margin Fraction of an auto-detected request rate to use
+#'   when `request_spacing_s = "auto"`.
 #' @param verbose          Print progress.
 #' @return Tibble with legacy columns (`item_id`, `factor`, `item_text`,
 #'   `attempt`) and facet-aware columns (`ID`, `Dimension`, `Facet`, `item`).
@@ -810,9 +1048,20 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
                                      language = "English", n_per_factor = NULL,
                                      n_per_factor_override = !is.null(n_per_factor),
                                      overgenerate = 2.0, max_retries = 3L,
-                                     global_forbidden_max = 40L, temperature = 0.8, verbose = TRUE) {
+                                     global_forbidden_max = 40L, temperature = 0.8, verbose = TRUE,
+                                     rate_limit_policy = c("auto", "none"),
+                                     api_max_retries = 6L,
+                                     api_initial_wait_s = 1,
+                                     api_max_wait_s = 120,
+                                     api_retry_statuses = c(408L, 409L, 429L, 500L, 502L, 503L, 504L),
+                                     request_spacing_s = NULL,
+                                     rate_limit_margin = 0.85) {
   if (!inherits(session, "semantica_session")) stop("'session' must be created with semantica_connect().")
   if (!is.list(factors) || is.null(names(factors))) stop("'factors' must be a named list.")
+  rate_limit_policy <- .semantica_normalize_retry_policy(rate_limit_policy)
+  if (is.null(request_spacing_s)) {
+    request_spacing_s <- if (identical(rate_limit_policy, "auto")) "auto" else 0
+  }
   if (!is.numeric(overgenerate) || length(overgenerate) != 1L || !is.finite(overgenerate) || overgenerate <= 0) {
     stop("'overgenerate' must be a positive finite number.")
   }
@@ -823,6 +1072,17 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
   if (length(global_forbidden_max) != 1L || is.na(global_forbidden_max) || global_forbidden_max < 0L) {
     stop("'global_forbidden_max' must be a non-negative integer.")
   }
+  api_max_retries <- suppressWarnings(as.integer(api_max_retries[[1L]]))
+  if (!is.finite(api_max_retries) || api_max_retries < 0L) stop("'api_max_retries' must be a non-negative integer.")
+  api_initial_wait_s <- suppressWarnings(as.numeric(api_initial_wait_s[[1L]]))
+  if (!is.finite(api_initial_wait_s) || api_initial_wait_s < 0) stop("'api_initial_wait_s' must be a non-negative number.")
+  api_max_wait_s <- suppressWarnings(as.numeric(api_max_wait_s[[1L]]))
+  if (!is.finite(api_max_wait_s) || api_max_wait_s < 0) stop("'api_max_wait_s' must be a non-negative number.")
+  rate_limit_margin <- suppressWarnings(as.numeric(rate_limit_margin[[1L]]))
+  if (!is.finite(rate_limit_margin) || rate_limit_margin <= 0 || rate_limit_margin > 1) {
+    stop("'rate_limit_margin' must be a number greater than 0 and no greater than 1.")
+  }
+  .semantica_normalize_request_spacing_s(request_spacing_s, session, rate_limit_margin)
 
   generation_plan <- .expand_generation_plan(factors, n_per_factor, n_per_factor_override)
   factor_names <- unique(vapply(generation_plan, `[[`, character(1L), "dimension"))
@@ -862,7 +1122,14 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
       raw <- tryCatch(
         .call_chat(session, messages = list(list(role="user", content=user_prompt)),
                    max_tokens = max(256L, request_n * 90L), temperature = temperature,
-                   system_prompt = system_prompt),
+                   system_prompt = system_prompt,
+                   rate_limit_policy = rate_limit_policy,
+                   api_max_retries = api_max_retries,
+                   api_initial_wait_s = api_initial_wait_s,
+                   api_max_wait_s = api_max_wait_s,
+                   api_retry_statuses = api_retry_statuses,
+                   request_spacing_s = request_spacing_s,
+                   rate_limit_margin = rate_limit_margin),
         error = function(e) {
           last_error <<- conditionMessage(e)
           if (verbose) message(sprintf("    Attempt %d failed for %s/%s: %s", attempt, unit$dimension, unit$facet, last_error))

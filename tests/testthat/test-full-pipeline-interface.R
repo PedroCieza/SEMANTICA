@@ -12,7 +12,11 @@ test_that("full pipeline option groups resolve to legacy arguments", {
     generation_options = list(
       embed_backend = "openai",
       candidate_items_per_factor = 12L,
-      temperature = 0.7
+      temperature = 0.7,
+      rate_limit_policy = "auto",
+      api_max_retries = 8L,
+      api_max_wait_s = 180,
+      request_spacing_s = "auto"
     ),
     optimization_options = list(
       ants = 12L,
@@ -32,6 +36,10 @@ test_that("full pipeline option groups resolve to legacy arguments", {
   expect_equal(args$i.per.f, c(Clarity = 3L))
   expect_equal(args$embed_backend, "openai")
   expect_equal(args$temperature, 0.7)
+  expect_equal(args$rate_limit_policy, "auto")
+  expect_equal(args$api_max_retries, 8L)
+  expect_equal(args$api_max_wait_s, 180)
+  expect_equal(args$request_spacing_s, "auto")
   expect_equal(args$ants, 12L)
   expect_false(args$use_parallel)
   expect_equal(args$dfi_mode, "heuristic_semantic")
@@ -126,4 +134,28 @@ test_that("non-generation option groups reject unknown names", {
     ),
     "Unknown option"
   )
+})
+
+test_that("rate limit helpers parse wait durations and choose safe auto spacing", {
+  expect_equal(SEMANTICA:::.semantica_parse_wait_s("2"), 2)
+  expect_equal(SEMANTICA:::.semantica_parse_wait_s("2m3.5s"), 123.5)
+  expect_equal(SEMANTICA:::.semantica_parse_wait_s("250ms"), 0.25)
+  expect_true(is.na(SEMANTICA:::.semantica_parse_wait_s("")))
+
+  groq_session <- list(
+    backend = "groq",
+    chat_url = "https://api.groq.com/openai/v1/chat/completions",
+    chat_model = "llama-3.3-70b-versatile"
+  )
+  local_session <- list(
+    backend = "ollama",
+    chat_url = "http://localhost:11434/api/chat",
+    chat_model = "llama3.2"
+  )
+
+  expect_equal(
+    SEMANTICA:::.semantica_default_request_spacing_s(groq_session, 0.85),
+    (60 / 30) / 0.85
+  )
+  expect_equal(SEMANTICA:::.semantica_default_request_spacing_s(local_session, 0.85), 0)
 })

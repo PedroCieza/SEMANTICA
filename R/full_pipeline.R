@@ -233,7 +233,8 @@ if (!exists("%||%", mode = "function")) {
 #'   `embed_batch_size`, `base_url`, `gguf_path`, `cosine_adjustment`,
 #'   `semantic_calibration`, `compute_cosine_sensitivity`,
 #'   `release_local_models`, `retain_embeddings`, `temperature`, `language`,
-#'   or `response_format`.
+#'   `response_format`, `rate_limit_policy`, `api_max_retries`,
+#'   `api_max_wait_s`, or `request_spacing_s`.
 #' @param optimization_options Named list of ACO/ESEM search controls passed to
 #'   `ACO_with_ESEM()`, such as `ants`, `max.iter`, `esem_every`,
 #'   `run_esem_during_search`, `esem_weight`, `rotation`, `elite_k`,

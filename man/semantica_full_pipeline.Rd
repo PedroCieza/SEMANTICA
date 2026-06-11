@@ -44,7 +44,8 @@ passed through to \code{semantica_pipeline()}, such as \code{embed_backend},
 \code{embed_batch_size}, \code{base_url}, \code{gguf_path}, \code{cosine_adjustment},
 \code{semantic_calibration}, \code{compute_cosine_sensitivity},
 \code{release_local_models}, \code{retain_embeddings}, \code{temperature}, \code{language},
-or \code{response_format}.}
+\code{response_format}, \code{rate_limit_policy}, \code{api_max_retries},
+\code{api_max_wait_s}, or \code{request_spacing_s}.}
 
 \item{optimization_options}{Named list of ACO/ESEM search controls passed to
 \code{ACO_with_ESEM()}, such as \code{ants}, \code{max.iter}, \code{esem_every},
