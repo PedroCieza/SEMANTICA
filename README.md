@@ -537,10 +537,3 @@ The GitHub repository also includes `CITATION.cff`, which enables GitHub's
 **Cite this repository** interface. Cite the specific software version used in
 your analysis.
 
-Software citation does not replace citation of the statistical or psychometric
-methods used in a study. The package therefore provides a dedicated
-`vignette("methodological-foundations", package = "SEMANTICA")` that maps the
-main calculations and interpretation rules to their peer-reviewed foundations.
-It also distinguishes literature-derived methods from SEMANTICA-specific
-decision policies and from sample-free semantic-proxy adaptations, so users do
-not accidentally attribute an original package heuristic to an external paper.
