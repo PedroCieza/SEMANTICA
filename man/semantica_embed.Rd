@@ -12,6 +12,9 @@ semantica_embed(
   id_col = "item_id",
   batch_size = 64L,
   normalize = TRUE,
+  cache = TRUE,
+  cache_dir = NULL,
+  cache_namespace = NULL,
   verbose = TRUE
 )
 }
@@ -30,6 +33,12 @@ semantica_embed(
 
 \item{normalize}{L2-normalise vectors.}
 
+\item{cache}{Use the persistent content-addressed embedding cache.}
+
+\item{cache_dir}{Cache directory; \code{NULL} uses an OS-appropriate SEMANTICA cache.}
+
+\item{cache_namespace}{Optional analyst-defined namespace included in cache keys.}
+
 \item{verbose}{Print progress.}
 }
 \value{
@@ -38,6 +47,19 @@ List: \verb{$embeddings}, \verb{$items_tbl}, \verb{$embed_model}, \verb{$embed_d
 \description{
 Extract dense embeddings for all generated items
 }
+\section{Side effects}{
+
+May call remote embedding APIs or local Python models and may read/write the
+persistent content-addressed embedding cache. Cache writes are RNG-neutral.
+}
+
+\section{Reproducibility}{
+
+Embedding diagnostics record the resolved model/task/device information that is
+available. A stable remote model name may still be a mutable provider alias;
+cache reuse preserves the exact vectors previously stored for that cache key.
+}
+
 \examples{
 \dontrun{
 session <- semantica_connect("openai")

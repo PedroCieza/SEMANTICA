@@ -1,0 +1,15 @@
+test_that("ESEM cadence resolver always returns an integer scalar", {
+  fixed <- SEMANTICA:::.semantica_resolve_esem_interval(10L, 0.80, mode = "fixed")
+  adaptive <- SEMANTICA:::.semantica_resolve_esem_interval(10L, 0.80, mode = "adaptive")
+  adaptive_na <- SEMANTICA:::.semantica_resolve_esem_interval(10L, NA_real_, mode = "adaptive")
+
+  expect_identical(fixed, 10L)
+  expect_identical(adaptive, 8L)
+  expect_identical(adaptive_na, 10L)
+  expect_type(fixed, "integer")
+  expect_type(adaptive, "integer")
+  expect_type(adaptive_na, "integer")
+  expect_length(fixed, 1L)
+  expect_length(adaptive, 1L)
+  expect_length(adaptive_na, 1L)
+})

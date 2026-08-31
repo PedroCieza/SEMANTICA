@@ -5,21 +5,39 @@
 \title{Create a SEMANTICA LLM session}
 \usage{
 semantica_connect(
-  backend = c("openai", "anthropic", "groq", "ollama", "llamacpp", "generic_openai",
-    "python_hf", "python_llamacpp"),
+  backend = c(
+    "openai", "anthropic", "groq", "ollama", "llamacpp", "generic_openai",
+    "python_hf", "python_llamacpp"
+  ),
   api_key = NULL,
   chat_model = NULL,
   embed_model = NULL,
   base_url = NULL,
   gguf_path = NULL,
   hf_token = NULL,
+  embedding_device = "auto",
+  chat_device = "auto",
+  device_map = NULL,
+  gpu_layers = "auto",
+  model_precision = "auto",
   timeout_s = 120L,
-  verbose = TRUE
+  retry_max_tries = 4L,
+  retry_on_failure = TRUE,
+  preflight = TRUE,
+  verbose = TRUE,
+  purpose = c("auto", "both", "chat", "embed"),
+  embedding_task = "auto",
+  embedding_instruction = NULL,
+  embedding_spec = NULL,
+  backend_spec = NULL
 )
 }
 \arguments{
-\item{backend}{One of the keys in \code{SEMANTICA_BACKENDS}, or any custom string
-(uses \code{generic_openai} protocol).}
+\item{backend}{One of the keys in \code{SEMANTICA_BACKENDS}. For a custom
+OpenAI-compatible server, use \code{"generic_openai"} with
+\code{base_url}, or provide an explicit \code{backend_spec} for a
+custom backend name. Unknown names never silently inherit
+another provider protocol.}
 
 \item{api_key}{API key string. \code{NULL} = read from environment variable.}
 
@@ -33,16 +51,67 @@ semantica_connect(
 
 \item{hf_token}{HuggingFace token for gated models (\code{python_hf} only).}
 
+\item{embedding_device}{Device requested for local Python embedding models:
+\code{"auto"}, \code{"cpu"}, \code{"cuda"}, \code{"cuda:N"}, or \code{"mps"}.}
+
+\item{chat_device}{Device requested for local Python generation. For the
+Hugging Face backend, an explicit device is mutually exclusive with an
+explicit \code{device_map}.}
+
+\item{device_map}{Optional Hugging Face Transformers device map. \code{NULL}
+resolves to \code{"auto"} only when \code{chat_device = "auto"}.}
+
+\item{gpu_layers}{llama.cpp GPU-layer configuration: \code{"auto"} (all layers),
+\code{0L} (CPU), a positive layer count, or \code{-1L} (all layers).}
+
+\item{model_precision}{Reproducibility label for local model precision. It is
+included in model cache keys and does not affect R cosine precision.}
+
 \item{timeout_s}{HTTP timeout in seconds (default \code{120}).}
 
+\item{retry_max_tries}{Maximum attempts for retryable HTTP failures.}
+
+\item{retry_on_failure}{Retry connection-level failures as well as retryable HTTP statuses.}
+
+\item{preflight}{Check provider/local model availability before a long run when possible.}
+
 \item{verbose}{Print connection details and status.}
+
+\item{purpose}{Session capability scope: \code{"auto"}, \code{"both"}, \code{"chat"}, or \code{"embed"}. \code{"auto"} uses chat-only mode for providers without embeddings and both capabilities otherwise. Embedding-only sessions do not preflight irrelevant chat models.}
+
+\item{embedding_task}{Embedding task policy. \code{"auto"} applies model-specific documented instructions when required.}
+
+\item{embedding_instruction}{Optional explicit prefix/instruction prepended to embedding text; overrides model-specific automatic instructions.}
+
+\item{embedding_spec}{Optional model capability contract from
+\code{\link[=semantica_embedding_spec]{semantica_embedding_spec()}}. This changes text/task preparation only; it
+never changes psychometric thresholds or score definitions.}
+
+\item{backend_spec}{Optional explicit custom backend contract created by
+\code{\link[=semantica_backend_spec]{semantica_backend_spec()}}. Required when \code{backend} is not a built-in name.}
 }
 \value{
 A \code{semantica_session} S3 object.
 }
 \description{
-Create a SEMANTICA LLM session
+Advanced session constructor for a specific generation or embedding backend.
+The main workflow accepts \code{llm}, \code{chat_model}, and \code{embed_model} directly
+to \code{\link[=semantica_run]{semantica_run()}} and use \code{\link[=semantica_check_setup]{semantica_check_setup()}} before a long run.
 }
+\section{Side effects}{
+
+Reads provider credentials from environment variables when explicit keys are
+absent, may initialize Python for local backends, and may perform provider/model
+preflight network or local-runtime checks.
+}
+
+\section{Reproducibility}{
+
+The returned session records resolved backend/model/device metadata but never
+guarantees that a remote provider alias identifies an immutable model revision.
+Prefer pinned local artifacts or recorded provider revisions when available.
+}
+
 \examples{
 \dontrun{
 # Connect to OpenAI (reads OPENAI_API_KEY from env)

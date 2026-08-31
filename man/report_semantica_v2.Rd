@@ -2,7 +2,7 @@
 % Please edit documentation in R/pipeline_core.R
 \name{report_semantica_v2}
 \alias{report_semantica_v2}
-\title{Print SEMANTICA v8 results report}
+\title{Print a SEMANTICA results report}
 \usage{
 report_semantica_v2(result, digits = 4)
 }
@@ -15,7 +15,7 @@ report_semantica_v2(result, digits = 4)
 Invisibly returns \code{result}.
 }
 \description{
-Print SEMANTICA v8 results report
+Print a SEMANTICA results report
 }
 \examples{
 \dontrun{

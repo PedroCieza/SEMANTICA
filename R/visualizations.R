@@ -100,7 +100,23 @@ utils::globalVariables(c(
   if (length(idx) == 0L) NA_integer_ else idx[1L]
 }
 
-.viz_lambda_matrix <- function(esem_fit) {
+.viz_lambda_matrix <- function(esem_fit, factor_assignment = NULL,
+                               factors = NULL) {
+  if (!is.null(factor_assignment) && !is.null(factors)) {
+    aligned <- tryCatch(
+      extract_aligned_esem_solution(
+        esem_fit,
+        factor_assignment = factor_assignment,
+        factors = factors,
+        standardized = TRUE
+      ),
+      error = function(e) NULL
+    )
+    # With an intended structure in hand, never silently fall back to raw
+    # rotation-axis labels: that can visually assign loadings to the wrong
+    # construct.
+    return(if (is.null(aligned)) NULL else aligned$lambda)
+  }
   # Use standardized loadings for diagnostic plots; fall back only when lavaan
   # cannot provide them for a particular fit.
   out <- tryCatch(lavaan::lavInspect(esem_fit, "std")$lambda, error = function(e) NULL)
@@ -165,9 +181,26 @@ utils::globalVariables(c(
   out
 }
 
-.viz_factor_correlation_matrix <- function(esem_fit, factors = NULL) {
+.viz_factor_correlation_matrix <- function(esem_fit, factors = NULL,
+                                           factor_assignment = NULL) {
   if (is.null(esem_fit)) return(NULL)
-  psi <- tryCatch(lavaan::lavInspect(esem_fit, "est")$psi, error = function(e) NULL)
+  psi <- NULL
+  if (!is.null(factor_assignment) && !is.null(factors)) {
+    aligned <- tryCatch(
+      extract_aligned_esem_solution(
+        esem_fit,
+        factor_assignment = factor_assignment,
+        factors = factors,
+        standardized = TRUE
+      ),
+      error = function(e) NULL
+    )
+    if (is.null(aligned) || is.null(aligned$psi)) return(NULL)
+    psi <- aligned$psi
+  }
+  if (is.null(psi)) {
+    psi <- tryCatch(lavaan::lavInspect(esem_fit, "est")$psi, error = function(e) NULL)
+  }
   if (is.null(psi) || !is.matrix(psi) || nrow(psi) < 2L) {
     psi <- tryCatch(lavaan::lavInspect(esem_fit, "std")$psi, error = function(e) NULL)
   }
@@ -204,7 +237,7 @@ utils::globalVariables(c(
 # =================================================================
 #' Pheromone trail evolution across elite archive solutions
 #'
-#' @param result Output from `ACO_with_ESEM()`.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
 #' @return A `ggplot` object (combined heatmap + bar chart).
 #' @export
 #' @examples
@@ -279,7 +312,7 @@ plot_pheromone_heatmap <- function(result) {
     ggplot2::theme(axis.text.x = ggplot2::element_text(size = 6.5, angle = 45, hjust = 1), axis.text.y = ggplot2::element_blank(), strip.text.y = ggplot2::element_text(angle = 0, size = 8, face = "bold"), legend.position = "bottom", panel.spacing = ggplot2::unit(0.15, "lines")) +
     ggplot2::geom_text(data = mat_long[mat_long$Archive_Entry == mat_long$Archive_Entry[1L], ], ggplot2::aes(x = 0.3, y = Item, label = as.character(Item), colour = Is_Final), hjust = 1, size = 2.2, inherit.aes = FALSE) +
     ggplot2::scale_colour_manual(values = c("TRUE" = "#C0392B", "FALSE" = "#333333"), guide = "none") +
-    ggplot2::labs(title = "Pheromone Trail Evolution -- ALL Eligible Items", subtitle = paste0(sprintf("All %d candidate items shown; red borders = final solution (%d items)\n", n_all, length(best_items)), "Each column = one elite archive entry; blue = selected"), x = "Elite Archive Entry", y = NULL, caption = "SEMANTICA v8 . ACO search")
+    ggplot2::labs(title = "Pheromone Trail Evolution -- ALL Eligible Items", subtitle = paste0(sprintf("All %d candidate items shown; red borders = final solution (%d items)\n", n_all, length(best_items)), "Each column = one elite archive entry; blue = selected"), x = "Elite Archive Entry", y = NULL, caption = "SEMANTICA | ACO search")
 
   freq_plot_df        <- freq_df
   freq_plot_df$Item   <- factor(freq_plot_df$Item, levels = rev(item_order))
@@ -302,7 +335,7 @@ plot_pheromone_heatmap <- function(result) {
 # =================================================================
 #' Fitness evolution during ACO search
 #'
-#' @param result Output from `ACO_with_ESEM()`.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
 #' @return A `ggplot` object.
 #' @export
 #' @examples
@@ -347,7 +380,7 @@ plot_fitness_evolution <- function(result) {
     ggplot2::scale_y_continuous(labels = scales::number_format(accuracy = 0.001)) +
     .sem_theme() +
     ggplot2::theme(legend.position = "bottom") +
-    ggplot2::labs(title = "Fitness Evolution During ACO Search", subtitle = "Smoothed trends; dashed = running best; red diamond = global optimum", x = "Solution Evaluation Number", y = "Score", caption = "SEMANTICA v8 . ACO search history")
+    ggplot2::labs(title = "Fitness Evolution During ACO Search", subtitle = "Smoothed trends; dashed = running best; red diamond = best observed objective", x = "Solution Evaluation Number", y = "Score", caption = "SEMANTICA | ACO search history")
 }
 
 # =================================================================
@@ -355,8 +388,8 @@ plot_fitness_evolution <- function(result) {
 # =================================================================
 #' Semantic similarity networks: BEFORE vs AFTER
 #'
-#' @param result Output from `ACO_with_ESEM()`.
-#' @param cosine_sim_matrix Full cosine similarity matrix.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
+#' @param cosine_sim_matrix Full cosine similarity matrix. Optional for a high-level result because the stored matrix is reused.
 #' @param edge_threshold_before Threshold for BEFORE network.
 #' @param edge_threshold_after Threshold for AFTER network.
 #' @param df Optional item metadata dataframe. When supplied, the BEFORE
@@ -447,7 +480,7 @@ plot_semantic_networks <- function(result, cosine_sim_matrix, edge_threshold_bef
   patchwork::wrap_plots(p_before, p_after, ncol = 2) +
     patchwork::plot_annotation(
       title = "Semantic Similarity Networks",
-      caption = "SEMANTICA v8 . cosine similarities",
+      caption = "SEMANTICA | cosine similarities",
       theme = ggplot2::theme(plot.title = ggplot2::element_text(face = "bold", size = 13))
     )
 }
@@ -457,7 +490,7 @@ plot_semantic_networks <- function(result, cosine_sim_matrix, edge_threshold_bef
 # =================================================================
 #' ESEM rotated factor loading matrix heatmap
 #'
-#' @param result Output from `ACO_with_ESEM()`.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
 #' @return A `ggplot` object.
 #' @export
 #' @examples
@@ -467,11 +500,11 @@ plot_semantic_networks <- function(result, cosine_sim_matrix, edge_threshold_bef
 plot_esem_loadings <- function(result) {
   esem_fit <- result$esem_fit
   if (is.null(esem_fit)) { message("[plot_esem_loadings] No ESEM fit object."); return(invisible(NULL)) }
-  lambda_mat <- .viz_lambda_matrix(esem_fit)
+  fa <- result$factor_assignment
+  factors <- unique(fa)
+  lambda_mat <- .viz_lambda_matrix(esem_fit, fa, factors)
   if (is.null(lambda_mat)) { message("[plot_esem_loadings] Could not extract lambda matrix."); return(invisible(NULL)) }
 
-  fa         <- result$factor_assignment
-  factors    <- unique(fa)
   best_items <- result$best_items
   fac_cols   <- setNames(.factor_colours(length(factors)), factors)
   factor_cols <- vapply(factors, function(f) .viz_factor_col(lambda_mat, f), integer(1L))
@@ -511,7 +544,7 @@ plot_esem_loadings <- function(result) {
     ggplot2::geom_vline(xintercept = seq(0.5, length(factors) + 0.5, 1), colour = "white", linewidth = 0.3) +
     .sem_theme(base_size = 10) +
     ggplot2::theme(axis.text.x = ggplot2::element_text(face = "bold", size = 9, angle = 25, hjust = 1), axis.text.y = ggplot2::element_text(size = 8), panel.grid = ggplot2::element_blank()) +
-    ggplot2::labs(title = "ESEM Rotated Factor Loading Matrix", subtitle = "Coloured tiles = dominant loadings; grey = cross-loadings; outline = dominant", x = "Factor", y = NULL, caption = paste0("Rotation: ", result$model_info$rotation, " | SEMANTICA v8"))
+    ggplot2::labs(title = "ESEM Rotated Factor Loading Matrix", subtitle = "Coloured tiles = dominant loadings; grey = cross-loadings; outline = dominant", x = "Factor", y = NULL, caption = paste0("Rotation: ", result$model_info$rotation, " | SEMANTICA"))
 }
 
 # =================================================================
@@ -519,7 +552,7 @@ plot_esem_loadings <- function(result) {
 # =================================================================
 #' Factor loading profiles with confidence intervals
 #'
-#' @param result Output from `ACO_with_ESEM()`.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
 #' @return A `ggplot` object.
 #' @export
 #' @examples
@@ -529,14 +562,14 @@ plot_esem_loadings <- function(result) {
 plot_loading_profiles <- function(result) {
   esem_fit <- result$esem_fit
   if (is.null(esem_fit)) { message("[plot_loading_profiles] No ESEM fit object."); return(invisible(NULL)) }
-  lambda_mat <- .viz_lambda_matrix(esem_fit)
+  fa <- result$factor_assignment
+  factors <- unique(fa)
+  lambda_mat <- .viz_lambda_matrix(esem_fit, fa, factors)
   # Standardized loading SEs are not generally available from lavInspect("se");
   # avoid drawing unstandardized CIs around standardized diagnostics.
   se_mat     <- NULL
   if (is.null(lambda_mat)) { message("[plot_loading_profiles] Could not extract lambda."); return(invisible(NULL)) }
 
-  fa       <- result$factor_assignment
-  factors  <- unique(fa)
   fac_cols <- setNames(.factor_colours(length(factors)), factors)
 
   df_list <- lapply(factors, function(f) {
@@ -567,7 +600,7 @@ plot_loading_profiles <- function(result) {
     ggplot2::geom_text(data = df_all[df_all$dominant, ], ggplot2::aes(label = sprintf("%.2f", loading), x = loading + 0.04), size = 2.3, hjust = 0, colour = "#333333") +
     ggplot2::geom_vline(xintercept = c(0.50, 0.95), colour = "#4DAC26", linetype = "dashed", linewidth = 0.5) +
     .sem_theme() + ggplot2::theme(axis.text.y = ggplot2::element_text(size = 7), strip.background = ggplot2::element_rect(fill = "#F2F2F2", colour = NA), panel.grid.major.x = ggplot2::element_line(colour = "#EEEEEE")) +
-    ggplot2::labs(title = "Factor Loading Profiles (ESEM)", subtitle = "Filled = dominant loading; green band = ideal range [0.50, 0.95]", x = "Standardized Factor Loading", y = NULL, caption = "SEMANTICA v8")
+    ggplot2::labs(title = "Factor Loading Profiles (ESEM)", subtitle = "Filled = dominant loading; green band = ideal range [0.50, 0.95]", x = "Standardized Factor Loading", y = NULL, caption = "SEMANTICA")
 }
 
 # =================================================================
@@ -575,7 +608,7 @@ plot_loading_profiles <- function(result) {
 # =================================================================
 #' Model fit indices vs DFI cutoffs (gauge chart)
 #'
-#' @param result Output from `ACO_with_ESEM()`.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
 #' @return A `ggplot` object.
 #' @export
 #' @examples
@@ -607,13 +640,13 @@ plot_dfi_gauges <- function(result) {
   p_main <- ggplot2::ggplot(metrics_df, ggplot2::aes(y = stats::reorder(label, seq_len(nrow(metrics_df))))) +
     ggplot2::geom_col(ggplot2::aes(x = 1), fill = grey_col, width = bar_height) +
     ggplot2::geom_col(ggplot2::aes(x = pmin(observed / ifelse(direction == "high", max(cutoff * 1.15, 1), cutoff * 1.5), 1), fill = pass), width = bar_height) +
-    ggplot2::scale_fill_manual(values = c("TRUE" = pass_col, "FALSE" = fail_col), name = NULL, labels = c("TRUE" = "PASS", "FALSE" = "FAIL")) +
+    ggplot2::scale_fill_manual(values = c("TRUE" = pass_col, "FALSE" = fail_col), name = NULL, labels = c("TRUE" = "Reference met", "FALSE" = "Reference not met")) +
     ggplot2::geom_segment(ggplot2::aes(x = ifelse(direction == "high", cutoff / max(cutoff * 1.15, 1), cutoff / (cutoff * 1.5)), xend = ifelse(direction == "high", cutoff / max(cutoff * 1.15, 1), cutoff / (cutoff * 1.5)), y = as.numeric(stats::reorder(label, seq_len(nrow(metrics_df)))) - bar_height/2, yend = as.numeric(stats::reorder(label, seq_len(nrow(metrics_df)))) + bar_height/2), colour = "#1A1A1A", linewidth = 1.1) +
     ggplot2::geom_text(ggplot2::aes(x = pmin(observed / ifelse(direction == "high", max(cutoff * 1.15, 1), cutoff * 1.5), 1) + 0.02, label = sprintf("%.4f", observed)), hjust = 0, size = 3, fontface = "bold") +
     ggplot2::geom_text(ggplot2::aes(x = ifelse(direction == "high", cutoff / max(cutoff * 1.15, 1), cutoff / (cutoff * 1.5)), label = sprintf("cut: %.3f", cutoff)), vjust = -1.2, size = 2.4, colour = "#444444") +
     ggplot2::scale_x_continuous(limits = c(0, 1.25), breaks = NULL) + .sem_theme() +
     ggplot2::theme(axis.text.x = ggplot2::element_blank(), axis.title.x = ggplot2::element_blank(), panel.grid = ggplot2::element_blank(), legend.position = "bottom") +
-    ggplot2::labs(title = "Model Fit vs DFI Cutoffs", subtitle = sprintf("Cutoff source: %s", result$cutoff_source), y = NULL)
+    ggplot2::labs(title = "Semantic-Proxy Fit vs Reference Values", subtitle = sprintf("Reference source: %s; not a participant-data validity test", result$cutoff_source), y = NULL)
 
   if (!is.null(htmt_max) && is.finite(htmt_max)) {
     htmt_df <- data.frame(label = "HTMT max (<=)", observed = htmt_max, cutoff = htmt_thr, pass = htmt_pass)
@@ -625,11 +658,11 @@ plot_dfi_gauges <- function(result) {
       ggplot2::geom_text(ggplot2::aes(x = pmin(observed / (htmt_thr * 1.3), 1) + 0.02, label = sprintf("%.4f", observed)), hjust = 0, size = 3, fontface = "bold") +
       ggplot2::scale_x_continuous(limits = c(0, 1.25), breaks = NULL) + .sem_theme() +
       ggplot2::theme(axis.text.x = ggplot2::element_blank(), axis.title.x = ggplot2::element_blank(), panel.grid = ggplot2::element_blank()) +
-      ggplot2::labs(y = NULL, title = "Discriminant Validity")
+      ggplot2::labs(y = NULL, title = "HTMT-like semantic separation proxy")
     patchwork::wrap_plots(p_main, p_htmt, ncol = 1, heights = c(4, 1)) +
-      patchwork::plot_annotation(caption = "SEMANTICA v8 . DFI-calibrated thresholds")
+      patchwork::plot_annotation(caption = "SEMANTICA | Semantic-proxy reference comparisons; participant validation is separate")
   } else {
-    p_main + ggplot2::labs(caption = "SEMANTICA v8 . DFI-calibrated thresholds")
+    p_main + ggplot2::labs(caption = "SEMANTICA | Semantic-proxy reference comparisons; participant validation is separate")
   }
 }
 
@@ -638,7 +671,7 @@ plot_dfi_gauges <- function(result) {
 # =================================================================
 #' ESEM score decomposition radar chart
 #'
-#' @param result Output from `ACO_with_ESEM()`.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
 #' @return A `ggplot` object.
 #' @export
 #' @examples
@@ -675,7 +708,7 @@ plot_score_radar <- function(result) {
     ggplot2::geom_text(data = pts, ggplot2::aes(x = lx, y = ly, label = sprintf("%s\n%.3f", label, value)), size = 2.8, hjust = 0.5, colour = "#333333", fontface = "bold") +
     ggplot2::coord_fixed(xlim = c(-1.7, 1.7), ylim = c(-1.7, 1.7)) + .sem_theme() +
     ggplot2::theme(axis.text = ggplot2::element_blank(), axis.title = ggplot2::element_blank(), panel.grid = ggplot2::element_blank()) +
-    ggplot2::labs(title = "ESEM Score Decomposition", subtitle = sprintf("Final score: %.4f  |  Base score: %.4f", .safe_val(decomp$final_score), .safe_val(decomp$base_score)), caption = "SEMANTICA v8 . all components scaled 0-1")
+    ggplot2::labs(title = "ESEM Score Decomposition", subtitle = sprintf("Final score: %.4f  |  Base score: %.4f", .safe_val(decomp$final_score), .safe_val(decomp$base_score)), caption = "SEMANTICA | all components scaled 0-1")
 }
 
 # =================================================================
@@ -683,8 +716,8 @@ plot_score_radar <- function(result) {
 # =================================================================
 #' Within vs between-factor semantic similarity violin plot
 #'
-#' @param result Output from `ACO_with_ESEM()`.
-#' @param cosine_sim_matrix Full cosine similarity matrix.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
+#' @param cosine_sim_matrix Full cosine similarity matrix. Optional for a high-level result because the stored matrix is reused.
 #' @return A `ggplot` object.
 #' @export
 #' @examples
@@ -715,7 +748,7 @@ plot_semantic_discrimination <- function(result, cosine_sim_matrix) {
     ggplot2::scale_fill_manual(values = fac_cols, guide = "none") + ggplot2::scale_colour_manual(values = fac_cols, guide = "none") +
     ggplot2::facet_wrap(~factor, ncol = 3) + .sem_theme() +
     ggplot2::theme(strip.background = ggplot2::element_rect(fill = "#F2F2F2", colour = NA), axis.text.x = ggplot2::element_text(size = 8, angle = 15, hjust = 1)) +
-    ggplot2::labs(title = "Within vs Between-Factor Semantic Similarities", subtitle = "Bar = mean; orange dashed = redundancy threshold", x = NULL, y = "Cosine Similarity", caption = "SEMANTICA v8")
+    ggplot2::labs(title = "Within vs Between-Factor Semantic Similarities", subtitle = "Bar = mean; orange dashed = redundancy threshold", x = NULL, y = "Cosine Similarity", caption = "SEMANTICA")
 }
 
 # =================================================================
@@ -723,8 +756,8 @@ plot_semantic_discrimination <- function(result, cosine_sim_matrix) {
 # =================================================================
 #' Interactive 2D/3D MDS semantic space
 #'
-#' @param result Output from `ACO_with_ESEM()`.
-#' @param cosine_sim_matrix Full cosine similarity matrix.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
+#' @param cosine_sim_matrix Full cosine similarity matrix. Optional for a high-level result because the stored matrix is reused.
 #' @param label_all Label all pool items.
 #' @param mode `"2d"` (default) or `"3d"`.
 #' @param max_pool_items Maximum pool items included in the MDS computation.
@@ -791,7 +824,7 @@ plot_interactive_semantic_space <- function(result, cosine_sim_matrix, label_all
     ), font=list(size=14)),
     legend = list(title=list(text="<b>Factor</b>")),
     paper_bgcolor = "#FFFFFF", hoverlabel = list(bgcolor="white", font=list(size=11)),
-    annotations = list(list(text = "SEMANTICA v8 . cosine distance MDS | Large = selected", xref="paper", yref="paper", x=0, y=-0.08, showarrow=FALSE, font=list(size=10, color="#888888")))
+    annotations = list(list(text = "SEMANTICA | cosine distance MDS | Large = selected", xref="paper", yref="paper", x=0, y=-0.08, showarrow=FALSE, font=list(size=10, color="#888888")))
   )
   if (mode == "3d") {
     layout_args$scene <- list(xaxis=list(title="MDS Dim 1", zeroline=FALSE, showgrid=TRUE), yaxis=list(title="MDS Dim 2", zeroline=FALSE, showgrid=TRUE), zaxis=list(title="MDS Dim 3", zeroline=FALSE, showgrid=TRUE), bgcolor="#FAFAFA")
@@ -808,8 +841,8 @@ plot_interactive_semantic_space <- function(result, cosine_sim_matrix, label_all
 # =================================================================
 #' ESEM path diagrams: BEFORE and AFTER ACO selection
 #'
-#' @param result Output from `ACO_with_ESEM()`.
-#' @param cosine_sim_matrix Full cosine similarity matrix.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
+#' @param cosine_sim_matrix Full cosine similarity matrix. Optional for a high-level result because the stored matrix is reused.
 #' @param min_loading_show Minimum absolute loading to show.
 #' @param show_crossloadings Logical; show cross-loadings.
 #' @param df Optional item metadata dataframe used to represent the generated
@@ -916,7 +949,7 @@ plot_esem_path_diagrams <- function(result, cosine_sim_matrix, min_loading_show 
 
   .df_load_from_fit <- function(fit, fa_assign) {
     if (is.null(fit)) return(NULL)
-    lmat <- .viz_lambda_matrix(fit)
+    lmat <- .viz_lambda_matrix(fit, fa_assign, factors)
     if (is.null(lmat) || !is.matrix(lmat)) return(NULL)
     rows <- lapply(factors, function(f) {
       fc <- .viz_factor_col(lmat, f)
@@ -1166,7 +1199,9 @@ plot_esem_path_diagrams <- function(result, cosine_sim_matrix, min_loading_show 
       edges$x1 <- get_xy(edges$to, "x"); edges$y1 <- get_xy(edges$to, "y")
       edges$xmid <- edges$x0 + 0.70 * (edges$x1 - edges$x0)
       edges$ymid <- edges$y0 + 0.70 * (edges$y1 - edges$y0)
-      set.seed(42); edges$ymid_j <- edges$ymid + ifelse(edges$dominant, 0, runif(nrow(edges), -0.008, 0.008))
+      # Only dominant edges receive labels below, and their prior random jitter was
+      # always zero. Keep label geometry deterministic and RNG-neutral.
+      edges$ymid_j <- edges$ymid
     }
     label_threshold <- if (phase == "BEFORE") 0.25 else 0.10
     edges$show_label <- edges$dominant & edges$abs_load >= label_threshold
@@ -1203,7 +1238,7 @@ plot_esem_path_diagrams <- function(result, cosine_sim_matrix, min_loading_show 
       ggplot2::annotate("text", x = 0.50, y = -0.015, label = paste0("Thick coloured = dominant  |  Thin grey = cross-loadings (|lambda| >= ", min_loading_show, ")  |  Side rails = factor correlations (|r| >= ", min_factor_cor_show, ")  |  Rotation: ", model_info$rotation %||% "unknown"), size = 2.35, colour = "#666666", hjust = 0.5) +
       ggplot2::coord_cartesian(xlim = c(0.00, 0.99), ylim = c(-0.04, 1.04), clip = "off") + .sem_theme() +
       ggplot2::theme(axis.text = ggplot2::element_blank(), axis.title = ggplot2::element_blank(), panel.grid = ggplot2::element_blank(), legend.position = "right", legend.title = ggplot2::element_text(face = "bold", size = 9), plot.background = ggplot2::element_rect(fill = "#FAFAFA", colour = NA), panel.background = ggplot2::element_rect(fill = "#FAFAFA", colour = NA), plot.margin = ggplot2::margin(20, 10, 15, 10)) +
-      ggplot2::labs(caption = paste0("SEMANTICA v8 . ACO-ESEM . ",
+      ggplot2::labs(caption = paste0("SEMANTICA | ACO-ESEM | ",
                                      ifelse(phase == "BEFORE", before_pool_scope, "ACO-selected items"),
                                      fit_note_txt))
     p
@@ -1211,7 +1246,9 @@ plot_esem_path_diagrams <- function(result, cosine_sim_matrix, min_loading_show 
 
   after_fit <- result$esem_fit
   df_after <- .df_load_from_fit(after_fit, fa_final)
-  cor_after <- .viz_factor_correlation_matrix(after_fit, factors)
+  cor_after <- .viz_factor_correlation_matrix(
+    after_fit, factors, factor_assignment = fa_final
+  )
 
   pool_items <- intersect(unlist(eligible, use.names=FALSE), colnames(cosine_sim_matrix))
   fa_pool <- character(length(pool_items)); names(fa_pool) <- pool_items
@@ -1256,7 +1293,9 @@ plot_esem_path_diagrams <- function(result, cosine_sim_matrix, min_loading_show 
       )
     }, error = function(e) { message("[plot_esem_path_diagrams] BEFORE model failed: ", e$message); NULL })
     df_before <- .df_load_from_fit(before_fit, fa_pool)
-    cor_before <- .viz_factor_correlation_matrix(before_fit, factors)
+    cor_before <- .viz_factor_correlation_matrix(
+      before_fit, factors, factor_assignment = fa_pool
+    )
   }
   if ((is.null(df_before) || nrow(df_before) == 0L) && length(pool_items) >= 2L) {
     proxy_display <- .viz_limit_pool_items(
@@ -1312,7 +1351,7 @@ plot_esem_path_diagrams <- function(result, cosine_sim_matrix, min_loading_show 
 # =================================================================
 #' Item selection frequency map across archive or multi-seed runs
 #'
-#' @param result Output from `ACO_with_ESEM()`.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
 #' @param multi_result Output from `run_multi_seed_semantica()` (optional).
 #' @return A `ggplot` object.
 #' @export
@@ -1378,7 +1417,7 @@ plot_item_selection_frequency <- function(result = NULL, multi_result = NULL) {
     ggplot2::scale_x_continuous(labels = scales::percent_format(accuracy = 1), limits = c(-0.10, 1.02)) +
     ggplot2::facet_grid(rows = ggplot2::vars(factor), scales = "free_y", space = "free_y") + .sem_theme() +
     ggplot2::theme(axis.text.y = ggplot2::element_blank(), strip.text.y = ggplot2::element_text(angle=0, size=8, face="bold"), strip.background = ggplot2::element_rect(fill="#F2F2F2", colour=NA), panel.spacing = ggplot2::unit(0.2, "lines"), legend.position = "none") +
-    ggplot2::labs(title = plot_title, subtitle = paste0(plot_subtitle, " | Red + diamond = selected; blue zone = anchors"), x = "Selection Frequency", y = NULL, caption = "SEMANTICA v8")
+    ggplot2::labs(title = plot_title, subtitle = paste0(plot_subtitle, " | Red + diamond = selected; blue zone = anchors"), x = "Selection Frequency", y = NULL, caption = "SEMANTICA")
 }
 
 # =================================================================
@@ -1386,9 +1425,9 @@ plot_item_selection_frequency <- function(result = NULL, multi_result = NULL) {
 # =================================================================
 #' Cross-loading specificity ratio heatmap
 #'
-#' @param result Output from `ACO_with_ESEM()`.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
 #' @param ratio_cap Maximum ratio cap.
-#' @param danger_ratio Threshold for danger zone border.
+#' @param danger_ratio Legacy argument name for the cross-loading ratio review threshold; cells at or below this value receive a review border.
 #' @return A `ggplot` object.
 #' @export
 #' @examples
@@ -1398,10 +1437,12 @@ plot_item_selection_frequency <- function(result = NULL, multi_result = NULL) {
 plot_crossloading_specificity <- function(result, ratio_cap = 10, danger_ratio = 1.5) {
   esem_fit <- result$esem_fit
   if (is.null(esem_fit)) { message("[plot_crossloading_specificity] No ESEM fit."); return(invisible(NULL)) }
-  lambda_mat <- .viz_lambda_matrix(esem_fit)
+  fa <- result$factor_assignment
+  best_items <- result$best_items
+  factors <- unique(fa)
+  lambda_mat <- .viz_lambda_matrix(esem_fit, fa, factors)
   if (is.null(lambda_mat)) { message("[plot_crossloading_specificity] No lambda matrix."); return(invisible(NULL)) }
 
-  fa <- result$factor_assignment; best_items <- result$best_items; factors <- unique(fa)
   fac_cols <- setNames(.factor_colours(length(factors)), factors)
 
   match_factor_col <- function(f) {
@@ -1416,7 +1457,7 @@ plot_crossloading_specificity <- function(result, ratio_cap = 10, danger_ratio =
       f2_col <- match_factor_col(f2); if (is.na(f2_col)) return(NULL)
       cross_lam <- abs(lambda_mat[it, f2_col[1L]])
       ratio <- if (f2 == dom_f) NA_real_ else if (cross_lam < 1e-6) ratio_cap else min(dom_lam / cross_lam, ratio_cap)
-      type <- if (f2 == dom_f) "dominant" else ifelse(ratio <= danger_ratio, "danger", ifelse(ratio <= 3.0, "moderate", "specific"))
+      type <- if (f2 == dom_f) "dominant" else ifelse(ratio <= danger_ratio, "review", ifelse(ratio <= 3.0, "moderate", "specific"))
       data.frame(item = it, factor = f2, dom_loading = dom_lam, cross_loading = cross_lam, ratio = ratio, type = type, stringsAsFactors = FALSE)
     })
   })
@@ -1455,7 +1496,7 @@ plot_crossloading_specificity <- function(result, ratio_cap = 10, danger_ratio =
     ggplot2::geom_tile(data = df_ratio[!is.na(df_ratio$ratio) & df_ratio$type != "dominant" & df_ratio$ratio <= danger_ratio, ], ggplot2::aes(x = factor, y = item), fill = NA, colour = "#E83030", linewidth = 1.2, inherit.aes = FALSE) +
     .sem_theme(base_size = 10) +
     ggplot2::theme(axis.text.x = ggplot2::element_text(face="bold", size=9, angle=25, hjust=1), axis.text.y = ggplot2::element_text(size=8), panel.grid = ggplot2::element_blank()) +
-    ggplot2::labs(title = "Cross-Loading Specificity Heatmap", subtitle = sprintf("Cell = |dominant lambda| / |cross lambda|. Red border = danger (<= %.1fx).", danger_ratio), x = "Factor", y = NULL, caption = paste0("SEMANTICA v8 . rotation: ", result$model_info$rotation))
+    ggplot2::labs(title = "Cross-Loading Specificity Heatmap", subtitle = sprintf("Cell = |dominant lambda| / |cross lambda|. Red border = review threshold (<= %.1fx).", danger_ratio), x = "Factor", y = NULL, caption = paste0("SEMANTICA | rotation: ", result$model_info$rotation))
 }
 
 # =================================================================
@@ -1467,7 +1508,7 @@ plot_crossloading_specificity <- function(result, ratio_cap = 10, danger_ratio =
 #' PFA dimensions so intended-factor primary loadings have a positive mean,
 #' while preserving negative cross-loadings when they are present.
 #'
-#' @param result Output from `ACO_with_ESEM()`.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
 #' @return A `ggplot` object or `NULL`.
 #' @export
 #' @examples
@@ -1544,7 +1585,7 @@ plot_pfa_diagnostics <- function(result) {
                          pfa$score, pfa$recovery_score, pfa$salience_score, pfa$clarity_score),
       x = "Extracted PFA dimension",
       y = NULL,
-      caption = paste0("SEMANTICA v8 . cosine-derived semantic correlation proxy . ",
+      caption = paste0("SEMANTICA | cosine-derived semantic correlation proxy | ",
                        pfa$extraction, " extraction, ", pfa$rotation, " rotation",
                        sign_note)
     )
@@ -1559,7 +1600,7 @@ plot_pfa_diagnostics <- function(result) {
 #' observed respondent sample sizes and do not replace the validation-N
 #' diagnostic for response-data studies.
 #'
-#' @param result Output from `ACO_with_ESEM()`.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
 #' @return A `ggplot` object or `NULL`.
 #' @export
 #' @examples
@@ -1656,7 +1697,7 @@ plot_semantic_n_sensitivity <- function(result) {
       y = NULL,
       shape = NULL,
       fill = NULL,
-      caption = "SEMANTICA v8 . fit-anchor sensitivity for embedding-derived ESEM; not a respondent sample-size recommendation"
+      caption = "SEMANTICA | fit-anchor sensitivity for embedding-derived ESEM; not a respondent sample-size recommendation"
     )
 }
 
@@ -1669,7 +1710,7 @@ plot_semantic_n_sensitivity <- function(result) {
 #' objective scores, ESEM fit checks, structure diagnostics, PFA recovery, and
 #' semantic similarity before/after selection when those values are available.
 #'
-#' @param result Output from `ACO_with_ESEM()`.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
 #' @param cosine_sim_matrix Optional full cosine similarity matrix. Used only as
 #'   a fallback when stored semantic-reduction diagnostics are unavailable.
 #' @return A patchwork/`ggplot` object.
@@ -1718,7 +1759,7 @@ plot_summary_of_results <- function(result, cosine_sim_matrix = NULL) {
   pfa <- result$pfa_diagnostics %||% list()
 
   score_df <- data.frame(
-    component = c("Final objective", "Proposal objective", "ESEM structure score",
+    component = c("Optimization utility*", "Proposal utility*", "ESEM structure score",
                   "Semantic objective", "PFA reported", "Loading quality"),
     score = c(
       safe01_pick(result$final_guided_objective_score, result$best_objective),
@@ -1748,7 +1789,11 @@ plot_summary_of_results <- function(result, cosine_sim_matrix = NULL) {
       .sem_theme(base_size = 10) +
       ggplot2::theme(panel.grid.major.y = ggplot2::element_blank(),
                      axis.title.y = ggplot2::element_blank()) +
-      ggplot2::labs(title = "The Scoreboard", subtitle = "Final objective, proposal signal, and descriptive companions", x = "Score (0-1)")
+      ggplot2::labs(
+        title = "The Scoreboard",
+        subtitle = "*Optimization utilities are within-run and evidence-regime dependent; companions are descriptive proxies",
+        x = "Displayed value (0-1)"
+      )
   }
 
   cr <- result$esem_result %||% list()
@@ -1782,7 +1827,7 @@ plot_summary_of_results <- function(result, cosine_sim_matrix = NULL) {
     ifelse(fit_df$direction == "high", fit_df$observed >= fit_df$cutoff, fit_df$observed <= fit_df$cutoff),
     NA
   )
-  fit_df$status <- ifelse(is.na(fit_df$pass), "descriptive", ifelse(fit_df$pass, "pass", "watch"))
+  fit_df$status <- ifelse(is.na(fit_df$pass), "descriptive", ifelse(fit_df$pass, "reference_met", "reference_not_met"))
   fit_df$display <- ifelse(
     is.finite(fit_df$cutoff),
     paste0(fit_df$component, "\n", sprintf("%.3f", fit_df$observed), "\ncut ", sprintf("%.3f", fit_df$cutoff)),
@@ -1797,9 +1842,9 @@ plot_summary_of_results <- function(result, cosine_sim_matrix = NULL) {
       ggplot2::geom_tile(width = 0.94, height = 0.82, colour = "white", linewidth = 1) +
       ggplot2::geom_text(ggplot2::aes(label = display), size = 2.8, fontface = "bold",
                          colour = "#1F2933", lineheight = 0.9) +
-      ggplot2::scale_fill_manual(values = c(pass = "#A7D7C5", watch = "#F2A7A0", descriptive = "#BFD7EA"),
-                                 breaks = c("pass", "watch", "descriptive"),
-                                 labels = c("Pass", "Watch", "Descriptive"),
+      ggplot2::scale_fill_manual(values = c(reference_met = "#A7D7C5", reference_not_met = "#F2A7A0", descriptive = "#BFD7EA"),
+                                 breaks = c("reference_met", "reference_not_met", "descriptive"),
+                                 labels = c("Reference met", "Reference not met", "Descriptive"),
                                  name = NULL) +
       ggplot2::coord_cartesian(ylim = c(0.45, 1.55), clip = "off") +
       .sem_theme(base_size = 10) +
@@ -1807,7 +1852,7 @@ plot_summary_of_results <- function(result, cosine_sim_matrix = NULL) {
                      axis.title = ggplot2::element_blank(),
                      panel.grid = ggplot2::element_blank(),
                      legend.position = "bottom") +
-      ggplot2::labs(title = "Fit Check Tiles",
+      ggplot2::labs(title = "Semantic-Proxy Reference Tiles",
                     subtitle = result$cutoff_source %||% "Observed fit against available cutoffs")
   }
 
@@ -1925,7 +1970,7 @@ plot_summary_of_results <- function(result, cosine_sim_matrix = NULL) {
   warning_count <- if (length(warnings_obj) == 0L || identical(warnings_obj, "none")) 0L else length(warnings_obj)
   pfa_txt <- if (isTRUE(pfa$available)) sprintf("PFA %.2f", .viz_safe01(pfa$score, 0)) else "PFA unavailable"
   subtitle <- sprintf(
-    "%d selected items across %d factors | final %s | proposal %s | %s | warnings %d",
+    "%d selected items across %d factors | optimization utility %s | proposal utility %s | %s | warnings %d",
     n_items, n_factors,
     .viz_display_num(pick_num(result$final_guided_objective_score, result$best_objective), 3),
     .viz_display_num(pick_num(result$proposal_objective_score, result$search_objective_score), 3),
@@ -1937,8 +1982,11 @@ plot_summary_of_results <- function(result, cosine_sim_matrix = NULL) {
     patchwork::plot_annotation(
       title = "15 | Summary of SEMANTICA Results",
       subtitle = subtitle,
-      caption = paste0("SEMANTICA v8 . one-screen synthesis of optimization, fit, structure, PFA, and semantic redundancy diagnostics | search guidance: ",
-                       result$search_guidance_status %||% "legacy/unknown"),
+      caption = paste0(
+        "SEMANTICA | optimization utilities are not universal scale-quality scores | search guidance: ",
+        result$search_guidance_status %||% "legacy/unknown",
+        " | objective regime: ", result$objective_context$evidence_regime %||% "legacy/unknown"
+      ),
       theme = ggplot2::theme(
         plot.title = ggplot2::element_text(face = "bold", size = 16, colour = "#1F2933"),
         plot.subtitle = ggplot2::element_text(size = 10, colour = "#4B5563"),
@@ -1948,23 +1996,14 @@ plot_summary_of_results <- function(result, cosine_sim_matrix = NULL) {
 }
 
 # =================================================================
-# SECRET PLOT -- THE COOLEST PLOT EVER
+# INTERNAL PLOT -- SEMANTIC DISTILLATION MAP
 # =================================================================
-#' The coolest plot ever
+#' Internal semantic distillation map
 #'
-#' Creates an opt-in semantic distillation map that visualizes a usually
-#' abstract SEMANTICA process: how a large semantic item pool is distilled into
-#' a selected factor constellation. The plot shows candidate items in the
-#' background, selected items as bright factor-colored points, arrows from
-#' candidate-pool centroids to selected-scale centroids, rings for selected
-#' semantic breadth, and curved links for the strongest remaining between-factor
-#' semantic overlap.
+#' Creates an internal opt-in semantic distillation map that visualizes how a
+#' large semantic item pool is narrowed to a selected factor constellation.
 #'
-#' This plot is intentionally not called by [semantica_plot_all()]. Users call
-#' it directly when they want a more narrative, presentation-oriented view of
-#' the selection process.
-#'
-#' @param result Output from `ACO_with_ESEM()`.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
 #' @param cosine_sim_matrix Full cosine similarity matrix used by SEMANTICA.
 #' @param max_background_items Maximum number of non-selected candidate items
 #'   to display. The most semantically relevant candidates are retained first.
@@ -1972,15 +2011,7 @@ plot_summary_of_results <- function(result, cosine_sim_matrix = NULL) {
 #'   selected-factor semantic overlaps.
 #' @return A patchwork/`ggplot` object, or `NULL` invisibly if required inputs
 #'   are unavailable.
-#' @export
-#' @examples
-#' \dontrun{
-#' the_coolest_plot_ever(
-#'   result, cosine_sim_matrix,
-#'   max_background_items = 260L,
-#'   edge_quantile = 0.65
-#' )
-#' }
+#' @noRd
 the_coolest_plot_ever <- function(result, cosine_sim_matrix = NULL,
                                   max_background_items = 260L,
                                   edge_quantile = 0.65) {
@@ -2207,12 +2238,12 @@ the_coolest_plot_ever <- function(result, cosine_sim_matrix = NULL,
   final_objective_txt <- .viz_display_num(pick_num(result$final_guided_objective_score, result$best_objective), 3)
   proposal_objective_txt <- .viz_display_num(pick_num(result$proposal_objective_score, result$search_objective_score), 3)
   map_subtitle <- if (has_pool_background) {
-    sprintf("%s%d eligible; %d selected across %d factors (%d non-selected eligible shown) | final %s; proposal %s | %s",
+    sprintf("%s%d eligible; %d selected across %d factors (%d non-selected eligible shown) | utility %s; proposal utility %s | %s",
             if (is.finite(generated_n)) sprintf("%d generated; ", generated_n) else "",
             as.integer(eligible_n), selected_shown_n, length(factors), pool_shown_n,
             final_objective_txt, proposal_objective_txt, within_txt)
   } else {
-    sprintf("selected-only view: %d selected across %d factors | final %s; proposal %s | %s",
+    sprintf("selected-only view: %d selected across %d factors | utility %s; proposal utility %s | %s",
             selected_shown_n, length(factors), final_objective_txt, proposal_objective_txt, within_txt)
   }
   map_caption <- if (has_pool_background) {
@@ -2286,13 +2317,16 @@ the_coolest_plot_ever <- function(result, cosine_sim_matrix = NULL,
   cr <- result$esem_result %||% list()
   pfa <- result$pfa_diagnostics %||% list()
   sns <- result$semantic_n_sensitivity %||% list()
+  # Keep the compact plot from inventing a binary stability score from the
+  # retired 0.10 pair-perturbation heuristic. Reference-N structural stability
+  # can still be shown when available; semantic resampling remains interval/range
+  # evidence in the detailed diagnostics rather than being collapsed to 0-1.
   stable_score <- if (isTRUE(sns$summary$structurally_stable)) {
     1
   } else if (identical(sns$summary$structurally_stable, FALSE)) {
     0.35
   } else {
-    diff_val <- .viz_safe_num(result$split_half_stability$difference)
-    if (is.finite(diff_val)) max(0, min(1, 1 - diff_val / 0.10)) else NA_real_
+    NA_real_
   }
   retention_score <- if (is.finite(generated_n) && generated_n > 0 && is.finite(eligible_n)) {
     safe01(eligible_n / generated_n)
@@ -2300,13 +2334,13 @@ the_coolest_plot_ever <- function(result, cosine_sim_matrix = NULL,
     NA_real_
   }
   final_label <- if (identical(result$search_guidance_status, "esem_guided")) {
-    "Final guided\nobjective"
+    "Optimization\nutility*"
   } else {
-    "Final\nobjective"
+    "Optimization\nutility*"
   }
   phase_df <- data.frame(
-    phase = c("Eligible pool\nretained", "Proposal\nobjective", "ESEM structure\nscore",
-              final_label, "PFA reported\nscore", "Stability\ncheck"),
+    phase = c("Eligible pool\nretained", "Proposal\nutility*", "ESEM structure\nscore",
+              final_label, "PFA reported\nscore", "Proxy-N\nstability"),
     score_norm = c(
       retention_score,
       safe01(pick_num(result$proposal_objective_score, result$search_objective_score)),
@@ -2321,9 +2355,10 @@ the_coolest_plot_ever <- function(result, cosine_sim_matrix = NULL,
   phase_df$score_plot <- ifelse(is.finite(phase_df$score_norm), phase_df$score_norm, 0.18)
   phase_df$score_txt <- ifelse(is.finite(phase_df$score_norm), sprintf("%.2f", phase_df$score_norm), "NA")
   phase_df$status <- ifelse(!is.finite(phase_df$score_norm), "Missing",
+                            ifelse(grepl("objective|utility", phase_df$phase, ignore.case = TRUE), "Optimization",
                             ifelse(phase_df$phase == "Eligible pool\nretained", "Context",
                                    ifelse(phase_df$score_norm >= 0.75, "High signal",
-                                          ifelse(phase_df$score_norm >= 0.55, "Moderate", "Review"))))
+                                          ifelse(phase_df$score_norm >= 0.55, "Moderate", "Review")))))
 
   p_process <- ggplot2::ggplot(phase_df, ggplot2::aes(x = phase_x, y = 0)) +
     ggplot2::annotate("segment", x = 1, xend = nrow(phase_df), y = 0, yend = 0,
@@ -2356,11 +2391,12 @@ the_coolest_plot_ever <- function(result, cosine_sim_matrix = NULL,
 
   patchwork::wrap_plots(p_map, p_process, ncol = 1, heights = c(4.5, 1.15)) +
     patchwork::plot_annotation(
-      title = "The Coolest Plot Ever",
-      subtitle = "A secret, user-called visualization of SEMANTICA's semantic distillation process",
-      caption = paste0("SEMANTICA v8 . presentation-oriented diagnostic | search guidance: ",
+      title = "Semantic Distillation Map",
+      subtitle = "Internal visualization of SEMANTICA's semantic item-selection process",
+      caption = paste0("SEMANTICA | presentation-oriented diagnostic | search guidance: ",
                        result$search_guidance_status %||% "legacy/unknown",
-                       " | call directly with the_coolest_plot_ever(result, cosine_sim_matrix)"),
+                       " | objective regime: ",
+                       result$objective_context$evidence_regime %||% "legacy/unknown"),
       theme = ggplot2::theme(
         plot.title = ggplot2::element_text(face = "bold", size = 18, colour = "#111827"),
         plot.subtitle = ggplot2::element_text(size = 10.5, colour = "#4B5563"),
@@ -2374,8 +2410,8 @@ the_coolest_plot_ever <- function(result, cosine_sim_matrix = NULL,
 # =================================================================
 #' Generate all SEMANTICA diagnostic plots
 #'
-#' @param result Output from `ACO_with_ESEM()`.
-#' @param cosine_sim_matrix Full cosine similarity matrix.
+#' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
+#' @param cosine_sim_matrix Full cosine similarity matrix. Optional for a high-level result because the stored matrix is reused.
 #' @param df Item metadata dataframe.
 #' @param multi_result Output from `run_multi_seed_semantica()` (optional).
 #' @param interactive_mode `"2d"` or `"3d"` for Plot 9.
@@ -2389,14 +2425,35 @@ the_coolest_plot_ever <- function(result, cosine_sim_matrix = NULL,
 #' @param path_proxy_max_items Maximum candidate-pool items represented in the
 #'   fast Plot 10 BEFORE proxy.
 #' @param include_interactive Logical; generate the interactive Plot 9 widget.
-#' @param progress Logical; print each plot name and elapsed generation time.
+#' @param progress Logical; print plot progress and completion information. `FALSE` is quiet.
+#' @param which `"all"`, one or more plot names, or a diagnostic-family shortcut: `"aco"`, `"esem"`, `"semantic"`, `"pfa"`, or `"dfi"`. See Details.
 #' @param save Logical; save to disk.
 #' @param out_dir Output directory.
 #' @param device Image format (`"png"`, `"pdf"`, etc.).
 #' @param width,height,dpi Plot dimensions.
+#' @section Side effects:
+#' Constructs diagnostic plot objects and, when `save = TRUE`, writes plot files
+#' to `out_dir`. An explicitly requested `before_path_model = "refit"` may run
+#' an additional guarded full-pool ESEM fit; the default proxy path does not.
+#'
+#' @section Reproducibility:
+#' Plot construction is RNG-neutral. For fixed result/matrix inputs and plotting
+#' options, cosmetic geometry does not consume or reseed the caller's RNG stream.
+#'
+#' @details
+#' When a high-level result is supplied, this function only extracts the already
+#' computed optimizer result, cosine matrix, and item metadata before calling the
+#' established plotting code. Optional plot failures are summarized at the end
+#' and stored in the `semantica_plot_failures` attribute. The
+#' `semantica_plot_manifest` attribute records generated plots and saved paths.
+#' `which` accepts `"pheromone"`, `"fitness"`, `"networks"`, `"loadings"`,
+#' `"loading_profiles"`, `"dfi"`, `"radar"`, `"discrimination"`, `"interactive"`,
+#' `"paths"`, `"selection_frequency"`, `"specificity"`, `"pfa"`,
+#' `"reference_n"`, `"summary"`, or `"all"`. Family shortcuts expand to the corresponding existing plot functions without recomputing diagnostics.
+#'
 #' @return Named list of `ggplot` and `plotly` objects, including
 #'   `p10a_path_before`, `p10b_path_after`, and
-#'   `plot_summary_of_results`. The opt-in [the_coolest_plot_ever()] plot is
+#'   `plot_summary_of_results`. Internal opt-in distillation plots are
 #'   intentionally not generated by this wrapper.
 #' @export
 #' @examples
@@ -2410,7 +2467,7 @@ the_coolest_plot_ever <- function(result, cosine_sim_matrix = NULL,
 #'   save = FALSE
 #' )
 #' }
-semantica_plot_all <- function(result, cosine_sim_matrix, df = NULL, multi_result = NULL,
+semantica_plot_all <- function(result, cosine_sim_matrix = NULL, df = NULL, multi_result = NULL,
                                interactive_mode = c("2d", "3d"), save = FALSE, out_dir = ".",
                                device = "png", width = 12, height = 8, dpi = 180,
                                before_path_model = c("proxy", "refit"),
@@ -2418,17 +2475,54 @@ semantica_plot_all <- function(result, cosine_sim_matrix, df = NULL, multi_resul
                                network_max_items = 200L, mds_max_items = 250L,
                                path_proxy_max_items = 150L,
                                include_interactive = TRUE,
-                               progress = TRUE) {
+                               progress = TRUE,
+                               which = "all") {
   interactive_mode <- match.arg(interactive_mode)
   before_path_model <- match.arg(before_path_model)
+  progress <- .semantica_assert_flag(progress, "progress")
+  allowed_plots <- c("pheromone", "fitness", "networks", "loadings", "loading_profiles", "dfi", "radar", "discrimination", "interactive", "paths", "selection_frequency", "specificity", "pfa", "reference_n", "summary")
+  plot_groups <- list(
+    aco = c("pheromone", "fitness", "selection_frequency"),
+    esem = c("loadings", "loading_profiles", "paths", "specificity"),
+    semantic = c("networks", "discrimination", "interactive"),
+    pfa = "pfa",
+    dfi = c("dfi", "reference_n")
+  )
+  requested <- unique(as.character(which))
+  if (!length(requested) || anyNA(requested) || any(!nzchar(requested))) stop("'which' must contain one or more plot names/groups, or 'all'.", call. = FALSE)
+  allowed_selectors <- unique(c("all", allowed_plots, names(plot_groups)))
+  bad <- setdiff(requested, allowed_selectors)
+  if (length(bad)) stop(sprintf("Unknown plot name/group(s): %s. Available: %s.", paste(bad, collapse = ", "), paste(allowed_selectors, collapse = ", ")), call. = FALSE)
+  if ("all" %in% requested) {
+    which <- allowed_plots
+  } else {
+    which <- unique(unlist(lapply(requested, function(z) plot_groups[[z]] %||% z), use.names = FALSE))
+  }
+  want <- function(name) name %in% which
+
+  # High-level QoL adapter: extract the already-computed optimizer inputs from
+  # semantica_run()/semantica_full_pipeline() results. No analysis is rerun.
+  if (inherits(result, "semantica_full_pipeline_result")) {
+    full_result <- result
+    cosine_sim_matrix <- cosine_sim_matrix %||% full_result$generation$cosine_sim_matrix %||% NULL
+    df <- df %||% full_result$generation$df %||% NULL
+    result <- full_result$optimization %||% full_result
+  }
+  if (is.null(cosine_sim_matrix)) {
+    stop("'cosine_sim_matrix' is required unless 'result' is a high-level semantica_run()/semantica_full_pipeline() result.", call. = FALSE)
+  }
+
   out <- list()
-  cat("\n[SEMANTICA viz] Generating plots...\n")
+  plot_failures <- character(0L)
+  saved_paths <- character(0L)
+  if (isTRUE(progress)) cat("\n[SEMANTICA viz] Generating plots...\n")
 
   run_plot <- function(name, fun) {
     started <- proc.time()[["elapsed"]]
     if (isTRUE(progress)) message(sprintf("  %s: generating...", name))
     value <- tryCatch(fun(), error = function(e) {
-      message("  ", name, " failed: ", e$message)
+      plot_failures <<- c(plot_failures, sprintf("%s: %s", name, e$message))
+      if (isTRUE(progress)) message("  ", name, " failed: ", e$message)
       NULL
     })
     if (isTRUE(progress)) {
@@ -2437,17 +2531,17 @@ semantica_plot_all <- function(result, cosine_sim_matrix, df = NULL, multi_resul
     value
   }
 
-  out$p01_pheromone <- run_plot("Plot 1", function() plot_pheromone_heatmap(result))
-  out$p02_fitness <- run_plot("Plot 2", function() plot_fitness_evolution(result))
-  out$p03_networks <- run_plot("Plot 3", function() plot_semantic_networks(
+  out$p01_pheromone <- if (want("pheromone")) run_plot("Plot 1", function() plot_pheromone_heatmap(result)) else NULL
+  out$p02_fitness <- if (want("fitness")) run_plot("Plot 2", function() plot_fitness_evolution(result)) else NULL
+  out$p03_networks <- if (want("networks")) run_plot("Plot 3", function() plot_semantic_networks(
     result, cosine_sim_matrix, df = df, max_before_items = network_max_items
-  ))
-  out$p04_loadings_matrix <- run_plot("Plot 4", function() plot_esem_loadings(result))
-  out$p05_loading_profiles <- run_plot("Plot 5", function() plot_loading_profiles(result))
-  out$p06_dfi_gauges <- run_plot("Plot 6", function() plot_dfi_gauges(result))
-  out$p07_score_radar <- run_plot("Plot 7", function() plot_score_radar(result))
-  out$p08_discrimination <- run_plot("Plot 8", function() plot_semantic_discrimination(result, cosine_sim_matrix))
-  out$p09_interactive <- if (isTRUE(include_interactive)) {
+  )) else NULL
+  out$p04_loadings_matrix <- if (want("loadings")) run_plot("Plot 4", function() plot_esem_loadings(result)) else NULL
+  out$p05_loading_profiles <- if (want("loading_profiles")) run_plot("Plot 5", function() plot_loading_profiles(result)) else NULL
+  out$p06_dfi_gauges <- if (want("dfi")) run_plot("Plot 6", function() plot_dfi_gauges(result)) else NULL
+  out$p07_score_radar <- if (want("radar")) run_plot("Plot 7", function() plot_score_radar(result)) else NULL
+  out$p08_discrimination <- if (want("discrimination")) run_plot("Plot 8", function() plot_semantic_discrimination(result, cosine_sim_matrix)) else NULL
+  out$p09_interactive <- if (want("interactive") && isTRUE(include_interactive)) {
     run_plot("Plot 9", function() plot_interactive_semantic_space(
       result, cosine_sim_matrix, mode = interactive_mode, max_pool_items = mds_max_items
     ))
@@ -2455,20 +2549,20 @@ semantica_plot_all <- function(result, cosine_sim_matrix, df = NULL, multi_resul
     NULL
   }
 
-  p10_result <- run_plot("Plot 10", function() plot_esem_path_diagrams(
+  p10_result <- if (want("paths")) run_plot("Plot 10", function() plot_esem_path_diagrams(
     result, cosine_sim_matrix, df = df,
     before_model = before_path_model,
     before_refit_max_items = before_path_refit_max_items,
     before_proxy_max_items = path_proxy_max_items
-  ))
+  )) else NULL
   out$p10a_path_before <- if (!is.null(p10_result)) p10_result$p10a else NULL
   out$p10b_path_after  <- if (!is.null(p10_result)) p10_result$p10b else NULL
 
-  out$p11_selection_freq <- run_plot("Plot 11", function() plot_item_selection_frequency(result = result, multi_result = multi_result))
-  out$p12_specificity <- run_plot("Plot 12", function() plot_crossloading_specificity(result))
-  out$p13_pfa <- run_plot("Plot 13", function() plot_pfa_diagnostics(result))
-  out$p14_semantic_n <- run_plot("Plot 14", function() plot_semantic_n_sensitivity(result))
-  out$plot_summary_of_results <- run_plot("Summary plot", function() plot_summary_of_results(result, cosine_sim_matrix))
+  out$p11_selection_freq <- if (want("selection_frequency")) run_plot("Plot 11", function() plot_item_selection_frequency(result = result, multi_result = multi_result)) else NULL
+  out$p12_specificity <- if (want("specificity")) run_plot("Plot 12", function() plot_crossloading_specificity(result)) else NULL
+  out$p13_pfa <- if (want("pfa")) run_plot("Plot 13", function() plot_pfa_diagnostics(result)) else NULL
+  out$p14_semantic_n <- if (want("reference_n")) run_plot("Plot 14", function() plot_semantic_n_sensitivity(result)) else NULL
+  out$plot_summary_of_results <- if (want("summary")) run_plot("Summary plot", function() plot_summary_of_results(result, cosine_sim_matrix)) else NULL
 
   if (save) {
     if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
@@ -2489,17 +2583,46 @@ semantica_plot_all <- function(result, cosine_sim_matrix, df = NULL, multi_resul
       "14_semantic_proxy_reference_n_sensitivity" = out$p14_semantic_n,
       "15_summary_of_results" = out$plot_summary_of_results
     )
+    static_keys <- c(
+      p01_pheromone = "01_pheromone_heatmap_all_items", p02_fitness = "02_fitness_evolution",
+      p03_networks = "03_semantic_networks", p04_loadings_matrix = "04_esem_loading_matrix",
+      p05_loading_profiles = "05_loading_profiles", p06_dfi_gauges = "06_dfi_gauges",
+      p07_score_radar = "07_score_radar", p08_discrimination = "08_semantic_discrimination",
+      p10a_path_before = "10A_esem_path_diagram_BEFORE", p10b_path_after = "10B_esem_path_diagram_AFTER",
+      p11_selection_freq = "11_item_selection_frequency", p12_specificity = "12_crossloading_specificity",
+      p13_pfa = "13_sample_free_pfa_loadings", p14_semantic_n = "14_semantic_proxy_reference_n_sensitivity",
+      plot_summary_of_results = "15_summary_of_results"
+    )
     path_plot_names <- c("10A_esem_path_diagram_BEFORE", "10B_esem_path_diagram_AFTER")
     for (nm in names(static_plots)) {
       p <- static_plots[[nm]]; if (is.null(p)) next
       fp <- file.path(out_dir, paste0(nm, ".", device))
       w <- width; h <- if (nm %in% path_plot_names) width * 1.4 else height
-      tryCatch({ ggplot2::ggsave(fp, plot = p, width = w, height = h, dpi = dpi); cat(sprintf("  Saved: %s\n", fp)) }, error = function(e) message("  Could not save ", nm, ": ", e$message))
+      tryCatch({ ggplot2::ggsave(fp, plot = p, width = w, height = h, dpi = dpi); saved_key <- names(static_keys)[match(nm, static_keys)]; if (length(saved_key) && !is.na(saved_key)) saved_paths[[saved_key]] <- normalizePath(fp, winslash = "/", mustWork = FALSE); if (isTRUE(progress)) cat(sprintf("  Saved: %s\n", fp)) }, error = function(e) { plot_failures <<- c(plot_failures, sprintf("save %s: %s", nm, e$message)); if (isTRUE(progress)) message("  Could not save ", nm, ": ", e$message) })
     }
     if (!is.null(out$p09_interactive) && requireNamespace("htmlwidgets", quietly = TRUE)) {
       fp9 <- file.path(out_dir, sprintf("09_interactive_semantic_space_%s.html", interactive_mode))
-      tryCatch({ htmlwidgets::saveWidget(out$p09_interactive, fp9, selfcontained = TRUE); cat(sprintf("  Saved: %s\n", fp9)) }, error = function(e) message("  Could not save Plot 9: ", e$message))
+      tryCatch({ htmlwidgets::saveWidget(out$p09_interactive, fp9, selfcontained = TRUE); saved_paths[["p09_interactive"]] <- normalizePath(fp9, winslash = "/", mustWork = FALSE); if (isTRUE(progress)) cat(sprintf("  Saved: %s\n", fp9)) }, error = function(e) { plot_failures <<- c(plot_failures, sprintf("save Plot 9: %s", e$message)); if (isTRUE(progress)) message("  Could not save Plot 9: ", e$message) })
     }
   }
-  cat("\n[SEMANTICA viz] Done.\n"); invisible(out)
+  n_generated <- sum(!vapply(out, is.null, logical(1L)))
+  if (isTRUE(progress)) {
+    if (length(plot_failures)) {
+      cat(sprintf("\n[SEMANTICA viz] Done: %d plot object(s) generated; %d optional plot/save operation(s) failed or were skipped.\n", n_generated, length(plot_failures)))
+      for (z in plot_failures) cat("  - ", z, "\n", sep = "")
+    } else {
+      cat(sprintf("\n[SEMANTICA viz] Done: %d plot object(s) generated successfully.\n", n_generated))
+    }
+  }
+  attr(out, "semantica_plot_failures") <- plot_failures
+  manifest <- data.frame(plot = names(out), generated = !vapply(out, is.null, logical(1L)), stringsAsFactors = FALSE)
+  manifest$saved_path <- NA_character_
+  if (length(saved_paths)) {
+    for (nm in names(saved_paths)) {
+      idx <- match(nm, manifest$plot)
+      if (!is.na(idx)) manifest$saved_path[[idx]] <- saved_paths[[nm]]
+    }
+  }
+  attr(out, "semantica_plot_manifest") <- manifest
+  invisible(out)
 }

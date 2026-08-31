@@ -9,6 +9,10 @@ semantica_setup_conda(
   conda = NULL,
   python_ver = "3.11",
   packages = character(0L),
+  accelerator = c("cpu", "auto", "cuda"),
+  torch_index_url = NULL,
+  install_llamacpp = TRUE,
+  verify = TRUE,
   force = FALSE,
   verbose = TRUE
 )
@@ -22,28 +26,60 @@ semantica_setup_conda(
 
 \item{packages}{Character vector of additional \code{pip} packages to install.}
 
+\item{accelerator}{Python PyTorch installation profile. \code{"cpu"} is the
+reproducible compatibility default. \code{"auto"} currently resolves to CPU
+and reports that decision; \code{"cuda"} requires an explicit
+\code{torch_index_url} appropriate for the host CUDA/runtime combination.}
+
+\item{torch_index_url}{Optional PyTorch wheel index. This is required for
+\code{accelerator = "cuda"}; for CPU on Windows/Linux, SEMANTICA uses the
+official CPU wheel index unless overridden.}
+
+\item{install_llamacpp}{Logical; install \code{llama-cpp-python}. Its optional GPU
+build flags are platform-specific and are not inferred by this function.}
+
+\item{verify}{Logical; probe the installed Python PyTorch runtime without
+loading a language or embedding model.}
+
 \item{force}{Recreate the environment even if it already exists.}
 
 \item{verbose}{Print progress messages.}
 }
 \value{
-Invisibly returns the environment name.
+Invisibly returns the environment name with setup and verification
+metadata stored as attributes.
 }
 \description{
 Bootstrap a Conda environment for SEMANTICA Python backends
 }
 \details{
-Core packages always installed: \code{torch} (CPU), \code{transformers},
-\code{sentence-transformers}, \code{accelerate}, \code{einops}, \code{llama-cpp-python}.
+Core packages use the tested version ranges recorded in
+\code{inst/python/requirements-compatible.txt}. CUDA installation is never
+selected merely because a GPU appears to be present.
 After calling this function, restart your R session and call
 \code{semantica_activate_conda()} to attach the environment.
 }
+\section{Side effects}{
+
+Creates/removes Conda environments when requested, installs Python packages,
+may access package indexes over the network, and probes the local Python/PyTorch
+runtime.
+}
+
+\section{Reproducibility}{
+
+The requested/resolved accelerator and verification metadata are returned as
+attributes. Exact Python package resolution can still depend on the configured
+package indexes and their available artifacts.
+}
+
 \examples{
 \dontrun{
 semantica_setup_conda(
   env_name = "semantica",
   python_ver = "3.11",
   packages = character(0L),
+  accelerator = "cpu",
   force = FALSE
 )
 }

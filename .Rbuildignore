@@ -1,5 +1,12 @@
+^CITATION\.cff$
+^LICENSE\.md$
+^RELEASE_MODIFICATION_PLAN\.md$
+^SECURITY\.md$
+^SUPPORT\.md$
+^PULL_REQUEST_TEMPLATE\.md$
 ^\.github$
 ^\.gitignore$
+^\.gitattributes$
 ^README\.Rmd$
 ^pkgdown$
 ^CONTRIBUTING\.md$
@@ -10,7 +17,30 @@
 ^\.Rhistory$
 ^\.RData$
 ^\.Ruserdata$
+^\.Renviron$
+^\.env(\..*)?$
+(^|/)(\.credentials|credentials)(/|$)
+.*\.(pem|key)$
 ^docs$
+^examples$
 ^_pkgdown\.yml$
 ^SEMANTICA_.*\.tar\.gz$
 ^SEMANTICA\.Rcheck$
+^RECOVERY_NOTES\.txt$
+^.*\.Rproj$
+# Generated SEMANTICA stress/benchmark artifacts are development outputs, not package source.
+^SEMANTICA_[0-9]+\.[0-9]+\.[0-9]+_(controlled_stress_test\.rds|stress_(checks|runs|summary)\.csv)$
+^SEMANTICA_cross_model_.*\.(csv|rds)$
+^SEMANTICA_stochastic_replication_.*\.(csv|rds)$
+^semantica_gemini_embedding2_stress_cache\.rds$
+
+# Local analysis objects are never package source.
+^result\.rds$
+# User-generated SEMANTICA run directories created in a package checkout are analysis artifacts.
+# Keep the rule narrow to conventional demo/results/output suffixes; package source is unaffected.
+^SEMANTICA_.*_(demo|results|output)$
+# Generated SEMANTICA test/replay directories are analysis artifacts.
+^SEMANTICA_[0-9]+\.[0-9]+\.[0-9]+_.*_test$
+^SEMANTICA_frozen_.*_test$
+# Bounded-audit directories are generated development artifacts.
+^SEMANTICA_bounded_audit_.*$

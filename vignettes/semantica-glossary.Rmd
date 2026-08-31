@@ -1,0 +1,89 @@
+---
+title: "SEMANTICA Glossary"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{SEMANTICA Glossary}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+# User-facing terms
+
+**Candidate pool** — retained items available to the selector after generation
+and generation-stage filtering.
+
+**`pool_items`** — retained candidate target per factor in `semantica_run()`.
+
+**`overgenerate`** — multiplier used to request a larger raw item pool before
+retention. It is not the final pool size.
+
+**Selected form** — the item set returned by the optimizer for the requested
+factor-specific final counts.
+
+**ACO preset** — `fast`, `standard`, or `full`; a convenience configuration for
+search effort/evidence cadence, not a different optimizer.
+
+**Content guard** — conservative definition/exclusion filtering used by
+`semantica_run()` when a mismatch/conflict is sufficiently clear and enough
+alternatives remain.
+
+# Evidence terms
+
+**Semantic proxy** — a diagnostic derived from item embeddings rather than
+participant responses.
+
+**Representation evidence** — information about the embedding geometry and its
+sensitivity/provenance. It qualifies downstream embedding-derived diagnostics.
+
+**PFA** — sample-free factor-like diagnostic applied to the semantic
+representation. It is not participant factor analysis.
+
+**Proxy ESEM** — ESEM applied to representation-derived structure. It is not an
+observed-response ESEM.
+
+**HTMT-like semantic proxy** — separation diagnostic derived from the semantic
+proxy representation; not participant HTMT.
+
+**DFI calibration** — dynamic/derived fit-index calibration used within the
+proxy workflow. Its role does not convert proxy structure into validity
+evidence.
+
+**Evidence family** — a source family such as theory/definitions, embeddings,
+or participant responses. Several metrics computed from the same embedding
+representation remain dependent members of one evidence family.
+
+**Evidence regime** — the combination of evidence components actually
+available/used for a candidate or final selection context.
+
+# Robustness / optimizer terms
+
+**Elite archive** — retained high-performing candidate solutions used by the
+optimizer/final reranking machinery.
+
+**Search patience** — non-improvement/stagnation limit. Legacy `max.iter` remains
+a compatibility alias in lower-level APIs and should not be read as the only
+absolute iteration ceiling.
+
+**`max_total_iter`** — optional hard ceiling on total ACO iterations.
+
+**Representation sensitivity** — descriptive change in geometry under supported
+preprocessing comparisons. SEMANTICA reports it rather than automatically
+choosing whichever representation produces a more favorable result.
+
+# Reproducibility terms
+
+**Generation specification** — construct, model/backend, prompt/style, and
+sampling settings defining the generation request family.
+
+**Replay plan** — generation specification plus the deterministic seed schedule
+when a backend supports seed control.
+
+**Realized item pool** — the exact text actually generated/retained in a run.
+Saving the result/bundle is the reliable way to preserve it.
+
+**Analysis bundle** — SEMANTICA's sanitized, versioned, integrity-checked
+persistence format. It is preferred over CSV for reproducibility.

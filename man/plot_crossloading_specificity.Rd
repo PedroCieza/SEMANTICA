@@ -7,11 +7,11 @@
 plot_crossloading_specificity(result, ratio_cap = 10, danger_ratio = 1.5)
 }
 \arguments{
-\item{result}{Output from \code{ACO_with_ESEM()}.}
+\item{result}{A high-level SEMANTICA result or output from \code{ACO_with_ESEM()}.}
 
 \item{ratio_cap}{Maximum ratio cap.}
 
-\item{danger_ratio}{Threshold for danger zone border.}
+\item{danger_ratio}{Legacy argument name for the cross-loading ratio review threshold; cells at or below this value receive a review border.}
 }
 \value{
 A \code{ggplot} object.

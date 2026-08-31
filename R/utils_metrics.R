@@ -24,3 +24,14 @@
   within_sims <- unlist(within_blocks[seq_len(n_blocks)], use.names = FALSE)
   mean(within_sims, na.rm = TRUE)
 }
+
+# Semantic-proxy reference comparisons are descriptive screening anchors, not
+# participant-based hypothesis tests or universal psychometric validity rules.
+.semantica_proxy_reference_status <- function(value, cutoff, direction = c("higher", "lower")) {
+  direction <- match.arg(direction)
+  value <- suppressWarnings(as.numeric(value[1L]))
+  cutoff <- suppressWarnings(as.numeric(cutoff[1L]))
+  if (!is.finite(value) || !is.finite(cutoff)) return("N/A")
+  met <- if (identical(direction, "higher")) value >= cutoff else value <= cutoff
+  if (isTRUE(met)) "REFERENCE MET" else "REFERENCE NOT MET"
+}

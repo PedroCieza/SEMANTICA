@@ -1,0 +1,392 @@
+---
+title: "Evidence Interpretation and Methodological Extensions"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Evidence Interpretation and Methodological Extensions}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+suppressPackageStartupMessages(library(SEMANTICA))
+```
+
+# Purpose
+
+SEMANTICA's sample-free workflow analyzes the language of psychometric items.
+It can screen semantic construct alignment, overlap, redundancy, required-facet
+coverage, wording polarity, and compatibility with a proposed structural
+blueprint. These outputs are **semantic-proxy diagnostics**. They are not a
+replacement for participant-based psychometric evidence.
+
+A defensible development program therefore separates four questions:
+
+1. **Semantic signal:** Do item embeddings contain information about human item
+   relations?
+2. **Calibration:** Can that signal predict participant correlations across
+   instruments, constructs, models, and languages?
+3. **Selection:** Does SEMANTICA choose better item sets than simpler methods
+   under the same computational budget?
+4. **Confirmation:** Do SEMANTICA-assisted forms perform well in independent
+   participant samples?
+
+This vignette documents the APIs added to make those questions testable.
+
+# Evidence status
+
+```{r evidence-example}
+mock <- structure(
+  list(
+    construct_coverage = NULL,
+    participant_validation_performed = FALSE,
+    optimization = list(response_validation = NULL)
+  ),
+  class = c("semantica_full_pipeline_result", "list")
+)
+semantica_evidence_status(mock)
+```
+
+Do not describe semantic PFA/ESEM/DFI as establishing reliability, construct
+validity, invariance, DIF, or criterion validity. When response data are
+supplied, report the response-data analysis separately.
+
+# Selection-conditioned and local diagnostics
+
+SEMANTICA 0.2.10 keeps semantic discrimination interpretable across the item-selection boundary. The threshold-free `A` statistic is a stochastic-superiority effect-size descriptor (Vargha & Delaney, 2000), but an optimizer deliberately searches many candidate subsets. General post-selection theory shows why statistics computed after data-driven selection should not inherit naive pre-selection inferential interpretations (Berk et al., 2013). SEMANTICA therefore treats selected `A` as **post-selection descriptive evidence**, not as selection-adjusted inference.
+
+`semantica_selection_context()` reports the candidate-pool value, selected-set value, their descriptive change, and factor-specific diagnostics together. No universal post-selection cutoff is introduced:
+
+```{r selection-context, eval=FALSE}
+ctx <- semantica_selection_context(
+  wrapped$cosine_sim_matrix,
+  stats::setNames(wrapped$df$type, wrapped$df$item),
+  result$best_items
+)
+ctx$pool$estimate
+ctx$selected$estimate
+ctx$stochastic_superiority_gain
+ctx$selected_factor_diagnostics
+```
+
+`semantica_factor_semantic_diagnostics()` is deliberately local. A favorable aggregate can coexist with one weak factor, so each intended factor receives its own within-vs-between mean gap and stochastic-superiority `A`. This follows the broader SEM principle that global or aggregate behavior should not substitute for diagnosing localized misspecification (Saris, Satorra, & van der Veld, 2009). The function adds no new psychometric threshold.
+
+PFA reporting now gives greater prominence to `partition_agreement_ari`. The adjusted Rand index explicitly corrects partition agreement for agreement expected by chance (Hubert & Arabie, 1985; Warrens & van der Hoef, 2022). `factor_presence_recovery` remains available because it answers a different question--whether intended factors are represented among dominant PFA dimensions--but it must not be interpreted as item-level partition accuracy.
+
+ESEM technical admissibility remains separate from structural quality. ESEM was developed to permit cross-loadings rather than force an independent-clusters CFA structure (Asparouhov & Muthen, 2009), so convergence/admissibility alone is not substantive evidence that the intended factor partition is clean. SEMANTICA now makes `admissible_but_structurally_mixed` visually explicit and aggregates the already-computed item-level ESEM diagnostics by factor. HTMT-like overlap remains complementary evidence; discriminant-separation diagnostics can detect problems that simpler loading inspections may miss (Henseler, Ringle, & Sarstedt, 2015).
+
+Finally, `best_objective` is now accompanied by `objective_context`. It is an **optimization utility**, not a universal scale-quality score. Objective magnitudes are only conditionally comparable when the objective definition, weights, candidate-pool construction, and evidence regime are held fixed. In particular, a semantic/PFA fallback objective should not be compared substantively with an ESEM-guided objective from another run.
+
+References used for these interpretation rules:
+
+- Asparouhov, T., & Muthen, B. (2009). Exploratory structural equation modeling. *Structural Equation Modeling, 16*(3), 397-438. https://doi.org/10.1080/10705510903008204
+- Berk, R., Brown, L., Buja, A., Zhang, K., & Zhao, L. (2013). Valid post-selection inference. *The Annals of Statistics, 41*(2), 802-837. https://doi.org/10.1214/12-AOS1077
+- Henseler, J., Ringle, C. M., & Sarstedt, M. (2015). A new criterion for assessing discriminant validity in variance-based structural equation modeling. *Journal of the Academy of Marketing Science, 43*, 115-135. https://doi.org/10.1007/s11747-014-0403-8
+- Hubert, L., & Arabie, P. (1985). Comparing partitions. *Journal of Classification, 2*, 193-218.
+- Saris, W. E., Satorra, A., & van der Veld, W. M. (2009). Testing structural equation models or detection of misspecifications? *Structural Equation Modeling, 16*(4), 561-582. https://doi.org/10.1080/10705510903203433
+- Vargha, A., & Delaney, H. D. (2000). A critique and improvement of the CL common language effect size statistics of McGraw and Wong. *Journal of Educational and Behavioral Statistics, 25*(2), 101-132. https://doi.org/10.3102/10769986025002101
+- Warrens, M. J., & van der Hoef, H. (2022). Understanding the adjusted Rand index and other partition comparison indices based on counting object pairs. *Journal of Classification, 39*, 487-509. https://doi.org/10.1007/s00357-022-09413-z
+
+# Representation policy and content-alignment safeguards
+
+SEMANTICA 0.2.7 separates the embedding model's task instructions from the
+psychometric decision rules. `embedding_task = "auto"` applies a model-specific
+instruction only for embedding families whose documented interface requires one;
+unknown models are not modified. The resolved instruction policy is retained in the
+result so two analyses that used different task prompts are not treated as equivalent.
+
+Content alignment uses factor definitions as semantic prototypes. The assigned-vs-
+competing factor margin is always retained as a diagnostic. In 0.2.7, automatic
+exclusion is **not** the default: `content_alignment_mode = "diagnostic"` reports the
+evidence without restricting candidates. If an analyst explicitly requests
+`content_alignment_mode = "guard"`, a negative top-rank margin is called a clear
+mismatch only when it exceeds a pool-relative reference derived from positively
+separated items assigned to the same factor. If that reference cannot be estimated,
+the case remains ambiguous rather than being automatically excluded. Explicit
+forbidden/excluded concepts are also treated contrastively: an exclusion conflict is
+flagged only when an excluded concept is closer than the assigned construct
+definition. The guard remains feasibility-aware and never makes the requested
+per-factor item count impossible. Facet ambiguity is diagnostic/coverage evidence,
+not an automatic item-deletion rule.
+
+Required-facet coverage now distinguishes metadata coverage from semantic-definition
+coverage when facet descriptions and alignment diagnostics are available. A label
+alone therefore no longer counts as semantic evidence that the wording represents a
+facet.
+
+Polarity remains a separate diagnostic by default. The built-in rule-based screen can
+identify overt negation, but overt negation is not synonymous with reverse-keying.
+Users whose item-writing protocol forbids such wording can opt into the feasibility-
+aware polarity guard.
+
+# Construct blueprints
+
+```{r blueprint}
+factors <- list(
+  Clarity = list(
+    description = "Clear and organized thinking.",
+    facets = list(focus = list(), organization = list()),
+    forbidden = c("memory capacity")
+  ),
+  Flexibility = list(
+    description = "Adaptation of thinking when demands change.",
+    facets = list(adaptation = list(), perspective_shift = list())
+  )
+)
+
+expected <- matrix(
+  c(1, .25,
+    .25, 1),
+  2, 2,
+  dimnames = list(names(factors), names(factors))
+)
+
+blueprint <- semantica_construct_blueprint(
+  factors,
+  expected_relations = expected
+)
+```
+
+`expected_relations` is an expected **semantic similarity pattern**. It must
+not be copied from an empirical latent-factor correlation matrix and then
+interpreted as though the two metrics were equivalent.
+
+The optional ACO `nomological_weight` defaults to zero. A non-zero value should
+be treated as a research hypothesis and externally calibrated.
+
+# Pool-relative threshold calibration
+
+Raw cosine values are not necessarily comparable across embedding models.
+`semantica_calibrate_similarity_thresholds()` derives an experimental reference
+from the current pool:
+
+```{r threshold-example}
+ids <- paste0("i", 1:6)
+M <- matrix(c(
+  1,.70,.62,.20,.15,.18,
+  .70,1,.66,.18,.12,.20,
+  .62,.66,1,.22,.16,.19,
+  .20,.18,.22,1,.72,.68,
+  .15,.12,.16,.72,1,.70,
+  .18,.20,.19,.68,.70,1
+), 6, 6, byrow = TRUE, dimnames = list(ids, ids))
+fa <- setNames(c(rep("A", 3), rep("B", 3)), ids)
+semantica_calibrate_similarity_thresholds(M, fa)
+```
+
+The returned object is deliberately labeled an experimental heuristic. Use it
+for sensitivity analysis until it has been benchmarked against expert and
+participant outcomes.
+
+# Semantic-to-response calibration
+
+Given an empirical item-correlation matrix from participant data:
+
+```{r calibration-example}
+R <- M
+R[lower.tri(R)] <- .05 + .75 * M[lower.tri(M)]
+R[upper.tri(R)] <- t(R)[upper.tri(R)]
+diag(R) <- 1
+
+cal <- semantica_fit_empirical_calibration(
+  semantic_matrix = M,
+  response_matrix = R,
+  method = "fisher_linear"
+)
+cal$diagnostics
+```
+
+A fitted mapping is a **training result**, not external validation. Apply it to
+new matrices only when the training and target settings are theoretically
+comparable:
+
+```{r apply-calibration}
+calibrated <- semantica_apply_empirical_calibration(M, cal)
+```
+
+# Leave whole scales out
+
+Randomly splitting item pairs leaks instrument-specific wording and construct
+context between training and test sets. Prefer whole-instrument holdout when
+possible:
+
+```{r loso}
+case1 <- list(semantic_matrix = M, response_matrix = R)
+case2 <- list(semantic_matrix = M * .95 + diag(.05, 6), response_matrix = R)
+
+cv <- semantica_leave_one_scale_out_calibration(
+  list(scale_1 = case1, scale_2 = case2),
+  method = "linear"
+)
+cv$per_scale
+```
+
+For publication-grade benchmarking, include many independent instruments and
+report uncertainty across held-out scales rather than only pooled item-pair
+metrics.
+
+# Polarity and signed relations
+
+Cosine similarity is primarily a measure of semantic relatedness and can remain
+high when wording direction changes. SEMANTICA therefore keeps polarity as a
+separate evidence dimension:
+
+```{r polarity}
+items <- data.frame(
+  item_id = c("a", "b"),
+  item_text = c(
+    "I feel capable when challenges arise.",
+    "I do not feel capable when challenges arise."
+  )
+)
+semantica_polarity_diagnostics(items)
+```
+
+The built-in detector is deliberately conservative. A separately benchmarked
+NLI/relation scorer can be supplied by advanced users. The experimental
+`semantica_signed_semantic_matrix()` requires analyst-supplied polarity and
+therefore does not claim to infer item direction automatically.
+
+# Multi-model robustness
+
+Conclusions should ideally survive plausible representation choices:
+
+```{r robustness}
+M2 <- M
+M2[1, 2] <- M2[2, 1] <- .64
+rob <- semantica_semantic_robustness(list(model_A = M, model_B = M2))
+rob$matrix_rank_agreement
+
+ensemble <- semantica_ensemble_similarity(
+  list(model_A = M, model_B = M2),
+  method = "rank_mean"
+)
+```
+
+`rank_mean` deliberately emphasizes pair ordering rather than assuming that
+raw cosine values from different models share a common metric scale.
+
+# Matrix-repair reporting
+
+Proxy ESEM needs a positive-definite correlation-like matrix. Any transformation
+changes the original semantic geometry. Report that change:
+
+```{r repair, eval=FALSE}
+repair <- semantica_matrix_repair_diagnostics(
+  cosine_matrix = M,
+  factor_assignment = fa,
+  factors = c("A", "B")
+)
+repair[c("min_eigen_before", "min_eigen_after", "frobenius_change", "max_abs_change")]
+```
+
+A heavily repaired matrix should be treated as a warning, not as a successfully
+"fixed" source of stronger evidence.
+
+# Equal-budget optimizer ablations
+
+The complexity of ACO should be justified empirically. Use
+`semantica_compare_selection_methods()` with random, greedy, semantic-only ACO,
+and full SEMANTICA methods under a common budget. The evaluator should use an
+independent criterion, ideally held-out participant data.
+
+# Counterfactual stress tests
+
+Controlled modifications are useful methodological unit tests. For example, create
+paraphrases, negations, neighboring-construct substitutions, and unrelated
+items, then verify that diagnostics move in theoretically predicted directions.
+`semantica_counterfactual_stress_test()` provides a generic harness while
+leaving the scoring function explicit.
+
+# Pilot updating
+
+`semantica_update_with_pilot()` can learn a semantic-to-response calibration
+from pilot data. The pilot sample should not then be reused as the confirmatory
+sample for final performance claims. A clean workflow is:
+
+**semantic design -> pilot calibration/item revision -> frozen scale -> new
+confirmatory participant sample**.
+
+# Recommended benchmark reporting
+
+At minimum report:
+
+- exact embedding model/provider/revision when available;
+- preprocessing and normalization;
+- semantic matrix method;
+- matrix-repair magnitude;
+- calibration training instruments;
+- whole-instrument holdout performance;
+- embedding-model robustness;
+- optimizer baseline comparisons under equal budgets;
+- participant sample and empirical correlation estimator;
+- all SEMANTICA and R/package versions;
+- random seeds and computational budget.
+
+Use `semantica_save_bundle()` to retain these artifacts in a sanitized,
+versioned result bundle.
+
+## Additional experimental research scaffolds
+
+The following APIs implement hypotheses from the SEMANTICA research roadmap so
+they can be benchmarked explicitly. They are not production validity rules.
+
+### Contrastive construct prototypes
+
+```{r, eval=FALSE}
+alignment <- semantica_contrastive_construct_alignment(
+  item_embeddings = item_embeddings,
+  factor_assignment = factor_assignment,
+  construct_embeddings = construct_prototypes
+)
+```
+
+A positive contrastive margin says that the *semantic representation* of an
+item is closer to its intended prototype than to the strongest supplied
+competitor. It is not empirical discriminant validity.
+
+### Semantic fingerprints and scale-version comparison
+
+```{r, eval=FALSE}
+fp <- semantica_scale_fingerprint(cosine_matrix, factor_assignment)
+comparison <- semantica_compare_scale_versions(cosine_v1, cosine_v2)
+```
+
+These functions are descriptive tools for instrument geometry and revision
+tracking. They do not replace longitudinal validation.
+
+### Cross-language semantic screening
+
+```{r, eval=FALSE}
+translation_screen <- semantica_cross_language_equivalence(
+  reference_embeddings,
+  translated_embeddings
+)
+```
+
+This requires a shared multilingual embedding space. High paired similarity or
+neighborhood preservation may support translation review, but neither is
+measurement invariance, DIF evidence, or proof of cross-cultural equivalence.
+
+### Human adjudication queue
+
+```{r, eval=FALSE}
+queue <- semantica_expert_review_queue(
+  matrices = list(model_a = cosine_a, model_b = cosine_b),
+  polarity = polarity_diagnostics
+)
+```
+
+Model disagreement is treated as a reason to ask an expert, not as an automatic
+item-rejection rule.
+
+### Coverage drafting and preregistration manifests
+
+```{r, eval=FALSE}
+prompts <- semantica_suggest_coverage_prompts(coverage, blueprint)
+manifest <- semantica_preregistration_manifest(config, inputs = items)
+```
+
+Coverage prompts support item drafting only. The manifest freezes configuration
+and input hashes for reproducibility; it does not convert a semantic screening
+plan into participant-based validity evidence.

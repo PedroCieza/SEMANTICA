@@ -1,112 +1,174 @@
 ---
-title: "SEMANTICA Workflow"
+title: "SEMANTICA: Recommended User Workflow"
 output: rmarkdown::html_vignette
 vignette: >
-  %\VignetteIndexEntry{SEMANTICA Workflow}
+  %\VignetteIndexEntry{SEMANTICA: Recommended User Workflow}
   %\VignetteEngine{knitr::rmarkdown}
   %\VignetteEncoding{UTF-8}
 ---
 
-```{r, include = FALSE}
-knitr::opts_chunk$set(
-  collapse = TRUE,
-  comment = "#>",
-  eval = FALSE
-)
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 ```
 
-## Overview
+# Start with `semantica_run()`
 
-SEMANTICA is designed for early-stage psychometric scale construction. It helps generate candidate items, represent item wording as embeddings, reduce semantic redundancy, and select item sets that are then evaluated through full exploratory structural equation modeling (ESEM).
+Start a new scale-development workflow with `semantica_run()`. When you need
+settings beyond its arguments, use `semantica_full_pipeline()`. Both interfaces
+use the same analysis pipeline.
 
-## Define a Construct
+A typical workflow is:
+
+1. define the construct/factors;
+2. check the generation/embedding setup;
+3. preview item counts and expected workload;
+4. run `semantica_run()`;
+5. inspect selected items and evidence status;
+6. plot and save;
+7. collect participant responses and add participant-response validation when ready.
+
+# 1. Define factors
+
+Simple descriptions are sufficient:
 
 ```{r}
-library(SEMANTICA)
-
 factors <- list(
-  Clarity = list(
-    description = "Clear, organized, and coherent thinking.",
-    n_items = 12
-  ),
-  Flexibility = list(
-    description = "Ability to change cognitive strategy when demands change.",
-    n_items = 12
-  )
+  Goal_Direction = "Maintaining academic behavior around personally endorsed goals.",
+  Monitoring = "Evaluating whether current study strategies are working."
 )
 ```
 
-## Generate and Embed Items
+Rich specifications can include `description`, `facets`, `forbidden`,
+`examples`, and `extra_instructions`.
 
-These steps require API credentials or a local model backend.
+# 2. Check the backend
 
-```{r}
-session <- semantica_connect("openai")
+```{r eval=FALSE}
+semantica_list_backends()
+semantica_check_setup(llm = "ollama", probe = TRUE)
+```
 
-items <- semantica_generate_items(
-  session = session,
-  scale_name = "Cognitive Agility",
-  scale_description = "Adaptive and clear cognitive self-regulation.",
+For cloud providers, credentials should normally be stored in `.Renviron`.
+Anthropic and Groq are generation-only in the built-in registry, so pair them
+with an embedding backend through `semantica_llm_config()`.
+
+# 3. Preview the run
+
+```{r eval=FALSE}
+plan <- semantica_run_plan(
+  scale_name = "Academic Self-Regulation Scale",
+  scale_description = "Goal direction and monitoring in academic work.",
   factors = factors,
+  pool_items = 12,
+  selected_items = 4,
+  overgenerate = 2,
+  llm = "ollama"
+)
+plan
+```
+
+`pool_items = 12` means 12 retained candidates **per factor**. If a factor has
+facets, those 12 are allocated across its facets. The plan also shows the
+approximate raw generation target implied by `overgenerate`.
+
+# 4. Run
+
+```{r eval=FALSE}
+result <- semantica_run(
+  scale_name = "Academic Self-Regulation Scale",
+  scale_description = "Goal direction and monitoring in academic work.",
+  factors = factors,
+  pool_items = 12,
+  selected_items = 4,
+  llm = list(
+    backend = "ollama",
+    chat_model = "llama3.2",
+    embed_model = "nomic-embed-text"
+  ),
+  language = "English",
   response_format = "5-point Likert",
-  item_style = "first-person declarative sentence",
-  language = "English"
+  item_style = "brief first-person declarative sentence",
+  aco = "standard",
+  seed = 20260828L
 )
-
-embedded <- semantica_embed(items, session)
-wrapped <- semantica_wrap(embedded)
 ```
 
-## Optimize an Item Set
+The ACO presets control search effort and diagnostic cadence:
 
-```{r}
-result <- ACO_with_ESEM(
-  cosine_sim_matrix = wrapped$cosine_sim_matrix,
-  df = wrapped$df,
-  i.per.f = c(Clarity = 4, Flexibility = 4),
-  ants = 60,
-  max.iter = 30,
-  run_esem_during_search = TRUE,
-  esem_sample_size = "auto",
-  dfi_mode = "auto"
-)
+- `fast`: lower effort for iteration/first-pass work;
+- `standard`: routine scale-development runs;
+- `full`: more intensive structural checking/calibration.
 
-report_semantica_v2(result)
-inspect_elite_archive(result, top_n = 5)
-inspect_solution_history(result, top_n = 10)
+
+By default, console output is concise. Use `progress = "detailed"` when you need
+component telemetry and `progress = "quiet"` in scripts.
+
+# 5. Inspect the scale and evidence
+
+```{r eval=FALSE}
+result
+result$scale
+result$items
+result$diagnostics
+result$plots
+result$provenance
+result$advanced
+summary(result)
+summary(result, sections = c("semantic", "structural"))
+semantica_evidence_status(result, labels = "both")
+semantica_models(result)
+semantica_config(result, "generation")
+semantica_config(result, changes_only = TRUE)
+semantica_provenance(result)
+semantica_item_review(result)
+semantica_factor_review(result)
 ```
 
-## Visualize Diagnostics
+`semantica_run()` returns a six-part object surface: `scale`, `items`, `diagnostics`, `plots`, `provenance`, and `advanced`. The first five are regular-user entry points; `plots` retains the core report graphics and `advanced` contains the complete canonical result unchanged. Historical direct access to canonical fields (for example `result$optimization`) remains supported.
 
-```{r}
-plots <- semantica_plot_all(
-  result = result,
-  cosine_sim_matrix = wrapped$cosine_sim_matrix,
-  df = wrapped$df,
-  save = FALSE
-)
+Direct `semantica_full_pipeline()` results remain the complete advanced object. `semantica_view(result, view = "advanced", section = "structural")` provides the same grouped navigation for either interface without recomputation. Use `semantica_items()` for the normalized wording table and `summary(result)` for the detailed diagnostics and evidence boundary.
 
-plots$p04_loadings_matrix
-plots$p08_discrimination
-plots$plot_summary_of_results
-the_coolest_plot_ever(result, wrapped$cosine_sim_matrix)
+# 6. Plot and save
+
+```{r eval=FALSE}
+plot(result)
+result$plots$plot_fitness_evolution
+result$plots$plot_esem_before
+result$plots$plot_esem_after
+result$plots$plot_pfa_diagnostics
+plot(result, which = "aco")
+plot(result, which = c("esem", "pfa"))
+plots <- semantica_plot_all(result, progress = FALSE)
+attr(plots, "semantica_plot_manifest")
+
+semantica_export(result, "academic_self_regulation")
+semantica_save_bundle(result, "academic_self_regulation_bundle.rds")
 ```
 
-Plot 10 shows BEFORE/AFTER ESEM path diagrams. When the full BEFORE-pool ESEM
-cannot be refit, SEMANTICA falls back to a clearly labeled sample-free PFA or
-semantic-proxy path view instead of returning a blank placeholder. Plot 10 also
-draws factor-correlation rails when correlations are available. Plot 13
-sign-anchors PFA dimensions so primary loadings are oriented positively for
-the intended factor; negative cross-loadings can still appear and are
-psychometrically interpretable. `the_coolest_plot_ever()` is a manual-only
-semantic distillation map, so it is available for presentations without being
-added to the default plot bundle.
+`semantica_export()` is readable report/interchange output. It is not the inverse of `semantica_reload()`, which reads the component-level optimizer-interchange format. `semantica_save_bundle()` is the provenance-preserving analysis bundle.
 
-## Export and Reload
+# 7. When to use `semantica_full_pipeline()`
 
-```{r}
-semantica_export(wrapped, prefix = "cognitive_agility")
-reloaded <- semantica_reload("cognitive_agility")
+Use `semantica_full_pipeline()` for participant-response validation, custom
+quality policies, detailed ESEM/PFA controls, specialized compute settings, or
+additional diagnostics.
+
+The default workflow uses the conservative content-alignment guard and the
+relative-conservative semantic objective. `semantica_quality_config()` exposes
+these and related quality settings.
+
+# Existing items and participant data
+
+These are common supported workflows, but they begin at a different point in
+the pipeline. See:
+
+```r
+vignette("semantica-user-workflows", package = "SEMANTICA")
 ```
 
-The exported CSV files allow item text, item metadata, and cosine similarities to be reviewed or shared without rerunning generation and embedding.
+# Interpretation boundary
+
+Sample-free semantic/PFA/ESEM/DFI results are representation-derived proxy
+diagnostics. They are useful for pre-data screening, but they are not
+participant-response evidence of reliability or validity. After item selection,
+review the content substantively and collect appropriate response data.

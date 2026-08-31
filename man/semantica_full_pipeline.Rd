@@ -2,153 +2,180 @@
 % Please edit documentation in R/full_pipeline.R
 \name{semantica_full_pipeline}
 \alias{semantica_full_pipeline}
-\title{One-Call SEMANTICA Pipeline: Generation to ACO-ESEM to Visualization}
+\title{Configurable SEMANTICA pipeline}
 \usage{
 semantica_full_pipeline(
   scale_name,
   scale_description,
   factors,
-  backend = "openai",
-  candidate_items_per_factor = 15L,
-  items_per_factor = NULL,
-  generation_options = list(),
-  optimization_options = list(),
-  dfi_options = list(),
-  pfa_options = list(),
-  validation_options = list(),
-  plot_options = list(),
-  verbose = TRUE,
-  ...
+  llm = semantica_llm_config(),
+  chat_model = NULL,
+  embed_model = NULL,
+  item_counts = semantica_item_count_config(),
+  generation = semantica_generation_config(),
+  ants = 90,
+  max.iter = 50,
+  search_patience = NULL,
+  max_total_iter = NULL,
+  evaporation = NULL,
+  max_esem_fits = NULL,
+  elite_k = 10,
+  archive_stable_window = 8L,
+  structural_archive_stable_window = 2L,
+  min_successful_pfa_checkpoints = 2L,
+  min_successful_esem_checkpoints = 2L,
+  esem_eval_top_k = NULL,
+  esem_every = 10,
+  run_esem_during_search = TRUE,
+  esem_weight = 0.5,
+  esem_failure_policy = c("stop", "semantic_fallback"),
+  fast_esem = TRUE,
+  fast_esem_iter_max = 500L,
+  full_esem_iter_max = 2000L,
+  esem = semantica_esem_config(),
+  resources = semantica_resource_config(),
+  compute = semantica_compute_config(),
+  quality = semantica_quality_config(),
+  pfa = semantica_pfa_config(),
+  fit_calibration = semantica_fit_calibration_config(),
+  diagnostics = semantica_diagnostics_config(),
+  validation_data = NULL,
+  validation_ordered = NULL,
+  plots = semantica_plot_config(),
+  seed = NULL,
+  verbose = TRUE
 )
 }
 \arguments{
-\item{scale_name}{Short name of the scale.}
+\item{scale_name}{Short scale name.}
 
-\item{scale_description}{One-paragraph construct description.}
+\item{scale_description}{Overall construct description.}
 
-\item{factors}{Named list of factor specs (\verb{$description}, \verb{$n_items}, etc.).}
+\item{factors}{Named factor/facet specification list.}
 
-\item{backend}{Generation backend (see \code{semantica_connect()}).}
+\item{llm}{Provider and credential config from \code{\link[=semantica_llm_config]{semantica_llm_config()}}. A
+single character is treated as the backend name.}
 
-\item{candidate_items_per_factor}{Generated candidate items per factor.
-When explicitly supplied, this overrides nested dimension/facet item counts
-and is distributed across facets; when omitted, counts stored in \code{factors}
-keep precedence.}
+\item{chat_model, embed_model}{Explicit generation and embedding model names.}
 
-\item{items_per_factor}{Named integer vector of final selected items per
-factor. If \code{NULL}, defaults to 3 items per factor.}
+\item{item_counts}{Pool/final item-count config from
+\code{\link[=semantica_item_count_config]{semantica_item_count_config()}}.}
 
-\item{generation_options}{Named list of generation and embedding options
-passed through to \code{semantica_pipeline()}, such as \code{embed_backend},
-\code{api_key}, \code{embed_api_key}, \code{chat_model}, \code{embed_model},
-\code{embed_batch_size}, \code{base_url}, \code{gguf_path}, \code{cosine_adjustment},
-\code{semantic_calibration}, \code{compute_cosine_sensitivity},
-\code{release_local_models}, \code{retain_embeddings}, \code{temperature}, \code{language},
-\code{response_format}, \code{rate_limit_policy}, \code{api_max_retries},
-\code{api_max_wait_s}, or \code{request_spacing_s}.}
+\item{generation}{Item-generation style config from
+\code{\link[=semantica_generation_config]{semantica_generation_config()}}.}
 
-\item{optimization_options}{Named list of ACO/ESEM search controls passed to
-\code{ACO_with_ESEM()}, such as \code{ants}, \code{max.iter}, \code{esem_every},
-\code{run_esem_during_search}, \code{esem_weight}, \code{rotation}, \code{elite_k},
-\code{history_mode}, \code{use_parallel}, or \code{n.cores}.}
+\item{ants}{Positive integer ACO population size (candidate solutions sampled
+per iteration). Larger values broaden search but increase semantic/PFA work
+and can increase ESEM requests at checkpoints.}
 
-\item{dfi_options}{Named list of dynamic-fit-index and semantic proxy
-calibration controls, such as \code{dfi_mode}, \code{dfi_reps},
-\code{dfi_esem_reps}, \code{final_dfi_recalibrate}, \code{final_dddfi},
-\code{final_equivtest}, \code{reference_rmsea_close}, \code{reference_rmsea_poor},
-or \code{semantic_n_sensitivity}.}
+\item{max.iter}{Compatibility alias for \code{search_patience}. It is retained for
+existing scripts and no longer controls pheromone evaporation.}
 
-\item{pfa_options}{Named list of sample-free PFA controls, such as
-\code{pfa_mode}, \code{pfa_weight}, \code{pfa_extraction}, \code{pfa_rotation},
-\code{pfa_min_loading}, \code{pfa_min_margin}, or \code{pfa_unit_diagnostics}.}
+\item{search_patience}{Optional positive integer non-improvement/stagnation
+patience. \code{NULL} uses \code{max.iter}.}
 
-\item{validation_options}{Named list of optional respondent-data validation
-and validation-sample-size planning controls, such as
-\code{validation_n_diagnostic}, \code{validation_n_reps}, \code{validation_data}, or
-\code{validation_ordered}.}
+\item{max_total_iter}{Optional positive integer hard ceiling on ACO
+iterations. \code{NULL}/\code{Inf} leaves termination to patience/archive stability.}
 
-\item{plot_options}{Named list of plotting controls. Use either legacy names
-(\code{generate_plots}, \code{save_plots}, \code{plot_out_dir}, \code{plot_device},
-\code{plot_width}, \code{plot_height}, \code{plot_dpi}, \code{include_interactive_plot}) or
-concise aliases (\code{generate}, \code{save}, \code{out_dir}, \code{device}, \code{width},
-\code{height}, \code{dpi}, \code{include_interactive}).}
+\item{evaporation}{Pheromone-memory configuration from
+\code{\link[=semantica_evaporation_config]{semantica_evaporation_config()}}.}
+
+\item{max_esem_fits}{Optional positive integer ceiling on unique search-time
+ESEM candidate jobs. Cache hits and coalesced duplicates do not consume the
+budget; archive/final diagnostic refits are counted separately.}
+
+\item{elite_k}{Positive integer maximum number of unique elite solutions kept
+for final comparison.}
+
+\item{archive_stable_window}{Stable semantic-archive updates required for
+heuristic stopping.}
+
+\item{structural_archive_stable_window}{Stable successful PFA/ESEM archive
+updates required for active structural tracks.}
+
+\item{min_successful_pfa_checkpoints, min_successful_esem_checkpoints}{Minimum
+successful evidence checkpoints before archive-based stopping is eligible.}
+
+\item{esem_eval_top_k}{\code{NULL}, \code{Inf}, or a positive integer controlling how
+many top proposal candidates are submitted at each ESEM checkpoint.}
+
+\item{esem_every}{Positive integer baseline checkpoint interval. SEMANTICA may
+adapt the effective interval to current search entropy.}
+
+\item{run_esem_during_search}{Logical; if \code{TRUE}, attempt semantic-proxy ESEM
+checkpoints during ACO. Final archive refits are still separate.}
+
+\item{esem_weight}{Number from 0 to 1 controlling ESEM contribution when an
+admissible ESEM-guided score is available.}
+
+\item{esem_failure_policy}{\code{"stop"} or \code{"semantic_fallback"}. \code{"stop"}
+aborts when all candidates at a required checkpoint fail.
+\code{"semantic_fallback"} falls back only for that checkpoint, continues trying
+ESEM at later checkpoints, and allows final semantic/PFA fallback only after
+every archived finalist has received a full-ESEM attempt.}
+
+\item{fast_esem}{Logical; use the cheaper search-time ESEM solver path.}
+
+\item{fast_esem_iter_max, full_esem_iter_max}{Positive iteration ceilings for
+search-time and full archive/final ESEM fits, respectively.}
+
+\item{esem}{Expert ESEM config from \code{\link[=semantica_esem_config]{semantica_esem_config()}}.}
+
+\item{resources}{CPU-use config from \code{\link[=semantica_resource_config]{semantica_resource_config()}}.}
+
+\item{compute}{Embedding/cosine config from \code{\link[=semantica_compute_config]{semantica_compute_config()}}.}
+
+\item{quality}{Semantic/psychometric guardrail config from
+\code{\link[=semantica_quality_config]{semantica_quality_config()}}.}
+
+\item{pfa}{Sample-free PFA config from \code{\link[=semantica_pfa_config]{semantica_pfa_config()}}.}
+
+\item{fit_calibration}{DFI/fallback calibration config from
+\code{\link[=semantica_fit_calibration_config]{semantica_fit_calibration_config()}}.}
+
+\item{diagnostics}{Optional diagnostic config from
+\code{\link[=semantica_diagnostics_config]{semantica_diagnostics_config()}}.}
+
+\item{validation_data}{Optional participant response data with columns named
+for the selected item IDs. When supplied, SEMANTICA fits a separate
+response-data ESEM; this participant-based result is reported separately
+from and should take precedence over semantic-proxy ESEM interpretation.}
+
+\item{validation_ordered}{Optional character vector of ordered item columns
+for response-data validation. \code{NULL} leaves estimator-specific defaults.}
+
+\item{plots}{Plot config from \code{\link[=semantica_plot_config]{semantica_plot_config()}}, or \code{"none"},
+\code{"summary"}, \code{"full"}, \code{TRUE}, or \code{FALSE}.}
+
+\item{seed}{Optional master seed. It controls SEMANTICA's stochastic analysis
+and is also inherited by LLM generation when the configured generation
+backend exposes an implemented seed contract (currently Ollama).}
 
 \item{verbose}{Print progress messages.}
-
-\item{...}{Backward-compatible legacy arguments. Any argument accepted by
-the previous long-form \code{semantica_full_pipeline()} signature can still be
-supplied by name here. Unknown named arguments are forwarded to
-\code{semantica_pipeline()} as generation options.}
 }
 \value{
-A named list containing:
-\itemize{
-\item \code{generation}: Output from \code{semantica_pipeline()}.
-\item \code{optimization}: Output from \code{ACO_with_ESEM()}.
-\item \code{plots}: List of \code{ggplot}/\code{plotly} objects (or \code{NULL}).
-\item \code{best_items}: Character vector of selected item IDs.
-\item \code{factor_assignment}: Named vector mapping items to factors.
-\item \code{item_structure_diagnostics}: Item-level ESEM loading and cross-loading diagnostics.
-\item \code{embedding_diagnostics}: Embedding dimensionality, norm, and model checks.
-\item \code{cosine_diagnostics}: Cosine similarity distribution diagnostics.
-\item \code{fit_indices}: List of CFI, RMSEA, SRMR, AVE, HTMT.
-\item \code{semantic_score}: Sigmoid semantic score of the final solution.
-\item \code{proposal_objective_score}: Semantic/PFA proposal objective for the final
-item set, prior to ESEM-guided scoring.
-The legacy \code{search_objective_score} field is retained as an alias.
-\item \code{final_guided_objective_score}: Final objective after requested ESEM
-guidance and archive reranking.
-\item \code{search_guidance_status}: Whether selection was ESEM-guided, explicitly
-semantic-only, or continued under an explicit semantic fallback.
-\item \code{candidate_counts}: Generated, eligible, and selected-target counts by
-factor after content-pool screening.
-\item \code{pfa_diagnostics}: Sample-free pseudo-factor-analysis diagnostics.
-\item \code{pfa_unit_diagnostics}: Optional facet/unit-level PFA diagnostics from
-averaged unit embeddings.
-\item \code{reference_sample_size}: RMSEA-power reference fit N for semantic ESEM/DFI.
-\item \code{semantic_n_sensitivity}: Final selected semantic-proxy ESEM refits over
-nearby reference-N anchors.
-\item \code{cosine_adjustment_sensitivity}: None-versus-mean-centered embedding
-cosine sensitivity diagnostic.
-\item \code{recommended_validation_n}: PFA-informed Monte Carlo response-data
-sample-size planning diagnostic.
-\item \code{semantic_similarity_reduction}: Metrics tracking within-factor redundancy change.
-\item \code{summary}: Compact summary object from ACO.
-}
+A \code{semantica_full_pipeline_result}.
 }
 \description{
-Executes the complete psychometric scale construction workflow in a single
-function call: LLM item generation, semantic embedding, ACO-ESEM optimization
-with DFI calibration, and comprehensive diagnostic plotting.
+User-facing one-call workflow for construct definition, LLM generation,
+semantic embedding, ACO-ESEM item selection, optional response-data
+validation, and compact diagnostics. The previous all-arguments interface is
+still available as \code{\link[=semantica_full_pipeline_custom]{semantica_full_pipeline_custom()}}.
 }
-\details{
-The compact interface is a wrapper around the original full-pipeline
-implementation. Option lists are resolved to the same internal arguments that
-were previously exposed one by one, so statistical defaults and returned
-objects are unchanged.
+\section{Side effects}{
 
-Advanced users can still supply the previous long-form argument names
-directly through \code{...}, for example \code{n_per_factor}, \code{i.per.f}, \code{dfi_mode},
-\code{pfa_mode}, \code{generate_plots}, or \code{plot_out_dir}. Prefer the grouped option
-lists for new code because they keep routine calls focused on the scale
-specification and selection target.
+May perform provider network I/O, persistent embedding-cache I/O, local
+Python/model initialization, stochastic ACO/DFI computation, parallel worker
+creation, and optional plot-file writes according to the supplied configs.
 }
-\examples{
-\dontrun{
-# Requires valid API credentials or an available local backend.
-result <- semantica_full_pipeline(
-  scale_name = "Cognitive Agility",
-  scale_description = "Clear and adaptive thinking.",
-  factors = list(
-    Clarity = list(description = "Clear thinking.", n_items = 8L),
-    Flexibility = list(description = "Adaptive thinking.", n_items = 8L)
-  ),
-  backend = "openai",
-  candidate_items_per_factor = 8L,
-  items_per_factor = c(Clarity = 3L, Flexibility = 3L),
-  optimization_options = list(ants = 20L, max.iter = 10L),
-  plot_options = list(generate = TRUE),
-  verbose = FALSE
-)
-}
+
+\section{Reproducibility}{
+
+The returned \code{reproducibility} record includes stochastic seeds, resolved
+model/resource metadata, and a sanitized canonical resolved configuration plus
+consistency hash. Generation provenance records whether backend-level seed
+control was actually available, the deterministic task-seed ledger when it
+was, prompt/item-pool fingerprints, and downstream content-screening state.
+Remote provider aliases remain mutable unless an actual model revision is
+available and recorded.
 }

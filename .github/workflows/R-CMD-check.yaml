@@ -6,6 +6,9 @@ on:
 
 name: R-CMD-check
 
+permissions:
+  contents: read
+
 jobs:
   R-CMD-check:
     runs-on: ${{ matrix.config.os }}
@@ -39,6 +42,20 @@ jobs:
         with:
           extra-packages: any::rcmdcheck
           needs: check
+
+      - name: Verify generated analysis directories are absent from source tarball
+        if: runner.os == 'Linux' && matrix.config.r == 'release'
+        shell: bash
+        run: |
+          set -euo pipefail
+          R CMD build . --no-build-vignettes >/tmp/semantica-build.log
+          tarball="$(ls -t SEMANTICA_*.tar.gz | head -n 1)"
+          bad="$(tar -tzf "$tarball" | grep -E '/SEMANTICA_([0-9]+\.[0-9]+\.[0-9]+_.*_test|frozen_.*_test)(/|$)' || true)"
+          rm -f "$tarball"
+          if [ -n "$bad" ]; then
+            printf 'Generated analysis/test artifacts entered the source tarball:\n%s\n' "$bad"
+            exit 1
+          fi
 
       - uses: r-lib/actions/check-r-package@v2
         with:

@@ -1,0 +1,70 @@
+name: Release validation
+
+on:
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-validation:
+    runs-on: ubuntu-latest
+    env:
+      R_KEEP_PKG_SOURCE: yes
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: release
+          use-public-rspm: true
+
+      - uses: r-lib/actions/setup-pandoc@v2
+
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            any::devtools
+            any::pkgdown
+            any::rcmdcheck
+            any::roxygen2
+          needs: website
+
+      - name: Regenerate documentation
+        shell: Rscript {0}
+        run: |
+          devtools::document()
+
+      - name: Verify generated documentation is committed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --exit-code -- DESCRIPTION NAMESPACE man/
+
+      - name: Verify documentation is idempotent
+        shell: Rscript {0}
+        run: |
+          before <- system2("git", c("diff", "--", "DESCRIPTION", "NAMESPACE", "man/"), stdout = TRUE)
+          devtools::document()
+          after <- system2("git", c("diff", "--", "DESCRIPTION", "NAMESPACE", "man/"), stdout = TRUE)
+          if (!identical(before, after)) {
+            stop("A second documentation pass changed generated files.")
+          }
+
+      - name: Run testthat suite
+        shell: Rscript {0}
+        run: |
+          devtools::test(stop_on_failure = TRUE)
+
+      - name: R CMD check --as-cran
+        shell: Rscript {0}
+        run: |
+          chk <- rcmdcheck::rcmdcheck(args = c("--as-cran", "--no-manual"), error_on = "warning")
+
+      - name: Build pkgdown site
+        shell: Rscript {0}
+        run: |
+          pkgdown::build_site(new_process = FALSE)

@@ -1,0 +1,1 @@
+\name{semantica_factor_review}\alias{semantica_factor_review}\title{Consolidate factor-level diagnostics for review}\usage{semantica_factor_review(result)}\arguments{\item{result}{A SEMANTICA result.}}\description{Combines already-computed factor semantic, coverage, ESEM, and PFA information into one review table.}\value{A data frame when factor-level diagnostics are available.}

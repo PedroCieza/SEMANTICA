@@ -1,0 +1,43 @@
+name: Bug report
+description: Report a reproducible SEMANTICA problem
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: "Please remove API keys, tokens, participant data, and private paths before submitting."
+  - type: input
+    id: version
+    attributes:
+      label: SEMANTICA version
+      placeholder: "0.2"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the observed behavior and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Minimal reproducible example
+      render: r
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include sessionInfo(), operating system, backend/model identifiers, and relevant non-secret configuration.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error/output
+      description: Paste relevant output after redacting secrets and private information.
+      render: text

@@ -1,6 +1,6 @@
 Package: SEMANTICA
 Title: Semantic Item Generation and ACO-ESEM Scale Construction
-Version: 0.1.0
+Version: 0.2
 Authors@R:
     c(
         person(
@@ -22,25 +22,26 @@ Authors@R:
             role = c("aut", "ctb")
         )
     )
-Description: Provides a workflow for psychometric scale construction that
-    combines large language model item generation, semantic embeddings, ant
-    colony optimization, exploratory structural equation modeling with
-    'lavaan', dynamic fit-index calibration, pseudo-factor-analysis diagnostics,
-    and publication-ready visualizations. The package supports cloud and local
-    model backends while keeping network-dependent examples optional during
-    automated checks.
+Description: Provides a workflow for pre-data semantic screening and
+    psychometric scale development that combines large language model item
+    generation, semantic embeddings, ant colony optimization, sample-free
+    proxy exploratory structural equation modeling with 'lavaan', dynamic
+    fit-index calibration, pseudo-factor-analysis diagnostics, construct
+    coverage diagnostics, empirical semantic-to-response calibration tools,
+    and publication-ready visualizations. Sample-free semantic PFA, ESEM, and
+    DFI outputs are explicitly treated as proxy diagnostics rather than
+    participant-based evidence of construct validity. The package supports
+    cloud and local model backends while keeping network-dependent examples
+    optional during automated checks.
 License: MIT + file LICENSE
 URL: https://github.com/PedroCieza/SEMANTICA
 BugReports: https://github.com/PedroCieza/SEMANTICA/issues
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 8.0.0
 Depends:
     R (>= 4.1.0)
 Imports:
-    doParallel,
     dynamic,
-    foreach,
     ggforce,
     ggplot2,
     ggraph,
@@ -48,12 +49,15 @@ Imports:
     grDevices,
     grid,
     htmlwidgets,
-    httr2,
+    httr2 (>= 1.0.0),
+    jsonlite,
     igraph,
     lavaan,
     Matrix,
+    methods,
     parallel,
     patchwork,
+    parallelly (>= 1.37.0),
     plotly,
     reticulate,
     rlang,
@@ -62,15 +66,19 @@ Imports:
     stringr,
     tibble,
     tidygraph,
+    tools,
     utils
 Suggests:
     knitr,
     rmarkdown,
+    torch,
     testthat (>= 3.0.0)
 Remotes:
     melissagwolf/dynamic
 VignetteBuilder: knitr
 Config/testthat/edition: 3
 SystemRequirements: Optional Conda/Python (>= 3.11) for local Hugging Face and
-    llama-cpp-python backends; optional local LLM servers for Ollama,
-    llama.cpp, or OpenAI-compatible endpoints.
+    llama-cpp-python backends; optional R torch runtime for accelerated cosine
+    matrices; optional local LLM servers for Ollama, llama.cpp, or
+    OpenAI-compatible endpoints.
+Config/roxygen2/version: 8.1.0

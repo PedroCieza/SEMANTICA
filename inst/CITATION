@@ -1,5 +1,11 @@
 citHeader("To cite SEMANTICA in publications, please use:")
 
+semantica_version <- if (exists("meta") && !is.null(meta$Version)) {
+  as.character(meta$Version)
+} else {
+  "0.2"
+}
+
 bibentry(
   bibtype = "Manual",
   title = "SEMANTICA: Semantic Item Generation and ACO-ESEM Scale Construction",
@@ -9,6 +15,6 @@ bibentry(
     person("José", "Gamarra-Moncayo")
   ),
   year = "2026",
-  note = "R package version 0.1.0",
+  note = paste("R package version", semantica_version),
   url = "https://github.com/PedroCieza/SEMANTICA"
 )

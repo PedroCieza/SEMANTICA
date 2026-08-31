@@ -1,0 +1,22 @@
+test_that("optional live OpenAI-compatible preflight and embedding path works", {
+  skip_if_not(identical(tolower(Sys.getenv("SEMANTICA_LIVE_TESTS")), "true"))
+  skip_if(Sys.getenv("OPENAI_API_KEY") == "")
+  sess <- semantica_connect("openai", verbose = FALSE, preflight = TRUE)
+  expect_s3_class(sess, "semantica_session")
+  expect_false(identical(sess$preflight$reachable, FALSE))
+  items <- data.frame(item_id = c("i1", "i2"), item_text = c("I think clearly.", "I adapt my thinking."))
+  emb <- semantica_embed(items, sess, cache = FALSE, verbose = FALSE)
+  expect_equal(nrow(emb$embeddings), 2L)
+  expect_true(ncol(emb$embeddings) > 10L)
+})
+
+test_that("optional live Ollama batched embedding path returns aligned rows", {
+  skip_if_not(identical(tolower(Sys.getenv("SEMANTICA_LIVE_TESTS")), "true"))
+  sess <- tryCatch(semantica_connect("ollama", verbose = FALSE, preflight = TRUE), error = function(e) NULL)
+  skip_if(is.null(sess) || identical(sess$preflight$reachable, FALSE))
+  skip_if(identical(sess$preflight$embed_model_available, FALSE))
+  items <- data.frame(item_id = paste0("i", 1:3), item_text = c("clear thinking", "adaptive thinking", "social confidence"))
+  emb <- semantica_embed(items, sess, batch_size = 3L, cache = FALSE, verbose = FALSE)
+  expect_equal(rownames(emb$embeddings), items$item_id)
+  expect_equal(nrow(emb$embeddings), 3L)
+})

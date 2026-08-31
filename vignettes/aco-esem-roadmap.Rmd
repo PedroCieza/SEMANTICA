@@ -1,0 +1,282 @@
+---
+title: "ACO-ESEM Optimizer: Historical Design Audit and Current Boundaries"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{ACO-ESEM Optimizer: Historical Design Audit and Current Boundaries}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+## Scope
+
+This is a maintainer-facing historical design record. It originated with an
+audit of the early public 0.1.0 codebase and was updated on 2026-08-20 after the
+resource-management, ESEM-quality, accounting, and telemetry work described
+below. It is **not** the source of truth for the current package API or current
+calculation defaults; use the function documentation and the methodological-
+foundations vignette for those. The audit did not establish runtime speedups or
+compare optimizer families. Everything labeled deferred, planned, a design
+target, a test candidate, or experimental remains a roadmap item rather than a
+claim about current package behavior.
+
+SEMANTICA supports response-free item-pool development and structural
+screening. Its embedding-derived diagnostics can help identify redundancy,
+content gaps, and candidate structures before responses are collected. They do
+not establish construct validity. A selected form remains a candidate for a
+locked analysis using participant response data.
+
+## Current Search Model
+
+`ACO_with_ESEM()` currently performs a factor-stratified binary subset search.
+Item-to-factor membership comes from metadata and is neither inferred nor
+reassigned. For factor-specific eligible sets and requested counts, the nominal
+space before duplicate-cluster proposal guarding has the following
+fixed-cardinality representation:
+
+```text
+I = disjoint union over f of I_f
+x_i in {0,1}
+sum_{i in I_f} x_i = k_f for every factor f
+x_i = 0 for items outside the eligible set E_f
+|X| = product_f choose(|E_f|, k_f)
+```
+
+Construction enforces the requested count for each factor. Its duplicate-aware
+guard can further restrict proposals while alternatives remain and can fall
+back when avoidance is infeasible. Most other qualities, including redundancy, facet
+coverage, proxy fit, loading quality, HTMT, and the current psychometric guards,
+are scores, multipliers, diagnostics, or soft penalties rather than one strict
+admissibility rule. The default `pfa_mode = "diagnostic"` reports PFA output but
+gives it zero weight in the search objective. `model_type` is an unused
+compatibility placeholder in this release.
+
+When enabled during search, ESEM fits a correlation structure derived from item
+embeddings. Without participant responses, ESEM, PFA, and DFI are sample-free
+proxy diagnostics. They can screen candidate forms, but they cannot demonstrate
+reliability, invariance, response processes, or construct validity. Response
+data supplied through validation paths are used after selection and do not
+retroactively convert the search proxy into validation evidence.
+
+The current implementation also has optimizer boundaries worth making explicit.
+The public worker default remains two, but there is no artificial two-worker
+ceiling. `semantica_resource_plan()` resolves serial, explicit, or `"auto"`
+worker requests against the CPU allocation visible to R and an optional
+`max.cores`; `reserve.cores` applies to automatic selection. Parallel execution
+uses one SEMANTICA-owned PSOCK pool with single-threaded worker BLAS settings to
+reduce nested oversubscription.
+
+ESEM scoring now begins with a common mathematical admissibility assessment.
+It checks convergence, a post-fit check when the installed `lavaan` version
+exposes one, finite standardized matrices and estimates, residual variances,
+and the validity and positive definiteness of the latent covariance matrix.
+Unavailable post-fit checking is reported rather than treated as automatic
+failure. Admissible solutions are then aligned to the intended factor axes by a
+deterministic one-to-one loading match and intended-item sign anchors; the same
+permutation and sign transformation is applied to the loading and latent
+covariance matrices. Non-admissible or unalignable fits do not receive a finite
+search-time ESEM score. These checks are mathematical quality gates, not
+substantive loading cutoffs or evidence of construct validity.
+
+The canonical `elite_multicriteria_rerank` option applies a scalar final rerank or bonus; the deprecated `elite_pareto_rerank` name is retained only as a compatibility alias. It
+does not maintain a Pareto-dominance archive and is not MOACO.
+
+SEMANTICA 0.2.10 also records `objective_context`. This does not change the
+objective calculation. It records whether the final utility came from ESEM-guided
+reranking, semantic/PFA guidance, or an explicit fallback. The numeric objective
+is an optimizer utility under that regime, not a universal between-run measure of
+scale quality. This distinction is especially important after fallback because
+the active evidence components differ.
+
+`run_multi_seed_semantica()` therefore also returns `objective_comparability`.
+Objective dispersion is still preserved for reproducibility, but when successful
+seeds span different evidence regimes it is explicitly marked as unsuitable for
+interpretation on one common quality scale. Item-set frequencies and Jaccard
+stability remain interpretable descriptive summaries regardless of that regime
+mismatch.
+
+## Resource Accounting
+
+The audit uses the following source-level cost decomposition:
+
+```text
+T_total =
+  T_pre/DFI + T_construction + N_unique,cheap * T_cheap
+  + N_unique,ESEM * T_ESEM + T_parallel/serialization + T_final
+```
+
+This decomposition identifies distinct evaluation events rather than treating a
+request, duplicate, cache hit, candidate job, low-level solver attempt, and DFI
+simulation as interchangeable. SEMANTICA now has an incremental broker for
+search-time ESEM checkpoints. It constructs canonical subset keys, coalesces
+duplicate requests within a batch, reuses central-cache outcomes, reserves the
+budget before dispatch, and records requests, unique candidates, cache hits,
+coalesced requests, candidate jobs started, converged and admissible results,
+failed results, and observed solver attempts.
+
+Accordingly, `max_esem_fits` now limits **unique search-time ESEM candidate jobs
+admitted to execution**. Cache hits and coalesced duplicate requests do not
+consume that budget. The unit is a candidate job, not a low-level solver start:
+one admitted candidate can still invoke a fallback solver attempt. Archive
+reranking fits, final or sensitivity fits, response-validation fits, and DFI
+simulation jobs are reported separately and remain outside this search cap.
+`max.iter` remains patience for non-improvement or stagnation, while
+`max_total_iter` is the optional total-iteration ceiling.
+
+Returned `evaluation_telemetry` exposes the search counters plus separate
+archive, final, and DFI counts. `$performance` records resolved resources,
+CPU/GPU compute decisions where applicable, stage timings, evaluation counts,
+candidate evaluations, and iterations; `$reproducibility` records the master
+seed, task seeds, RNG state/kind, effective workers, optimizer settings, and
+relevant versions. DFI counts cover SEMANTICA simulation stages that expose
+telemetry; third-party dynamic or DDD-FI internals may not expose every fit
+start. Thus this is a useful accounting foundation, not yet a generalized
+cross-stage evaluation service with deadlines, timeouts, a uniform retry
+policy, or one shared cache for every evaluator.
+
+Full-pool cosine construction is also instrumented. CPU/double precision is the
+safe default, and `compute_device = "auto"` currently resolves to CPU. Users may
+explicitly request an available R `torch` CUDA device, or MPS with explicitly
+requested single precision, with an explicit error-or-CPU fallback policy and
+an optional memory limit. This optional path does not accelerate ACO, `lavaan`,
+DFI, or batched semantic scoring, and no benchmark-based CPU/GPU crossover has
+been established.
+
+## Priority Roadmap
+
+The priority vocabulary is fixed: **P0: blocks trustworthy optimization or
+interpretation. P1: best-supported performance work after P0. P2:
+analysis/scaling work after P0/P1. P3: exploratory research work.**
+
+| Priority | Change | Current status | Remaining release or evidence gate |
+|---|---|---|---|
+| P0 | Canonical evaluation broker, central deduplication/cache filtering, true unique-fit accounting, separate DFI ledger, finite resource caps, and telemetry. | Search-time ESEM brokering and stage-aware counters are implemented; a generalized cross-stage broker is deferred. | Extend common keys, cache/retry policy, deadlines, and exact start accounting to every evaluator; verify serial/parallel equivalence and all cap/failure paths. |
+| P0 | Centralized ESEM convergence/propriety/admissibility predicate and rotated factor-column/sign alignment before scoring. | Implemented as the current correctness gate, with returned reasons and alignment diagnostics. | Retain improper, nonfinite, permuted, sign-flipped, and large-factor fixtures as release regressions; keep rejected fits out of guided scoring. |
+| P0 | Explicit resources and randomness: total-iteration/patience/fit/deadline limits, deterministic streams, returned RNG/config metadata, and memory-aware worker handling. | Allocation-aware PSOCK planning, iteration/search-fit limits, seed-derived task streams, and returned resource/reproducibility telemetry are implemented. | Add a global deadline and evidence-based memory-derived worker sizing; demonstrate candidate/accounting equivalence across scheduling orders and worker counts. |
+| P1 | Configured EAS, canonical RAS, subset-MMAS, and ACS comparison on one common evaluator/scaffold; no predeclared winner. | Planned comparative experiment. | Held-out, matched-budget results justify any default change against corrected legacy and non-ACO baselines. |
+| P1 | Partial-subset marginal heuristic for target-band loss, redundancy, between-factor burden, facet/content quotas, and constraint slack. | Experimental design target. | Delta calculations match full recomputation and improve held-out anytime results after construction cost is counted. |
+| P1 | Audited multi-fidelity promotion using cheap elite, diverse, and uniform-random audit strata. | Experimental design target. | Small exact problems establish gate recall; larger audits retain known nonzero random inclusion probabilities. |
+| P1 | Bounded feasible within-factor 1-swap local search and meaningful smoothing/restart. | Planned test candidate. | Net gain is shown at the same total unique-fit budget without unacceptable diversity or runtime loss. |
+| P2 | Stability outputs and nondominated audit archive; do not label current scalar rerank as Pareto. | Semantic pair-perturbation stability is returned (with the legacy split-half alias); a nondominated archive is deferred. | Known-front tests pass and validation remains isolated from archive-based selection. |
+| P3 | Learned surrogates, full MOACO, asynchronous exchange, and broader GPU work only after the exact-data pipeline and held-out benchmarks justify them. | Explicit optional R `torch` full-pool cosine exists; automatic GPU choice, GPU ESEM/DFI, and the other research extensions are deferred. | Each backend beats simpler tuned alternatives at equal end-to-end held-out cost and retains exact finalist confirmation. |
+
+The former nonnegotiable prerequisite--**one ESEM mathematical-admissibility
+rule plus factor-axis alignment**--is now implemented and should remain a
+release regression gate. It is a correctness feature, not performance evidence,
+and it does not by itself support claims about optimizer-family superiority.
+
+## Mathematical Design Targets
+
+The following equations describe future designs and test candidates; they are
+not current SEMANTICA features. A future one-trail inclusion constructor can use
+the partial-subset rule
+
+```text
+p(i | C_t) =
+  tau_i^alpha * eta_i(x_1:t-1)^beta
+  / sum_{j in C_t} tau_j^alpha * eta_j(x_1:t-1)^beta
+```
+
+over additions that can still produce a feasible completion. The heuristic must
+remain positive and normalized within the current choice set. One experimental
+marginal form is
+
+```text
+log eta_i =
+  -lambda_1 * Delta L_target
+  -lambda_2 * Delta R_max
+  -lambda_3 * Delta B_between
+  +lambda_4 * Delta C_facet
+  +lambda_5 * S_slack
+```
+
+The coefficients require configuration and ablation; the literature does not
+establish their values for SEMANTICA. Candidate lists must retain an exploration
+floor so that a strong heuristic does not silently recreate the present
+irreversible gate.
+
+Canonical RAS can be tested with the subset update
+
+```text
+tau_i <- (1 - rho) * tau_i +
+  {sum_{r=1}^{w-1} (w-r) * 1[i in x_it^(r)]
+   + w * 1[i in x_gb]} / Z
+```
+
+where the best `w - 1` iteration subsets receive decreasing weight and the
+global best receives its separate weight `w`. A subset-MMAS candidate is
+
+```text
+tau_i <- clip_{[tau_min,f, tau_max,f]}(
+  (1 - rho) * tau_i + Delta * 1[i in x*]
+)
+```
+
+Each displayed pheromone equation is the complete update, including exactly one
+evaporation operation. It must not be described or implemented as an additional
+deposit following a separate evaporation step. Deposit scales and trail bounds
+must be calibrated for without-replacement subset selection rather than copied
+unchanged from routing problems. Only comparably evaluated, admissible exact
+solutions should drive exact-objective pheromone updates.
+
+## Benchmark and Release Gates
+
+The benchmark has three complementary layers. **Exact small subset problems**
+must be enumerable, including duplicate, quota, imbalanced-pool, prefilter, and
+failure fixtures; they establish optima, gate recall, sampling probabilities,
+and algorithm invariants. **Controlled synthetic psychometric/proxy problems**
+must vary factor structure, loadings, cross-loadings, correlations, wording,
+sample size, response type, misspecification, content scarcity, and fit failure.
+Their semantic generator must not simply copy the psychometric population
+correlation. **Empirical pools with response data** must include at least three
+distinct pool structures and separate development, locked inner-selection, and
+untouched outer or external validation data.
+
+Required baselines are random feasible sampling, greedy construction plus
+swaps, simulated annealing, tabu search, a fixed-cardinality genetic algorithm,
+corrected legacy SEMANTICA, EAS, canonical RAS, subset-MMAS, ACS, and a
+preregistered memetic extension of the development-set ACO winner. Every method
+must use the same evaluator, candidate pool, constraints, frozen calibration and
+objective, machine allocation, and final-refit rules. Objective
+weights must not be tuned in the same race as optimizer settings.
+
+Primary budgets are 50, 100, 250, 500, and, where feasible, 1000 unique
+search-time fast-ESEM candidate jobs, using the implemented `max_esem_fits`
+definition. Observed fallback solver attempts, DFI simulations, archive and
+final fits, and end-to-end wall time must also be reported separately. All runs,
+timeouts, failed or inadmissible fits, cache/coalescing behavior, and anytime
+traces belong in the comparison; unused budget does not count as additional
+solution quality.
+
+The top three remaining interventions to test are:
+
+1. Extend the incremental ESEM broker into a generalized, cross-stage evaluator
+   with explicit timeout and retry semantics.
+2. Configured bounded update-family comparison with real stagnation recovery.
+3. Constraint-preserving, budget-capped elite swaps.
+
+A component should become a default only after it improves a preregistered
+anytime endpoint on held-out inner-selection instances by a meaningful margin,
+meets locked response-validation noninferiority criteria, avoids a material rise
+in improper or failed fits, and does not impose a harmful slowdown. The chosen
+method and form must then be locked before the untouched outer test.
+
+## What Not To Claim Yet
+
+- Do not claim universal ACO superiority or a predetermined winner among EAS,
+  canonical RAS, MMAS, and ACS.
+- Do not describe the incremental search-time broker as a complete generalized
+  evaluation service, or interpret `max_esem_fits` as an end-to-end cap. It
+  limits unique search-time ESEM candidate jobs, not fallback solver attempts,
+  archive/final refits, or DFI work.
+- Do not call the current scalar `elite_multicriteria_rerank` behavior Pareto
+  optimization, a nondominated archive, or MOACO.
+- Do not claim semantic similarity or proxy ESEM/PFA validates constructs. A
+  stable archive or attractive proxy fit is not respondent-data validation or
+  proof of a global optimum.
+- Do not claim automatic GPU selection, benchmarked GPU speedups, or GPU-backed
+  ACO, `lavaan`, DFI, or batched semantic scoring. The current optional GPU path
+  is an explicitly selected R `torch` implementation for full-pool cosine
+  construction (plus separately configured local-model inference).
+- Learned surrogates, full MOACO, adaptive controllers, asynchronous exchange,
+  and broader GPU work remain P3 opportunities until the exact-data pipeline
+  and held-out evidence justify their additional complexity.

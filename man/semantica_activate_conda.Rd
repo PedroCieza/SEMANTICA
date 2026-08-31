@@ -19,6 +19,18 @@ Invisibly returns \code{TRUE}.
 \description{
 Activate a Conda environment for use in the current R session
 }
+\section{Side effects}{
+
+Selects a Conda/Python environment for the current R session and may initialize
+Python through \code{reticulate}.
+}
+
+\section{Reproducibility}{
+
+The active Python executable is environment-dependent; record the environment
+and package versions when reproducing a local-model analysis.
+}
+
 \examples{
 \dontrun{
 semantica_activate_conda(env_name = "semantica", conda = NULL, verbose = TRUE)

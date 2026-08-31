@@ -1,0 +1,29 @@
+name: Feature request
+description: Propose an improvement without assuming an internal implementation
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: What is difficult, missing, or unnecessarily costly for users/researchers today?
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Desired behavior
+      description: Describe the outcome you would like SEMANTICA to provide.
+    validations:
+      required: true
+  - type: textarea
+    id: methods
+    attributes:
+      label: Methodological implications or references
+      description: If this changes a calculation or decision rule, explain why and provide relevant scientific/statistical sources where possible.
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility considerations
+      description: Note any existing workflow, result field, backend, or documented behavior that should remain unchanged.

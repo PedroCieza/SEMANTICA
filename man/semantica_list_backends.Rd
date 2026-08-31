@@ -7,10 +7,13 @@
 semantica_list_backends()
 }
 \value{
-Invisibly returns \code{SEMANTICA_BACKENDS}.
+Invisibly returns \code{SEMANTICA_BACKENDS}; the printed table is for user guidance.
 }
 \description{
-Prints a compact registry of SEMANTICA generation and embedding backends.
+Prints a task-oriented backend table showing local/cloud type, credential
+environment variable, generation and embedding capability, and default
+models. It also highlights generation-only backends that require a separate
+embedding provider.
 }
 \examples{
 backends <- semantica_list_backends()

@@ -1,0 +1,155 @@
+---
+title: "SEMANTICA User Workflows: Existing Items, Embeddings, and Pilot Data"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{SEMANTICA User Workflows: Existing Items, Embeddings, and Pilot Data}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+# Choose the workflow from your starting material
+
+| You currently have | Start with |
+|---|---|
+| construct/factor definitions only | `semantica_run()` |
+| item text but no embeddings | `semantica_embed()` -> `semantica_wrap()` |
+| item text plus external embeddings | `semantica_import_embeddings()` -> `semantica_wrap()` |
+| participant responses after a pilot | `semantica_full_pipeline(..., validation_data = ...)` |
+
+# Item-table schema
+
+For existing item pools, use:
+
+```{r}
+items <- data.frame(
+  item_id = c("a1", "a2", "a3", "b1", "b2", "b3"),
+  factor = rep(c("A", "B"), each = 3),
+  facet = NA_character_,
+  item_text = paste("Item", 1:6),
+  stringsAsFactors = FALSE
+)
+```
+
+`item_id` must be unique and stable. `factor` is the intended factor.
+`facet` is optional. `item_text` is the wording to embed.
+
+SEMANTICA accepts some historical aliases internally, but new user code should
+prefer this schema.
+
+# Existing text, no embeddings
+
+Create only an embedding-purpose session:
+
+```{r eval=FALSE}
+embed_session <- semantica_connect(
+  backend = "ollama",
+  embed_model = "nomic-embed-text",
+  purpose = "embed"
+)
+
+embedded <- semantica_embed(
+  items_tbl = items,
+  session = embed_session,
+  verbose = FALSE
+)
+
+prepared <- semantica_wrap(
+  embedded,
+  verbose = FALSE
+)
+```
+
+Then set the final number of items per factor and run the optimizer:
+
+```{r eval=FALSE}
+i_per_factor <- c(A = 3L, B = 3L)
+
+selected <- ACO_with_ESEM(
+  cosine_sim_matrix = prepared$cosine_sim_matrix,
+  df = prepared$df,
+  i.per.f = i_per_factor,
+  pfa_mode = "diagnostic",
+  dfi_mode = "heuristic_semantic",
+  use_parallel = TRUE,
+  seed = 20260828L
+)
+```
+
+This workflow starts at the embedding stage because the item text already
+exists.
+
+# Existing external embeddings
+
+Use `semantica_import_embeddings()` rather than manually fabricating an
+embedding-result list:
+
+```{r eval=FALSE}
+imported <- semantica_import_embeddings(
+  embeddings = embedding_matrix,
+  items_tbl = items,
+  embedding_ids = rownames(embedding_matrix),
+  provider = "external",
+  model = "my-embedding-model",
+  normalize = FALSE
+)
+
+prepared <- semantica_wrap(imported, verbose = FALSE)
+```
+
+Embedding IDs and item IDs must match exactly; positional row alignment is not
+assumed.
+
+# Participant responses after a pilot
+
+Participant data must be a data frame whose item columns use the same selected
+item IDs. Extra non-item variables should be removed or handled outside the
+validation input so item identity is unambiguous.
+
+For ordinal items, supply the ordered item-column names through
+`validation_ordered`.
+
+```{r eval=FALSE}
+result <- semantica_full_pipeline(
+  scale_name = "Example Scale",
+  scale_description = "...",
+  factors = factors,
+  llm = llm_cfg,
+  chat_model = "...",
+  embed_model = "...",
+  validation_data = pilot_responses,
+  validation_ordered = names(pilot_responses),
+  seed = 20260828L
+)
+```
+
+Then inspect:
+
+```{r eval=FALSE}
+semantica_evidence_status(result)
+summary(result)
+```
+
+The participant-response fit is a separate evidence family. It does not turn
+search-time embedding proxies into participant evidence.
+
+If the scale was selected earlier and the result was preserved, participant data can be attached later without repeating generation or selection:
+
+```{r eval=FALSE}
+validated <- semantica_validate(
+  result,
+  responses = pilot_responses,
+  ordered = names(pilot_responses)
+)
+summary(validated, sections = "participant")
+```
+
+The adapter requires the stored selected-item structure and fit-cutoff configuration from the original run.
+
+# Saving an existing-item workflow
+
+Prepared objects can be exported to CSV. For a complete high-level result,
+`semantica_save_bundle()` preserves the full analysis provenance.

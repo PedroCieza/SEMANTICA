@@ -7,7 +7,7 @@
 plot_summary_of_results(result, cosine_sim_matrix = NULL)
 }
 \arguments{
-\item{result}{Output from \code{ACO_with_ESEM()}.}
+\item{result}{A high-level SEMANTICA result or output from \code{ACO_with_ESEM()}.}
 
 \item{cosine_sim_matrix}{Optional full cosine similarity matrix. Used only as
 a fallback when stored semantic-reduction diagnostics are unavailable.}

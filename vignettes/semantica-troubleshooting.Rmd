@@ -1,0 +1,151 @@
+---
+title: "SEMANTICA Troubleshooting"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{SEMANTICA Troubleshooting}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+# Start here
+
+Before rerunning an expensive analysis:
+
+```{r eval=FALSE}
+semantica_list_backends()
+semantica_check_setup(llm = your_llm_config, probe = TRUE)
+semantica_run_plan(...)
+```
+
+# Missing API key
+
+Store cloud credentials in `.Renviron` and restart R. Common variables are
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, and `HF_TOKEN`.
+
+Do not place credentials in saved SEMANTICA configuration files or public
+scripts when an environment variable is sufficient.
+
+# Anthropic or Groq says embeddings are unavailable
+
+This is expected for the built-in registry. Configure a separate embedding
+backend:
+
+```{r eval=FALSE}
+llm_cfg <- semantica_llm_config(
+  backend = "anthropic",
+  embed_backend = "openai"
+)
+```
+
+# Ollama/local server is unreachable
+
+Verify that the server process is running and that the model is installed.
+Then use:
+
+```{r eval=FALSE}
+semantica_check_setup(llm = "ollama", probe = TRUE)
+```
+
+A preflight warning is diagnostic; the actual request remains authoritative.
+
+# Model not found
+
+Model identifiers are provider/local-server specific. Use the provider's model
+registry or local model list, then rerun `semantica_check_setup(..., probe =
+TRUE)`.
+
+# Existing item pool fails
+
+Check that the table has unique, non-empty `item_id`, `factor`, and `item_text`
+columns. For external embeddings, row IDs must exactly match item IDs.
+
+# Too many items/API work were requested
+
+Remember:
+
+- `pool_items` is retained candidates **per factor**;
+- `overgenerate` multiplies the approximate raw target;
+- facets divide the factor-level retained target rather than multiplying it.
+
+Use `semantica_run_plan()` before the next run.
+
+# Console output is too verbose
+
+Use:
+
+```{r eval=FALSE}
+semantica_run(..., progress = "normal")   # concise default
+semantica_run(..., progress = "quiet")
+semantica_run(..., progress = "detailed")
+```
+
+# An interrupted parallel run left resources uncertain
+
+Use:
+
+```{r eval=FALSE}
+semantica_reset_resources()
+```
+
+Then rerun with `workers = "auto"`, an explicit worker limit, or
+`workers = "serial"`.
+
+# Cache behavior is confusing
+
+Inspect the cache before changing it:
+
+```{r eval=FALSE}
+semantica_cache_info()
+semantica_cache_info(result)
+```
+
+To bypass the cache, set `embedding_cache = FALSE` in
+`semantica_llm_config()`. To delete cached embeddings, explicit confirmation is
+required:
+
+```{r eval=FALSE}
+semantica_clear_cache(confirm = TRUE)
+```
+
+# Python/Hugging Face backend does not initialize
+
+Use the supported environment helpers first:
+
+```{r eval=FALSE}
+semantica_setup_conda()
+semantica_activate_conda()
+semantica_check_setup(llm = "python_hf", probe = TRUE)
+```
+
+Only move to manual device-map/CUDA settings after the base environment is
+working.
+
+# A plot fails but the run succeeded
+
+Plot generation is post-analysis presentation. `semantica_plot_all()` now
+reports how many plot objects succeeded and lists optional failures. A failed
+plot does not retroactively invalidate the completed optimizer result.
+
+# How do I know what settings were really used?
+
+```{r eval=FALSE}
+semantica_config(result)
+semantica_models(result)
+```
+
+These access the sanitized resolved configuration/provenance recorded by the
+pipeline.
+
+# What should I do after a successful sample-free run?
+
+1. inspect `semantica_items(result)`;
+2. review the wording and content coverage substantively;
+3. inspect `semantica_evidence_status(result)` and `summary(result)`;
+4. preserve the bundle;
+5. collect participant responses;
+6. perform appropriate response-based psychometric validation before making
+   reliability/validity claims.

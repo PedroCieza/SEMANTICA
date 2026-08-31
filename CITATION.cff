@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use SEMANTICA in research, please cite the software version you used. Method-specific references are documented in the methodological-foundations vignette."
+title: "SEMANTICA: Semantic Item Generation and ACO-ESEM Scale Construction"
+version: 0.2
+authors:
+  - family-names: "Cieza-Liza"
+    given-names: "Pedro"
+  - family-names: "Salas-Silva"
+    given-names: "Reyniel"
+  - family-names: "Gamarra-Moncayo"
+    given-names: "José"
+repository-code: "https://github.com/PedroCieza/SEMANTICA"
+url: "https://PedroCieza.github.io/SEMANTICA/"
+license: MIT
+keywords:
+  - psychometrics
+  - scale development
+  - semantic embeddings
+  - ant colony optimization
+  - exploratory structural equation modeling
+  - R package
+abstract: >-
+  SEMANTICA is an R package for semantic-assisted psychometric scale development
+  and pre-data item screening. It combines LLM-assisted item generation, semantic
+  embeddings, ant colony optimization, sample-free structural proxy diagnostics,
+  optional participant-response validation, reproducibility tooling, and
+  visualization.

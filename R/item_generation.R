@@ -9,22 +9,357 @@ utils::globalVariables(c("item_id", "factor", "item_text", "attempt", "ID", "Dim
 # =================================================================
 # P0  CONDA / PYTHON ENVIRONMENT
 # =================================================================
+.semantica_verify_conda_torch <- function(env_name, conda, install_llamacpp = TRUE) {
+  python <- tryCatch(
+    reticulate::conda_python(envname = env_name, conda = conda),
+    error = function(e) NULL
+  )
+  if (is.null(python) || !file.exists(python)) {
+    return(list(available = FALSE, error = "Conda Python executable was not found."))
+  }
+  probe_file <- tempfile("semantica-python-probe-", fileext = ".py")
+  on.exit(unlink(probe_file, force = TRUE), add = TRUE)
+  imports <- c(
+    "torch", "transformers", "sentence_transformers", "accelerate",
+    "einops", "numpy", "scipy"
+  )
+  if (isTRUE(install_llamacpp)) imports <- c(imports, "llama_cpp")
+  probe <- c(
+    "import importlib, platform, torch",
+    sprintf("mods = %s", paste0("[", paste(sprintf("'%s'", imports), collapse = ","), "]")),
+    "loaded = {name: importlib.import_module(name) for name in mods}",
+    "cuda = bool(torch.cuda.is_available())",
+    "mps_obj = getattr(torch.backends, 'mps', None)",
+    "mps = bool(mps_obj is not None and mps_obj.is_available())",
+    "names = [torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())] if cuda else []",
+    "print('python\\t' + platform.python_version())",
+    "print('torch_version\\t' + str(torch.__version__))",
+    "print('cuda_available\\t' + str(cuda).lower())",
+    "print('cuda_runtime\\t' + str(torch.version.cuda or ''))",
+    "print('gpu_names\\t' + '||'.join(names))",
+    "print('mps_available\\t' + str(mps).lower())",
+    "print('package_versions\\t' + '||'.join(name + '=' + str(getattr(module, '__version__', 'unknown')) for name, module in loaded.items()))"
+  )
+  writeLines(probe, probe_file, useBytes = TRUE)
+  output <- tryCatch(
+    system2(python, shQuote(probe_file), stdout = TRUE, stderr = TRUE),
+    error = function(e) structure(conditionMessage(e), status = 1L)
+  )
+  status <- attr(output, "status") %||% 0L
+  if (!identical(as.integer(status), 0L)) {
+    return(list(
+      available = FALSE,
+      python = python,
+      error = paste(as.character(output), collapse = "\n")
+    ))
+  }
+  fields <- strsplit(as.character(output), "\t", fixed = TRUE)
+  fields <- fields[lengths(fields) >= 2L]
+  values <- setNames(
+    vapply(fields, function(x) paste(x[-1L], collapse = "\t"), character(1L)),
+    vapply(fields, `[[`, character(1L), 1L)
+  )
+  package_parts <- if (nzchar(values[["package_versions"]] %||% "")) {
+    strsplit(values[["package_versions"]], "||", fixed = TRUE)[[1L]]
+  } else {
+    character(0L)
+  }
+  package_versions <- if (length(package_parts) > 0L) {
+    names_out <- sub("=.*$", "", package_parts)
+    values_out <- sub("^[^=]*=", "", package_parts)
+    stats::setNames(values_out, names_out)
+  } else {
+    character(0L)
+  }
+  list(
+    available = TRUE,
+    python = python,
+    python_version = unname(values[["python"]] %||% NA_character_),
+    torch_version = unname(values[["torch_version"]] %||% NA_character_),
+    cuda_available = identical(values[["cuda_available"]], "true"),
+    cuda_runtime = unname(values[["cuda_runtime"]] %||% NA_character_),
+    gpu_names = if (nzchar(values[["gpu_names"]] %||% "")) {
+      strsplit(values[["gpu_names"]], "||", fixed = TRUE)[[1L]]
+    } else {
+      character(0L)
+    },
+    mps_available = identical(values[["mps_available"]], "true"),
+    package_versions = package_versions
+  )
+}
+
+.semantica_validate_conda_setup_verification <- function(
+    verification,
+    accelerator = c("cpu", "cuda")) {
+  accelerator <- match.arg(accelerator)
+  if (!is.list(verification) || !isTRUE(verification$available)) {
+    detail <- if (is.list(verification)) {
+      verification$error %||% "unknown error"
+    } else {
+      "verification did not return a result list"
+    }
+    stop(
+      "Python environment verification failed: ",
+      detail,
+      call. = FALSE
+    )
+  }
+  if (identical(accelerator, "cuda") &&
+      !isTRUE(verification$cuda_available)) {
+    stop(
+      paste(
+        "CUDA environment verification failed:",
+        "accelerator='cuda' was requested, but the installed Python",
+        "PyTorch runtime reports torch.cuda.is_available() = FALSE.",
+        "Check the selected wheel index, GPU driver, and CUDA runtime;",
+        "SEMANTICA will not report this setup as successful."
+      ),
+      call. = FALSE
+    )
+  }
+  invisible(verification)
+}
+
+.semantica_conda_path_like <- function(value) {
+  if (length(value) != 1L || is.na(value) || !nzchar(trimws(value))) {
+    return(FALSE)
+  }
+  value <- trimws(as.character(value))
+  grepl("[/\\\\]", value) ||
+    grepl("^[A-Za-z]:", value) ||
+    startsWith(value, ".") ||
+    startsWith(value, "~")
+}
+
+.semantica_normalize_conda_path <- function(path) {
+  if (is.null(path)) return(character(0L))
+  vapply(as.character(path), function(value) {
+    if (is.na(value) || !nzchar(trimws(value))) return(NA_character_)
+    value <- path.expand(trimws(value))
+    normalized <- tryCatch(
+      normalizePath(value, winslash = "/", mustWork = FALSE),
+      error = function(e) gsub("\\\\", "/", value)
+    )
+    normalized <- gsub("\\\\", "/", normalized)
+    if (!identical(normalized, "/") &&
+        !grepl("^[A-Za-z]:/$", normalized)) {
+      normalized <- sub("/+$", "", normalized)
+    }
+    if (identical(.Platform$OS.type, "windows")) {
+      normalized <- tolower(normalized)
+    }
+    normalized
+  }, character(1L), USE.NAMES = FALSE)
+}
+
+.semantica_conda_prefix_from_executable <- function(executable) {
+  normalized <- .semantica_normalize_conda_path(executable)
+  vapply(normalized, function(path) {
+    if (is.na(path)) return(NA_character_)
+    parent <- dirname(path)
+    if (tolower(basename(parent)) %in% c("bin", "scripts", "condabin")) {
+      parent <- dirname(parent)
+    }
+    .semantica_normalize_conda_path(parent)[[1L]]
+  }, character(1L), USE.NAMES = FALSE)
+}
+
+.semantica_conda_reference_names <- function(reference) {
+  if (is.null(reference)) return(character(0L))
+  names_out <- vapply(as.character(reference), function(value) {
+    if (is.na(value) || !nzchar(trimws(value))) return(NA_character_)
+    value <- trimws(value)
+    if (.semantica_conda_path_like(value)) {
+      value <- basename(.semantica_normalize_conda_path(value)[[1L]])
+    }
+    tolower(value)
+  }, character(1L), USE.NAMES = FALSE)
+  unique(names_out[!is.na(names_out) & nzchar(names_out)])
+}
+
+.semantica_conda_environment_prefixes <- function(existing) {
+  if (is.null(existing) || !is.data.frame(existing) || nrow(existing) == 0L) {
+    return(character(0L))
+  }
+  prefixes <- rep(NA_character_, nrow(existing))
+  if ("prefix" %in% names(existing)) {
+    prefixes <- .semantica_normalize_conda_path(existing$prefix)
+  }
+  if ("python" %in% names(existing)) {
+    missing <- is.na(prefixes) | !nzchar(prefixes)
+    if (any(missing)) {
+      prefixes[missing] <- .semantica_conda_prefix_from_executable(
+        existing$python[missing]
+      )
+    }
+  }
+  prefixes
+}
+
+.semantica_conda_environment_matches <- function(env_name, existing) {
+  if (is.null(existing) || !is.data.frame(existing) || nrow(existing) == 0L) {
+    return(integer(0L))
+  }
+  matches <- integer(0L)
+  if ("name" %in% names(existing)) {
+    target_name <- as.character(env_name)
+    existing_names <- as.character(existing$name)
+    if (identical(.Platform$OS.type, "windows")) {
+      target_name <- tolower(target_name)
+      existing_names <- tolower(existing_names)
+    }
+    matches <- which(!is.na(existing_names) & existing_names == target_name)
+  }
+  if (.semantica_conda_path_like(env_name)) {
+    target_path <- .semantica_normalize_conda_path(env_name)[[1L]]
+    prefixes <- .semantica_conda_environment_prefixes(existing)
+    matches <- union(
+      matches,
+      which(!is.na(prefixes) & prefixes == target_path)
+    )
+  }
+  as.integer(matches)
+}
+
+.semantica_assert_safe_conda_recreate <- function(
+    env_name,
+    existing = NULL,
+    active_env = "",
+    active_prefix = "",
+    active_python = "",
+    conda_bin = NULL) {
+  matches <- .semantica_conda_environment_matches(env_name, existing)
+  matched_names <- if (length(matches) > 0L && "name" %in% names(existing)) {
+    as.character(existing$name[matches])
+  } else {
+    character(0L)
+  }
+  target_names <- unique(c(
+    .semantica_conda_reference_names(env_name),
+    .semantica_conda_reference_names(matched_names)
+  ))
+  target_paths <- character(0L)
+  if (.semantica_conda_path_like(env_name)) {
+    target_paths <- .semantica_normalize_conda_path(env_name)
+  }
+  prefixes <- .semantica_conda_environment_prefixes(existing)
+  if (length(matches) > 0L && length(prefixes) > 0L) {
+    target_paths <- c(target_paths, prefixes[matches])
+  }
+  target_paths <- unique(target_paths[!is.na(target_paths)])
+
+  protected_paths <- character(0L)
+  if (!is.null(existing) && is.data.frame(existing) &&
+      nrow(existing) > 0L && "name" %in% names(existing)) {
+    protected_rows <- which(tolower(as.character(existing$name)) %in%
+                              c("base", "root"))
+    if (length(protected_rows) > 0L && length(prefixes) > 0L) {
+      protected_paths <- c(protected_paths, prefixes[protected_rows])
+    }
+  }
+  if (!is.null(conda_bin) && .semantica_conda_path_like(conda_bin)) {
+    protected_paths <- c(
+      protected_paths,
+      .semantica_conda_prefix_from_executable(conda_bin)
+    )
+  }
+  protected_paths <- unique(protected_paths[!is.na(protected_paths)])
+
+  active_names <- character(0L)
+  active_paths <- character(0L)
+  if (length(active_env) > 0L && !is.na(active_env[[1L]]) &&
+      nzchar(trimws(active_env[[1L]]))) {
+    if (.semantica_conda_path_like(active_env[[1L]])) {
+      active_paths <- c(
+        active_paths,
+        .semantica_normalize_conda_path(active_env[[1L]])
+      )
+    }
+    active_names <- c(
+      active_names,
+      .semantica_conda_reference_names(active_env[[1L]])
+    )
+  }
+  if (length(active_prefix) > 0L && !is.na(active_prefix[[1L]]) &&
+      nzchar(trimws(active_prefix[[1L]]))) {
+    active_paths <- c(
+      active_paths,
+      .semantica_normalize_conda_path(active_prefix[[1L]])
+    )
+    active_names <- c(
+      active_names,
+      .semantica_conda_reference_names(active_prefix[[1L]])
+    )
+  }
+  if (length(active_python) > 0L && !is.na(active_python[[1L]]) &&
+      nzchar(trimws(active_python[[1L]]))) {
+    active_paths <- c(
+      active_paths,
+      .semantica_conda_prefix_from_executable(active_python[[1L]])
+    )
+    active_names <- c(
+      active_names,
+      .semantica_conda_reference_names(
+        .semantica_conda_prefix_from_executable(active_python[[1L]])
+      )
+    )
+  }
+  active_names <- unique(active_names)
+  active_paths <- unique(active_paths[!is.na(active_paths)])
+
+  protected_name <- any(target_names %in% c("base", "root"))
+  active_name <- length(intersect(target_names, active_names)) > 0L
+  protected_path <- length(intersect(target_paths, protected_paths)) > 0L
+  active_path <- length(intersect(target_paths, active_paths)) > 0L
+  if (protected_name || active_name || protected_path || active_path) {
+    stop(
+      "Refusing to remove the base/root or currently active Conda environment. ",
+      "Choose a dedicated inactive environment name or prefix.",
+      call. = FALSE
+    )
+  }
+  invisible(TRUE)
+}
+
 #' Bootstrap a Conda environment for SEMANTICA Python backends
 #'
 #' @param env_name   Name of the Conda environment (default `"semantica"`).
 #' @param conda      Path to the `conda` executable. `NULL` = auto-detect.
 #' @param python_ver Python version string (default `"3.11"`).
 #' @param packages   Character vector of additional `pip` packages to install.
+#' @param accelerator Python PyTorch installation profile. `"cpu"` is the
+#'   reproducible compatibility default. `"auto"` currently resolves to CPU
+#'   and reports that decision; `"cuda"` requires an explicit
+#'   `torch_index_url` appropriate for the host CUDA/runtime combination.
+#' @param torch_index_url Optional PyTorch wheel index. This is required for
+#'   `accelerator = "cuda"`; for CPU on Windows/Linux, SEMANTICA uses the
+#'   official CPU wheel index unless overridden.
+#' @param install_llamacpp Logical; install `llama-cpp-python`. Its optional GPU
+#'   build flags are platform-specific and are not inferred by this function.
+#' @param verify Logical; probe the installed Python PyTorch runtime without
+#'   loading a language or embedding model.
 #' @param force      Recreate the environment even if it already exists.
 #' @param verbose    Print progress messages.
 #'
 #' @details
-#' Core packages always installed: `torch` (CPU), `transformers`,
-#' `sentence-transformers`, `accelerate`, `einops`, `llama-cpp-python`.
+#' Core packages use the tested version ranges recorded in
+#' `inst/python/requirements-compatible.txt`. CUDA installation is never
+#' selected merely because a GPU appears to be present.
 #' After calling this function, restart your R session and call
 #' `semantica_activate_conda()` to attach the environment.
 #'
-#' @return Invisibly returns the environment name.
+#' @section Side effects:
+#' Creates/removes Conda environments when requested, installs Python packages,
+#' may access package indexes over the network, and probes the local Python/PyTorch
+#' runtime.
+#'
+#' @section Reproducibility:
+#' The requested/resolved accelerator and verification metadata are returned as
+#' attributes. Exact Python package resolution can still depend on the configured
+#' package indexes and their available artifacts.
+#'
+#' @return Invisibly returns the environment name with setup and verification
+#'   metadata stored as attributes.
 #' @export
 #' @examples
 #' \dontrun{
@@ -32,12 +367,39 @@ utils::globalVariables(c("item_id", "factor", "item_text", "attempt", "ID", "Dim
 #'   env_name = "semantica",
 #'   python_ver = "3.11",
 #'   packages = character(0L),
+#'   accelerator = "cpu",
 #'   force = FALSE
 #' )
 #' }
 semantica_setup_conda <- function(env_name = "semantica", conda = NULL,
                                   python_ver = "3.11", packages = character(0L),
+                                  accelerator = c("cpu", "auto", "cuda"),
+                                  torch_index_url = NULL,
+                                  install_llamacpp = TRUE, verify = TRUE,
                                   force = FALSE, verbose = TRUE) {
+  accelerator_requested <- match.arg(accelerator)
+  accelerator_resolved <- if (accelerator_requested == "auto") "cpu" else accelerator_requested
+  env_name <- trimws(as.character(env_name[1L]))
+  if (length(env_name) != 1L || is.na(env_name) || !nzchar(env_name)) {
+    stop("'env_name' must be one non-empty Conda environment name.")
+  }
+  if (isTRUE(force)) {
+    # Perform the name/basename checks before discovering Conda so an obviously
+    # unsafe request cannot initialize tooling or reach any mutating operation.
+    .semantica_assert_safe_conda_recreate(
+      env_name = env_name,
+      active_env = Sys.getenv("CONDA_DEFAULT_ENV", unset = ""),
+      active_prefix = Sys.getenv("CONDA_PREFIX", unset = "")
+    )
+  }
+  if (accelerator_resolved == "cuda" &&
+      (is.null(torch_index_url) || !nzchar(trimws(torch_index_url)))) {
+    stop(
+      "'accelerator = \"cuda\"' requires 'torch_index_url' for a PyTorch ",
+      "wheel index compatible with this operating system and CUDA runtime. ",
+      "SEMANTICA will not guess or silently install a CUDA stack."
+    )
+  }
   if (!requireNamespace("reticulate", quietly = TRUE)) {
     stop("Package 'reticulate' is required. Install with: install.packages('reticulate')")
   }
@@ -51,10 +413,37 @@ semantica_setup_conda <- function(env_name = "semantica", conda = NULL,
     cat("STEP 0 -- CONDA ENVIRONMENT SETUP\n")
     cat("============================================================\n")
     cat(sprintf("  Environment : %s\n  Python      : %s\n  Conda       : %s\n", env_name, python_ver, conda_bin))
+    cat(sprintf("  Accelerator : %s%s\n", accelerator_resolved,
+                if (accelerator_requested == "auto") " (auto resolved conservatively)" else ""))
   }
 
   existing <- tryCatch(reticulate::conda_list(conda = conda_bin), error = function(e) NULL)
-  env_exists <- !is.null(existing) && env_name %in% existing$name
+  environment_matches <- .semantica_conda_environment_matches(
+    env_name,
+    existing
+  )
+  env_exists <- length(environment_matches) > 0L
+  if (isTRUE(force)) {
+    active_python <- ""
+    python_is_active <- isTRUE(tryCatch(
+      reticulate::py_available(initialize = FALSE),
+      error = function(e) FALSE
+    ))
+    if (python_is_active) {
+      active_python <- tryCatch(
+        as.character(reticulate::py_config()$python %||% ""),
+        error = function(e) ""
+      )
+    }
+    .semantica_assert_safe_conda_recreate(
+      env_name = env_name,
+      existing = existing,
+      active_env = Sys.getenv("CONDA_DEFAULT_ENV", unset = ""),
+      active_prefix = Sys.getenv("CONDA_PREFIX", unset = ""),
+      active_python = active_python,
+      conda_bin = conda_bin
+    )
+  }
 
   if (env_exists && !force) {
     if (verbose) cat(sprintf("  Status      : environment '%s' already exists (skipping creation).\n", env_name))
@@ -68,21 +457,77 @@ semantica_setup_conda <- function(env_name = "semantica", conda = NULL,
     if (verbose) cat("  Environment created.\n")
   }
 
-  core_pkgs <- c("torch", "transformers", "sentence-transformers", "accelerate", "einops", "llama-cpp-python", "numpy", "scipy")
+  torch_index_eff <- torch_index_url
+  if (is.null(torch_index_eff) && accelerator_resolved == "cpu" &&
+      !identical(Sys.info()[["sysname"]], "Darwin")) {
+    torch_index_eff <- "https://download.pytorch.org/whl/cpu"
+  }
+  core_pkgs <- c(
+    "transformers>=4.40,<6", "sentence-transformers>=3,<6",
+    "accelerate>=0.30,<2", "einops>=0.7,<1", "numpy>=1.26,<3",
+    "scipy>=1.11,<2"
+  )
+  if (isTRUE(install_llamacpp)) {
+    core_pkgs <- c(core_pkgs, "llama-cpp-python>=0.2.90,<1")
+  }
   all_pkgs <- unique(c(core_pkgs, packages))
-  if (verbose) cat(sprintf("  Installing %d packages (pip)...\n", length(all_pkgs)))
+  if (verbose) cat(sprintf("  Installing PyTorch (%s profile)...\n", accelerator_resolved))
+
+  torch_options <- if (!is.null(torch_index_eff)) c("--index-url", torch_index_eff) else character(0L)
+  tryCatch(
+    reticulate::conda_install(
+      envname = env_name, packages = "torch>=2.2,<3", pip = TRUE,
+      pip_options = torch_options, conda = conda_bin
+    ),
+    error = function(e) stop("PyTorch installation failed: ", conditionMessage(e))
+  )
+  if (verbose) cat(sprintf("  Installing %d compatible Python package(s) (pip)...\n", length(all_pkgs)))
 
   tryCatch(
     reticulate::conda_install(envname = env_name, packages = all_pkgs, pip = TRUE, conda = conda_bin),
-    error = function(e) warning("Package installation reported an error: ", e$message, "\n  Some packages may still have installed correctly.")
+    error = function(e) stop("Required Python package installation failed: ", conditionMessage(e))
   )
+
+  verification <- NULL
+  if (isTRUE(verify)) {
+    verification <- .semantica_verify_conda_torch(
+      env_name, conda_bin, install_llamacpp = install_llamacpp
+    )
+    .semantica_validate_conda_setup_verification(
+      verification,
+      accelerator = accelerator_resolved
+    )
+  }
 
   if (verbose) {
     cat("  Installation complete.\n")
+    if (!is.null(verification) && isTRUE(verification$available)) {
+      cat(sprintf("  PyTorch     : %s\n", verification$torch_version))
+      cat(sprintf("  CUDA        : %s%s\n", verification$cuda_available,
+                  if (!is.na(verification$cuda_runtime %||% NA_character_)) paste0(" (runtime ", verification$cuda_runtime, ")") else ""))
+      cat(sprintf("  GPU(s)      : %s\n", if (length(verification$gpu_names)) paste(verification$gpu_names, collapse = ", ") else "none reported"))
+      cat(sprintf("  MPS         : %s\n", verification$mps_available))
+      if (length(verification$package_versions) > 0L) {
+        cat(sprintf(
+          "  Packages    : %s\n",
+          paste(
+            names(verification$package_versions),
+            verification$package_versions,
+            sep = "=", collapse = ", "
+          )
+        ))
+      }
+    } else if (!is.null(verification)) {
+      cat(sprintf("  Verification: unavailable (%s)\n", verification$error %||% "unknown error"))
+    }
     cat(sprintf("  NEXT STEPS:\n  1. Restart your R session.\n  2. Call: semantica_activate_conda('%s')\n  3. Then run your pipeline.\n", env_name))
     cat("============================================================\n\n")
   }
-  invisible(env_name)
+  out <- env_name
+  attr(out, "accelerator_requested") <- accelerator_requested
+  attr(out, "accelerator_resolved") <- accelerator_resolved
+  attr(out, "verification") <- verification
+  invisible(out)
 }
 
 #' Activate a Conda environment for use in the current R session
@@ -90,6 +535,14 @@ semantica_setup_conda <- function(env_name = "semantica", conda = NULL,
 #' @param env_name   Name of the Conda environment.
 #' @param conda      Path to `conda` executable. `NULL` = auto-detect.
 #' @param verbose    Print confirmation.
+#' @section Side effects:
+#' Selects a Conda/Python environment for the current R session and may initialize
+#' Python through `reticulate`.
+#'
+#' @section Reproducibility:
+#' The active Python executable is environment-dependent; record the environment
+#' and package versions when reproducing a local-model analysis.
+#'
 #' @return Invisibly returns `TRUE`.
 #' @export
 #' @examples
@@ -123,30 +576,123 @@ semantica_activate_conda <- function(env_name = "semantica", conda = NULL, verbo
 SEMANTICA_BACKENDS <- list(
   openai = list(label = "OpenAI API", protocol = "openai_compat", chat_url = "https://api.openai.com/v1/chat/completions",
                 embed_url = "https://api.openai.com/v1/embeddings", default_chat_model = "gpt-4o", default_embed_model = "text-embedding-3-small",
-                embed_dim = 1536L, auth_header = "Bearer", auth_env = "OPENAI_API_KEY", extra_headers = NULL, has_embed = TRUE),
+                embed_dim = 1536L, auth_header = "Bearer", auth_env = "OPENAI_API_KEY", extra_headers = NULL,
+                has_embed = TRUE, supports_structured_output = TRUE),
   anthropic = list(label = "Anthropic API (Claude)", protocol = "anthropic", chat_url = "https://api.anthropic.com/v1/messages",
                    embed_url = NULL, default_chat_model = "claude-opus-4-5", default_embed_model = NULL, embed_dim = NA,
-                   auth_header = "x-api-key", auth_env = "ANTHROPIC_API_KEY", extra_headers = list("anthropic-version" = "2023-06-01"), has_embed = FALSE),
+                   auth_header = "x-api-key", auth_env = "ANTHROPIC_API_KEY", extra_headers = list("anthropic-version" = "2023-06-01"),
+                   has_embed = FALSE, supports_structured_output = FALSE),
   groq = list(label = "Groq API", protocol = "openai_compat", chat_url = "https://api.groq.com/openai/v1/chat/completions",
-              embed_url = "https://api.groq.com/openai/v1/embeddings", default_chat_model = "llama-3.3-70b-versatile",
-              default_embed_model = "nomic-embed-text-v1.5", embed_dim = 768L, auth_header = "Bearer", auth_env = "GROQ_API_KEY",
-              extra_headers = NULL, has_embed = TRUE),
+              embed_url = NULL, default_chat_model = "llama-3.3-70b-versatile",
+              default_embed_model = NULL, embed_dim = NA_integer_, auth_header = "Bearer", auth_env = "GROQ_API_KEY",
+              extra_headers = NULL, has_embed = FALSE, supports_structured_output = TRUE),
   ollama = list(label = "Ollama (local)", protocol = "ollama", chat_url = "http://localhost:11434/api/chat",
-                embed_url = "http://localhost:11434/api/embeddings", default_chat_model = "llama3.2", default_embed_model = "nomic-embed-text",
-                embed_dim = 768L, auth_header = NULL, auth_env = NULL, extra_headers = NULL, has_embed = TRUE),
+                embed_url = "http://localhost:11434/api/embed", default_chat_model = "llama3.2", default_embed_model = "nomic-embed-text",
+                embed_dim = NA_integer_, auth_header = NULL, auth_env = NULL, extra_headers = NULL,
+                has_embed = TRUE, supports_structured_output = TRUE),
   llamacpp = list(label = "llama.cpp server", protocol = "openai_compat", chat_url = "http://localhost:8080/v1/chat/completions",
                   embed_url = "http://localhost:8080/v1/embeddings", default_chat_model = "local-model", default_embed_model = "local-model",
-                  embed_dim = NA, auth_header = NULL, auth_env = NULL, extra_headers = NULL, has_embed = TRUE),
+                  embed_dim = NA, auth_header = NULL, auth_env = NULL, extra_headers = NULL, has_embed = TRUE, supports_structured_output = FALSE),
   generic_openai = list(label = "Generic OpenAI-compatible", protocol = "openai_compat", chat_url = "http://localhost:1234/v1/chat/completions",
                         embed_url = "http://localhost:1234/v1/embeddings", default_chat_model = "local-model", default_embed_model = "local-model",
-                        embed_dim = NA, auth_header = NULL, auth_env = NULL, extra_headers = NULL, has_embed = TRUE),
+                        embed_dim = NA, auth_header = NULL, auth_env = NULL, extra_headers = NULL, has_embed = TRUE, supports_structured_output = FALSE),
   python_hf = list(label = "HuggingFace Transformers (Conda)", protocol = "python_hf", chat_url = NULL, embed_url = NULL,
                    default_chat_model = "meta-llama/Llama-3.2-1B-Instruct", default_embed_model = "sentence-transformers/all-MiniLM-L6-v2",
-                   embed_dim = 384L, auth_header = NULL, auth_env = "HF_TOKEN", extra_headers = NULL, has_embed = TRUE),
+                   embed_dim = 384L, auth_header = NULL, auth_env = "HF_TOKEN", extra_headers = NULL, has_embed = TRUE, supports_structured_output = FALSE),
   python_llamacpp = list(label = "llama-cpp-python (GGUF)", protocol = "python_llamacpp", chat_url = NULL, embed_url = NULL,
                          default_chat_model = NULL, default_embed_model = NULL, embed_dim = NA, auth_header = NULL, auth_env = NULL,
-                         extra_headers = NULL, has_embed = TRUE)
+                         extra_headers = NULL, has_embed = TRUE, supports_structured_output = FALSE)
 )
+
+
+#' Define an explicit custom SEMANTICA backend contract
+#'
+#' Creates an immutable transport/capability specification for a custom service
+#' that uses one of SEMANTICA's supported wire protocols. This avoids provider-
+#' name guessing and keeps provider transport metadata outside the analysis
+#' core.
+#'
+#' @param protocol Supported transport protocol: `"openai_compat"`,
+#'   `"anthropic"`, `"ollama"`, `"python_hf"`, or `"python_llamacpp"`.
+#' @param label Human-readable backend label.
+#' @param chat_url,embed_url Explicit service endpoints where applicable.
+#' @param can_chat,can_embed Declared capabilities.
+#' @param supports_structured_output,supports_batch_embeddings Capability flags.
+#' @param default_chat_model,default_embed_model Optional model defaults.
+#' @param embed_dim Optional documented embedding dimension; `NA` means unknown.
+#' @param auth_header,auth_env Authentication metadata. Credentials themselves
+#'   are never stored in the specification.
+#' @param extra_headers Optional non-secret protocol headers.
+#' @return A validated `semantica_backend_spec` object.
+#' @export
+semantica_backend_spec <- function(
+  protocol, label = "Custom backend", chat_url = NULL, embed_url = NULL,
+  can_chat = !is.null(chat_url), can_embed = !is.null(embed_url),
+  supports_structured_output = FALSE, supports_batch_embeddings = TRUE,
+  default_chat_model = NULL, default_embed_model = NULL, embed_dim = NA_integer_,
+  auth_header = NULL, auth_env = NULL, extra_headers = NULL
+) {
+  protocol <- match.arg(as.character(protocol)[1L],
+                        c("openai_compat", "anthropic", "ollama", "python_hf", "python_llamacpp"))
+  can_chat <- .semantica_assert_flag(can_chat, "can_chat", condition_class = "semantica_error_config")
+  can_embed <- .semantica_assert_flag(can_embed, "can_embed", condition_class = "semantica_error_config")
+  supports_structured_output <- .semantica_assert_flag(
+    supports_structured_output, "supports_structured_output", condition_class = "semantica_error_config"
+  )
+  supports_batch_embeddings <- .semantica_assert_flag(
+    supports_batch_embeddings, "supports_batch_embeddings", condition_class = "semantica_error_config"
+  )
+  if (!can_chat && !can_embed) stop("A backend specification must declare at least one capability.")
+  if (can_chat && !protocol %in% c("python_hf", "python_llamacpp") && is.null(chat_url)) {
+    stop("A chat-capable HTTP backend specification requires 'chat_url'.")
+  }
+  if (can_embed && !protocol %in% c("python_hf", "python_llamacpp") && is.null(embed_url)) {
+    stop("An embedding-capable HTTP backend specification requires 'embed_url'.")
+  }
+  if (!is.null(extra_headers)) {
+    if (!is.list(extra_headers) || is.null(names(extra_headers)) || anyNA(names(extra_headers)) || any(!nzchar(names(extra_headers)))) {
+      stop("'extra_headers' must be NULL or a named list of non-secret headers.")
+    }
+    sensitive_header_names <- c(
+      "authorization", "proxy-authorization", "x-api-key", "api-key", "apikey",
+      "x-auth-token", "cookie", "set-cookie"
+    )
+    header_names <- tolower(trimws(names(extra_headers)))
+    header_values <- vapply(extra_headers, function(x) paste(as.character(x), collapse = " "), character(1L))
+    credential_value <- grepl("^\\s*(bearer|basic)\\s+", header_values, ignore.case = TRUE)
+    credential_value[is.na(credential_value)] <- FALSE
+    if (any(header_names %in% sensitive_header_names) || any(credential_value)) {
+      stop(
+        "'extra_headers' must not contain credentials or authentication headers. ",
+        "Use 'auth_env' and runtime credential handling instead."
+      )
+    }
+  }
+  out <- list(
+    label = as.character(label)[1L], protocol = protocol,
+    chat_url = chat_url, embed_url = embed_url,
+    default_chat_model = default_chat_model, default_embed_model = default_embed_model,
+    embed_dim = if (length(embed_dim)) suppressWarnings(as.integer(embed_dim[1L])) else NA_integer_,
+    auth_header = auth_header, auth_env = auth_env, extra_headers = extra_headers,
+    has_chat = can_chat, has_embed = can_embed,
+    supports_structured_output = supports_structured_output,
+    supports_batch_embeddings = supports_batch_embeddings,
+    explicit_custom_contract = TRUE
+  )
+  class(out) <- c("semantica_backend_spec", "list")
+  out
+}
+
+.semantica_backend_capabilities <- function(spec) {
+  list(
+    can_chat = isTRUE(spec$has_chat) || (!is.null(spec$chat_url) && nzchar(spec$chat_url)) ||
+      spec$protocol %in% c("python_hf", "python_llamacpp"),
+    can_embed = isTRUE(spec$has_embed),
+    supports_structured_output = isTRUE(spec$supports_structured_output),
+    supports_batch_embeddings = isTRUE(spec$has_embed) && isTRUE(spec$supports_batch_embeddings %||% TRUE),
+    protocol = spec$protocol
+  )
+}
 
 .canonicalize_embedding_model <- function(model) {
   if (is.null(model) || length(model) == 0L) return(model)
@@ -179,16 +725,82 @@ SEMANTICA_BACKENDS <- list(
 # =================================================================
 #' Create a SEMANTICA LLM session
 #'
-#' @param backend      One of the keys in `SEMANTICA_BACKENDS`, or any custom string
-#'                     (uses `generic_openai` protocol).
+#' Advanced session constructor for a specific generation or embedding backend.
+#' The main workflow accepts `llm`, `chat_model`, and `embed_model` directly
+#' to [semantica_run()] and use [semantica_check_setup()] before a long run.
+#'
+#' @param backend      One of the keys in `SEMANTICA_BACKENDS`. For a custom
+#'                     OpenAI-compatible server, use `"generic_openai"` with
+#'                     `base_url`, or provide an explicit `backend_spec` for a
+#'                     custom backend name. Unknown names never silently inherit
+#'                     another provider protocol.
 #' @param api_key      API key string. `NULL` = read from environment variable.
 #' @param chat_model   Override default chat model name.
 #' @param embed_model  Override default embedding model name.
 #' @param base_url     Override host:port (required for `generic_openai`).
 #' @param gguf_path    Path to a `.gguf` model file (`python_llamacpp` only).
 #' @param hf_token     HuggingFace token for gated models (`python_hf` only).
-#' @param timeout_s    HTTP timeout in seconds (default `120`).
+#' @param embedding_device Device requested for local Python embedding models:
+#'   `"auto"`, `"cpu"`, `"cuda"`, `"cuda:N"`, or `"mps"`.
+#' @param chat_device Device requested for local Python generation. For the
+#'   Hugging Face backend, an explicit device is mutually exclusive with an
+#'   explicit `device_map`.
+#' @param device_map Optional Hugging Face Transformers device map. `NULL`
+#'   resolves to `"auto"` only when `chat_device = "auto"`.
+#' @param gpu_layers llama.cpp GPU-layer configuration: `"auto"` (all layers),
+#'   `0L` (CPU), a positive layer count, or `-1L` (all layers).
+#' @param model_precision Reproducibility label for local model precision. It is
+#'   included in model cache keys and does not affect R cosine precision.
+#' @param timeout_s HTTP timeout in seconds (default `120`).
+#' @param retry_max_tries Maximum attempts for retryable HTTP failures.
+#' @param retry_on_failure Retry connection-level failures as well as retryable HTTP statuses.
+#' @param preflight Check provider/local model availability before a long run when possible.
+#' @param purpose Session capability scope: `"auto"`, `"both"`, `"chat"`, or `"embed"`. `"auto"` uses chat-only mode for providers without embeddings and both capabilities otherwise. Embedding-only sessions do not preflight irrelevant chat models.
+#' @param embedding_task Embedding task policy. `"auto"` applies model-specific documented instructions when required.
+#' @param embedding_instruction Optional explicit prefix/instruction prepended to embedding text; overrides model-specific automatic instructions.
+#' @param embedding_spec Optional model capability contract from
+#'   [semantica_embedding_spec()]. This changes text/task preparation only; it
+#'   never changes psychometric thresholds or score definitions.
+#' @param backend_spec Optional explicit custom backend contract created by
+#'   [semantica_backend_spec()]. Required when `backend` is not a built-in name.
 #' @param verbose      Print connection details and status.
+#'
+#' @usage semantica_connect(
+#'   backend = c(
+#'     "openai", "anthropic", "groq", "ollama", "llamacpp", "generic_openai",
+#'     "python_hf", "python_llamacpp"
+#'   ),
+#'   api_key = NULL,
+#'   chat_model = NULL,
+#'   embed_model = NULL,
+#'   base_url = NULL,
+#'   gguf_path = NULL,
+#'   hf_token = NULL,
+#'   embedding_device = "auto",
+#'   chat_device = "auto",
+#'   device_map = NULL,
+#'   gpu_layers = "auto",
+#'   model_precision = "auto",
+#'   timeout_s = 120L,
+#'   retry_max_tries = 4L,
+#'   retry_on_failure = TRUE,
+#'   preflight = TRUE,
+#'   verbose = TRUE,
+#'   purpose = c("auto", "both", "chat", "embed"),
+#'   embedding_task = "auto",
+#'   embedding_instruction = NULL,
+#'   embedding_spec = NULL,
+#'   backend_spec = NULL
+#' )
+#' @section Side effects:
+#' Reads provider credentials from environment variables when explicit keys are
+#' absent, may initialize Python for local backends, and may perform provider/model
+#' preflight network or local-runtime checks.
+#'
+#' @section Reproducibility:
+#' The returned session records resolved backend/model/device metadata but never
+#' guarantees that a remote provider alias identifies an immutable model revision.
+#' Prefer pinned local artifacts or recorded provider revisions when available.
 #'
 #' @return A `semantica_session` S3 object.
 #' @export
@@ -206,18 +818,95 @@ SEMANTICA_BACKENDS <- list(
 #' }
 semantica_connect <- function(backend = c("openai", "anthropic", "groq", "ollama", "llamacpp", "generic_openai", "python_hf", "python_llamacpp"),
                               api_key = NULL, chat_model = NULL, embed_model = NULL, base_url = NULL, gguf_path = NULL,
-                              hf_token = NULL, timeout_s = 120L, verbose = TRUE) {
+                              hf_token = NULL,
+                              embedding_device = "auto", chat_device = "auto",
+                              device_map = NULL, gpu_layers = "auto",
+                              model_precision = "auto",
+                              timeout_s = 120L, retry_max_tries = 4L,
+                              retry_on_failure = TRUE, preflight = TRUE,
+                              verbose = TRUE,
+                              purpose = c("auto", "both", "chat", "embed"),
+                              embedding_task = "auto", embedding_instruction = NULL,
+                              embedding_spec = NULL,
+                              backend_spec = NULL) {
   if (length(backend) != 1L) backend <- backend[[1L]]
   backend <- as.character(backend)
   if (!nzchar(backend)) stop("'backend' must be a non-empty string.")
 
+  normalize_local_device <- function(x, arg) {
+    x <- tolower(trimws(as.character(x[1L])))
+    if (length(x) != 1L || is.na(x) ||
+        !grepl("^(auto|cpu|cuda(:[0-9]+)?|mps)$", x)) {
+      stop("'", arg, "' must be one of 'auto', 'cpu', 'cuda', 'cuda:N', or 'mps'.")
+    }
+    x
+  }
+  embedding_device <- normalize_local_device(embedding_device, "embedding_device")
+  chat_device <- normalize_local_device(chat_device, "chat_device")
+  if (!is.null(device_map) && chat_device != "auto") {
+    stop("Use either an explicit 'chat_device' or 'device_map', not both.")
+  }
+  device_map_resolved <- if (!is.null(device_map)) {
+    device_map
+  } else if (chat_device == "auto") {
+    "auto"
+  } else {
+    NULL
+  }
+  if (is.character(gpu_layers) && length(gpu_layers) == 1L &&
+      identical(tolower(gpu_layers), "auto")) {
+    gpu_layers_resolved <- -1L
+  } else {
+    gpu_layers_resolved <- suppressWarnings(as.integer(gpu_layers[1L]))
+    if (length(gpu_layers_resolved) != 1L || !is.finite(gpu_layers_resolved) ||
+        gpu_layers_resolved < -1L) {
+      stop("'gpu_layers' must be 'auto', -1L, 0L, or a positive integer.")
+    }
+  }
+  model_precision <- tolower(trimws(as.character(model_precision[1L])))
+  if (length(model_precision) != 1L || is.na(model_precision) ||
+      !model_precision %in% c("auto", "float32", "float16", "bfloat16")) {
+    stop("'model_precision' must be 'auto', 'float32', 'float16', or 'bfloat16'.")
+  }
+  retry_max_tries <- suppressWarnings(as.integer(retry_max_tries[1L]))
+  if (!is.finite(retry_max_tries) || retry_max_tries < 1L) {
+    stop("'retry_max_tries' must be a positive integer.")
+  }
+  retry_on_failure <- isTRUE(retry_on_failure)
+  preflight <- isTRUE(preflight)
+  purpose_requested <- match.arg(purpose)
+  if (!is.null(embedding_spec) && !inherits(embedding_spec, "semantica_embedding_spec")) {
+    stop("'embedding_spec' must be NULL or created by semantica_embedding_spec().")
+  }
+
   known <- names(SEMANTICA_BACKENDS)
-  if (!backend %in% known) {
-    message(sprintf("Backend '%s' not in registry -- using generic_openai protocol.", backend))
-    spec <- SEMANTICA_BACKENDS[["generic_openai"]]
-    spec$label <- paste0("Custom server (", backend, ")")
+  if (!is.null(backend_spec)) {
+    if (!inherits(backend_spec, "semantica_backend_spec")) {
+      stop("'backend_spec' must be created by semantica_backend_spec().")
+    }
+    if (backend %in% known) {
+      stop("Do not combine a registered built-in backend name with 'backend_spec'; use an explicit custom backend name.")
+    }
+    spec <- unclass(backend_spec)
+    spec$label <- spec$label %||% paste0("Custom backend (", backend, ")")
+  } else if (!backend %in% known) {
+    .semantica_abort(
+      sprintf("Backend '%s' is not registered. Use a built-in backend, backend = 'generic_openai', or provide an explicit semantica_backend_spec().", backend),
+      subclass = "semantica_error_backend", backend = backend
+    )
   } else {
     spec <- SEMANTICA_BACKENDS[[backend]]
+  }
+  capabilities <- .semantica_backend_capabilities(spec)
+  purpose <- if (identical(purpose_requested, "auto")) {
+    if (capabilities$can_chat && capabilities$can_embed) "both"
+    else if (capabilities$can_chat) "chat" else "embed"
+  } else purpose_requested
+  if (purpose %in% c("both", "chat") && !capabilities$can_chat) {
+    .semantica_abort(sprintf("Backend '%s' is not chat-capable.", backend), subclass = "semantica_error_backend_capability", backend = backend, capability = "chat")
+  }
+  if (purpose %in% c("both", "embed") && !capabilities$can_embed) {
+    .semantica_abort(sprintf("Backend '%s' is not embedding-capable.", backend), subclass = "semantica_error_backend_capability", backend = backend, capability = "embed")
   }
 
   chat_url <- spec$chat_url; embed_url <- spec$embed_url
@@ -241,31 +930,89 @@ semantica_connect <- function(backend = c("openai", "anthropic", "groq", "ollama
   hf_tok <- hf_token %||% Sys.getenv("HF_TOKEN", unset = NA_character_)
   if (is.na(hf_tok)) hf_tok <- NULL
 
-  cm <- chat_model %||% spec$default_chat_model
-  em <- .canonicalize_embedding_model(embed_model %||% spec$default_embed_model)
+  cm <- if (purpose == "embed" && is.null(chat_model)) NULL else chat_model %||% spec$default_chat_model
+  em <- if (purpose == "chat" && is.null(embed_model)) NULL else .canonicalize_embedding_model(embed_model %||% spec$default_embed_model)
   py_available <- FALSE
+  python_caps <- NULL
   if (spec$protocol %in% c("python_hf", "python_llamacpp")) {
     if (!requireNamespace("reticulate", quietly = TRUE)) stop("Backend '", backend, "' requires 'reticulate'.")
-    py_available <- tryCatch({ reticulate::py_available(initialize = TRUE); TRUE }, error = function(e) FALSE)
+    py_available <- tryCatch(
+      isTRUE(reticulate::py_available(initialize = TRUE)),
+      error = function(e) FALSE
+    )
     if (!py_available) stop("Python not available. Call semantica_activate_conda() first.")
+    python_caps <- .semantica_python_capabilities(deep_python = TRUE)
   }
 
   session <- list(backend = backend, protocol = spec$protocol, label = spec$label, api_key = key, auth_header = spec$auth_header,
                   extra_headers = spec$extra_headers, chat_url = chat_url, embed_url = embed_url, chat_model = cm, embed_model = em,
-                  embed_dim = spec$embed_dim, has_embed = spec$has_embed, timeout_s = timeout_s, gguf_path = gguf_path, hf_token = hf_tok,
-                  py_available = py_available, verbose = verbose)
+                  embed_dim = spec$embed_dim, has_chat = capabilities$can_chat, has_embed = capabilities$can_embed,
+                  supports_structured_output = capabilities$supports_structured_output,
+                  supports_batch_embeddings = capabilities$supports_batch_embeddings,
+                  capabilities = capabilities,
+                  timeout_s = timeout_s, retry_max_tries = retry_max_tries,
+                  retry_on_failure = retry_on_failure, gguf_path = gguf_path, hf_token = hf_tok,
+                  embedding_device = embedding_device, chat_device = chat_device,
+                  resolved_embedding_device = if (embedding_device == "auto") {
+                    "pending_backend_resolution"
+                  } else {
+                    embedding_device
+                  },
+                  resolved_chat_device = if (!is.null(device_map_resolved)) {
+                    paste0("device_map:", paste(device_map_resolved, collapse = ","))
+                  } else {
+                    chat_device
+                  },
+                  device_map = device_map_resolved,
+                  gpu_layers = gpu_layers_resolved,
+                  gpu_layers_requested = gpu_layers,
+                  model_precision = model_precision,
+                  device_status = "configured_not_runtime_verified",
+                  python_version = python_caps$version %||% NA_character_,
+                  python_package_versions = python_caps$package_versions %||%
+                    character(0L),
+                  torch_version = python_caps$torch_version %||% NA_character_,
+                  cuda_available = python_caps$cuda_available %||% NA,
+                  mps_available = python_caps$mps_available %||% NA,
+                  py_available = py_available, purpose = purpose,
+                  embedding_task = embedding_task, embedding_instruction = embedding_instruction,
+                  embedding_spec = embedding_spec,
+                  verbose = verbose)
   class(session) <- c("semantica_session", "list")
 
   if (verbose) {
-    cat("\n============================================================\nSEMANTICA PIPELINE v2 -- LLM CONNECTION\n============================================================\n")
-    cat(sprintf("  Backend       : %s\n  Protocol      : %s\n  Chat model    : %s\n  Embed model   : %s\n", session$label, session$protocol, cm %||% "(none)", em %||% "(none)"))
-    if (!is.null(chat_url)) cat(sprintf("  Chat endpoint : %s\n", chat_url))
-    if (!is.null(embed_url)) cat(sprintf("  Embed endpoint: %s\n", embed_url))
+    cat("\n============================================================\nSEMANTICA -- LLM CONNECTION\n============================================================\n")
+    cat(sprintf("  Backend       : %s\n  Protocol      : %s\n  Session role  : %s\n  Chat model    : %s\n  Embed model   : %s\n", session$label, session$protocol, purpose, cm %||% "(not requested)", em %||% "(not requested)"))
+    safe_url <- function(x) if (exists(".semantica_sanitize_url", mode = "function")) .semantica_sanitize_url(x) else x
+    if (!is.null(chat_url)) cat(sprintf("  Chat endpoint : %s\n", safe_url(chat_url)))
+    if (!is.null(embed_url)) cat(sprintf("  Embed endpoint: %s\n", safe_url(embed_url)))
+    if (spec$protocol %in% c("python_hf", "python_llamacpp")) {
+      cat(sprintf("  Chat device   : %s\n  Embed device  : %s\n", chat_device, embedding_device))
+      if (spec$protocol == "python_llamacpp") {
+        cat(sprintf("  GPU layers    : %d (configured; runtime acceleration not yet verified)\n", gpu_layers_resolved))
+      }
+    }
   }
 
-  ok <- tryCatch(.ping_backend(session), error = function(e) { if (verbose) message("  WARNING: Connection test failed -- ", e$message); FALSE })
+  preflight_result <- if (isTRUE(preflight)) {
+    tryCatch(
+      semantica_backend_preflight(session, verify_models = TRUE, strict = FALSE),
+      error = function(e) list(ok = FALSE, reachable = FALSE, warnings = conditionMessage(e))
+    )
+  } else {
+    list(ok = NA, reachable = NA, warnings = "preflight disabled")
+  }
+  session$preflight <- preflight_result
   if (verbose) {
-    cat(sprintf("  Status        : %s\n============================================================\n\n", if (isTRUE(ok)) "CONNECTED" else "UNREACHABLE"))
+    status_label <- if (isTRUE(preflight_result$ok)) "PREFLIGHT OK" else if (identical(preflight_result$ok, FALSE)) "PREFLIGHT WARNING" else "PREFLIGHT SKIPPED"
+    cat(sprintf("  Status        : %s\n", status_label))
+    if (length(preflight_result$warnings %||% character(0L))) {
+      for (w in preflight_result$warnings) cat(sprintf("  Note          : %s\n", w))
+    }
+    if (!isTRUE(spec$has_embed)) {
+      cat("  Embeddings    : not provided by this backend; use a separate embed_session/embed_backend.\n")
+    }
+    cat("============================================================\n\n")
   }
   session
 }
@@ -275,6 +1022,7 @@ semantica_connect <- function(backend = c("openai", "anthropic", "groq", "ollama
 #' @param x A `semantica_session` object returned by [semantica_connect()].
 #' @param ... Additional arguments ignored by this method.
 #' @return Invisibly returns `x`.
+#' @method print semantica_session
 #' @export
 #' @examples
 #' sess <- structure(
@@ -291,223 +1039,25 @@ print.semantica_session <- function(x, ...) {
 # P3  LOW-LEVEL HELPERS (HTTP + Python dispatch)
 # =================================================================
 #' @keywords internal
-.build_request <- function(session, url, body_list) {
+.build_request <- function(session, url, body_list = NULL) {
   req <- httr2::request(url) |>
-    httr2::req_timeout(session$timeout_s) |>
-    httr2::req_body_json(body_list) |>
-    httr2::req_headers("Content-Type" = "application/json")
+    httr2::req_timeout(session$timeout_s %||% 120L) |>
+    httr2::req_headers("Content-Type" = "application/json") |>
+    httr2::req_retry(
+      max_tries = session$retry_max_tries %||% 4L,
+      retry_on_failure = isTRUE(session$retry_on_failure %||% TRUE),
+      is_transient = function(resp) {
+        httr2::resp_status(resp) %in% c(408L, 425L, 429L, 500L, 502L, 503L, 504L)
+      }
+    )
+  if (!is.null(body_list)) req <- httr2::req_body_json(req, body_list)
   if (!is.null(session$auth_header) && !is.null(session$api_key)) {
-    req <- if (session$auth_header == "Bearer") httr2::req_auth_bearer_token(req, session$api_key) else httr2::req_headers(req, !!session$auth_header := session$api_key)
+    req <- if (session$auth_header == "Bearer") httr2::req_auth_bearer_token(req, session$api_key) else do.call(httr2::req_headers, c(list(req), stats::setNames(list(session$api_key), session$auth_header)))
   }
   if (!is.null(session$extra_headers) && length(session$extra_headers) > 0L) {
     req <- do.call(httr2::req_headers, c(list(req), session$extra_headers))
   }
   req
-}
-
-#' @keywords internal
-.semantica_request_clock <- new.env(parent = emptyenv())
-
-#' @keywords internal
-.semantica_resp_header <- function(resp, name) {
-  headers <- tryCatch(httr2::resp_headers(resp), error = function(e) NULL)
-  if (is.null(headers) || length(headers) == 0L) return(NULL)
-  idx <- which(tolower(names(headers)) == tolower(name))
-  if (length(idx) == 0L) return(NULL)
-  headers[[idx[[1L]]]]
-}
-
-#' @keywords internal
-.semantica_parse_wait_s <- function(x) {
-  if (is.null(x) || length(x) == 0L || is.na(x[[1L]])) return(NA_real_)
-  x <- trimws(as.character(x[[1L]]))
-  if (!nzchar(x)) return(NA_real_)
-
-  numeric_wait <- suppressWarnings(as.numeric(x))
-  if (is.finite(numeric_wait)) return(max(0, numeric_wait))
-
-  date_wait <- suppressWarnings(as.POSIXct(x, format = "%a, %d %b %Y %H:%M:%S", tz = "GMT"))
-  if (!is.na(date_wait)) return(max(0, as.numeric(difftime(date_wait, Sys.time(), units = "secs"))))
-  date_wait <- suppressWarnings(as.POSIXct(x, format = "%a, %d %b %Y %H:%M:%S %Z", tz = "GMT"))
-  if (!is.na(date_wait)) return(max(0, as.numeric(difftime(date_wait, Sys.time(), units = "secs"))))
-
-  matches <- gregexpr("[0-9]+(?:\\.[0-9]+)?\\s*(ms|s|m|h)", tolower(x), perl = TRUE)
-  parts <- regmatches(tolower(x), matches)[[1L]]
-  if (length(parts) == 0L || identical(parts, character(0L))) return(NA_real_)
-
-  total <- 0
-  for (part in parts) {
-    value <- suppressWarnings(as.numeric(sub("^([0-9]+(?:\\.[0-9]+)?).*", "\\1", part, perl = TRUE)))
-    unit <- sub("^[0-9]+(?:\\.[0-9]+)?\\s*", "", part, perl = TRUE)
-    if (!is.finite(value)) next
-    total <- total + switch(unit, ms = value / 1000, s = value, m = value * 60, h = value * 3600, 0)
-  }
-  if (is.finite(total) && total >= 0) total else NA_real_
-}
-
-#' @keywords internal
-.semantica_default_request_spacing_s <- function(session, rate_limit_margin = 0.85) {
-  margin <- suppressWarnings(as.numeric(rate_limit_margin[[1L]]))
-  if (!is.finite(margin) || margin <= 0 || margin > 1) margin <- 0.85
-  backend <- tolower(session$backend %||% "")
-  model <- tolower(session$chat_model %||% "")
-  chat_url <- tolower(session$chat_url %||% "")
-
-  if (backend %in% c("ollama", "llamacpp", "python_hf", "python_llamacpp") ||
-      grepl("localhost|127\\.0\\.0\\.1", chat_url)) {
-    return(0)
-  }
-
-  if (identical(backend, "groq") || grepl("groq\\.com", chat_url)) {
-    rpm <- if (grepl("qwen/qwen3-32b", model)) 60 else 30
-    return((60 / rpm) / margin)
-  }
-
-  0
-}
-
-#' @keywords internal
-.semantica_normalize_request_spacing_s <- function(request_spacing_s, session, rate_limit_margin = 0.85) {
-  if (is.null(request_spacing_s)) return(0)
-  if (is.character(request_spacing_s) &&
-      length(request_spacing_s) == 1L &&
-      identical(tolower(trimws(request_spacing_s)), "auto")) {
-    return(.semantica_default_request_spacing_s(session, rate_limit_margin))
-  }
-  out <- suppressWarnings(as.numeric(request_spacing_s[[1L]]))
-  if (!is.finite(out) || out < 0) stop("'request_spacing_s' must be a non-negative number or \"auto\".")
-  out
-}
-
-#' @keywords internal
-.semantica_wait_for_request_slot <- function(session, request_spacing_s, rate_limit_margin = 0.85) {
-  spacing <- .semantica_normalize_request_spacing_s(request_spacing_s, session, rate_limit_margin)
-  if (!is.finite(spacing) || spacing <= 0) return(invisible(0))
-
-  key <- paste(session$backend %||% "", session$chat_url %||% "", session$chat_model %||% "", sep = "|")
-  last <- get0(key, envir = .semantica_request_clock, inherits = FALSE, ifnotfound = NA_real_)
-  now <- as.numeric(Sys.time())
-  if (is.finite(last)) {
-    wait_s <- spacing - (now - last)
-    if (is.finite(wait_s) && wait_s > 0) Sys.sleep(wait_s)
-  }
-  assign(key, as.numeric(Sys.time()), envir = .semantica_request_clock)
-  invisible(spacing)
-}
-
-#' @keywords internal
-.semantica_normalize_retry_policy <- function(rate_limit_policy) {
-  if (is.null(rate_limit_policy)) return("auto")
-  match.arg(as.character(rate_limit_policy[[1L]]), c("auto", "none"))
-}
-
-#' @keywords internal
-.semantica_retry_wait_s <- function(resp = NULL, retry_index = 1L,
-                                   api_initial_wait_s = 1,
-                                   api_max_wait_s = 120) {
-  initial <- suppressWarnings(as.numeric(api_initial_wait_s[[1L]]))
-  if (!is.finite(initial) || initial < 0) initial <- 1
-  max_wait <- suppressWarnings(as.numeric(api_max_wait_s[[1L]]))
-  if (!is.finite(max_wait) || max_wait < 0) max_wait <- 120
-
-  header_wait <- NA_real_
-  if (!is.null(resp)) {
-    retry_after <- .semantica_parse_wait_s(.semantica_resp_header(resp, "retry-after"))
-    reset_tokens <- .semantica_parse_wait_s(.semantica_resp_header(resp, "x-ratelimit-reset-tokens"))
-    reset_requests <- .semantica_parse_wait_s(.semantica_resp_header(resp, "x-ratelimit-reset-requests"))
-    if (is.finite(retry_after)) {
-      header_wait <- retry_after
-    } else if (is.finite(reset_tokens)) {
-      header_wait <- reset_tokens
-    } else if (is.finite(reset_requests)) {
-      header_wait <- reset_requests
-    }
-  }
-
-  if (is.finite(header_wait)) {
-    wait_s <- header_wait
-  } else {
-    retry_index <- suppressWarnings(as.integer(retry_index[[1L]]))
-    if (!is.finite(retry_index) || retry_index < 1L) retry_index <- 1L
-    wait_s <- initial * (2 ^ min(retry_index - 1L, 10L))
-  }
-
-  wait_s <- min(max_wait, max(0, wait_s))
-  jitter <- stats::runif(1L, min = 0, max = min(1, max(0, wait_s * 0.15)))
-  wait_s + jitter
-}
-
-#' @keywords internal
-.semantica_perform_request <- function(session, req,
-                                       rate_limit_policy = "auto",
-                                       api_max_retries = 6L,
-                                       api_initial_wait_s = 1,
-                                       api_max_wait_s = 120,
-                                       api_retry_statuses = c(408L, 409L, 429L, 500L, 502L, 503L, 504L),
-                                       request_spacing_s = 0,
-                                       rate_limit_margin = 0.85,
-                                       verbose = session$verbose) {
-  rate_limit_policy <- .semantica_normalize_retry_policy(rate_limit_policy)
-  api_max_retries <- suppressWarnings(as.integer(api_max_retries[[1L]]))
-  if (!is.finite(api_max_retries) || api_max_retries < 0L) stop("'api_max_retries' must be a non-negative integer.")
-  retry_statuses <- suppressWarnings(as.integer(api_retry_statuses))
-  retry_statuses <- retry_statuses[is.finite(retry_statuses)]
-
-  attempt <- 1L
-  repeat {
-    .semantica_wait_for_request_slot(session, request_spacing_s, rate_limit_margin)
-    resp <- tryCatch(
-      req |> httr2::req_error(is_error = function(r) FALSE) |> httr2::req_perform(),
-      error = function(e) e
-    )
-
-    retries_used <- attempt - 1L
-    can_retry <- identical(rate_limit_policy, "auto") && retries_used < api_max_retries
-
-    if (inherits(resp, "error")) {
-      if (can_retry) {
-        wait_s <- .semantica_retry_wait_s(NULL, attempt, api_initial_wait_s, api_max_wait_s)
-        if (isTRUE(verbose)) {
-          message(sprintf("  API transport error. Waiting %.1fs before retry %d/%d: %s",
-                          wait_s, retries_used + 1L, api_max_retries, conditionMessage(resp)))
-        }
-        Sys.sleep(wait_s)
-        attempt <- attempt + 1L
-        next
-      }
-      stop(conditionMessage(resp), call. = FALSE)
-    }
-
-    status <- httr2::resp_status(resp)
-    if (!identical(rate_limit_policy, "auto") || !(status %in% retry_statuses) || !can_retry) {
-      return(resp)
-    }
-
-    wait_s <- .semantica_retry_wait_s(resp, attempt, api_initial_wait_s, api_max_wait_s)
-    if (isTRUE(verbose)) {
-      message(sprintf("  API status %d. Waiting %.1fs before retry %d/%d.",
-                      status, wait_s, retries_used + 1L, api_max_retries))
-    }
-    Sys.sleep(wait_s)
-    attempt <- attempt + 1L
-  }
-}
-
-#' @keywords internal
-.semantica_error_message <- function(prefix, parsed, resp) {
-  status <- tryCatch(httr2::resp_status(resp), error = function(e) NA_integer_)
-  status_desc <- tryCatch(httr2::resp_status_desc(resp), error = function(e) NULL)
-  err <- parsed$error
-  msg <- NULL
-  if (is.list(err)) {
-    msg <- err$message %||% err$type %||% unlist(err, use.names = FALSE)
-  } else if (!is.null(err)) {
-    msg <- err
-  }
-  msg <- msg %||% status_desc %||% status
-  if (is.list(msg)) msg <- unlist(msg, use.names = FALSE)
-  msg <- paste(as.character(msg), collapse = " ")
-  paste0(prefix, msg)
 }
 
 #' @keywords internal
@@ -525,33 +1075,67 @@ print.semantica_session <- function(x, ...) {
     resp <- tryCatch(httr2::request(ping_url) |> httr2::req_timeout(8L) |> httr2::req_perform(), error = function(e) NULL)
     if (!is.null(resp) && httr2::resp_status(resp) < 400L) return(TRUE)
   }
-  .call_chat(session, messages = list(list(role = "user", content = "ping")), max_tokens = 1L,
-             rate_limit_policy = "none", api_max_retries = 0L)
+  .call_chat(session, messages = list(list(role = "user", content = "ping")), max_tokens = 1L)
   TRUE
 }
 
 #' @keywords internal
-.call_chat <- function(session, messages, max_tokens = 2048L, temperature = 0.7, system_prompt = NULL,
-                       rate_limit_policy = "auto", api_max_retries = 6L,
-                       api_initial_wait_s = 1, api_max_wait_s = 120,
-                       api_retry_statuses = c(408L, 409L, 429L, 500L, 502L, 503L, 504L),
-                       request_spacing_s = 0, rate_limit_margin = 0.85) {
+.semantica_normalize_generation_seed <- function(seed) {
+  if (is.null(seed)) return(NULL)
+  if (length(seed) != 1L) {
+    stop("'seed' must be NULL or one nonnegative integer.", call. = FALSE)
+  }
+  seed_num <- suppressWarnings(as.numeric(seed))
+  if (length(seed_num) != 1L || !is.finite(seed_num) || seed_num < 0 ||
+      seed_num > .Machine$integer.max || abs(seed_num - round(seed_num)) > sqrt(.Machine$double.eps)) {
+    stop("'seed' must be NULL or one nonnegative integer.", call. = FALSE)
+  }
+  as.integer(round(seed_num))
+}
+
+.semantica_generation_seed_capability <- function(session) {
+  proto <- as.character(session$protocol %||% "unknown")
+  supported <- identical(proto, "ollama")
+  list(
+    supported = supported,
+    protocol = proto,
+    mechanism = if (supported) "ollama_options_seed" else "not_implemented_for_protocol",
+    guarantee = if (supported) "seed_option_supported" else "not_controlled"
+  )
+}
+
+.semantica_derive_generation_task_seed <- function(master_seed, dimension, facet, attempt, request_n) {
+  master_seed <- .semantica_normalize_generation_seed(master_seed)
+  if (is.null(master_seed)) return(NA_integer_)
+  key <- paste(
+    "semantica-generation-task-seed-v1", master_seed,
+    enc2utf8(as.character(dimension)), enc2utf8(as.character(facet)),
+    as.integer(attempt), as.integer(request_n),
+    sep = "\u001f"
+  )
+  bytes <- as.integer(charToRaw(key))
+  # Polynomial modular hashing keeps all intermediate integers far below 2^53,
+  # so the result is deterministic under R's exact integer-valued doubles and
+  # does not depend on serialized-object bytes or caller RNG state.
+  modulus <- 2147483646
+  h <- 0
+  for (b in bytes) h <- (h * 131 + b + 1) %% modulus
+  as.integer(h + 1)
+}
+
+#' @keywords internal
+.call_chat <- function(session, messages, max_tokens = 2048L, temperature = 0.7, system_prompt = NULL, response_format = NULL, seed = NULL) {
   proto <- session$protocol
+  seed <- .semantica_normalize_generation_seed(seed)
   if (proto == "python_hf") return(.py_hf_chat(session, messages, max_tokens, temperature, system_prompt))
   if (proto == "python_llamacpp") return(.py_llamacpp_chat(session, messages, max_tokens, temperature, system_prompt))
 
   if (proto == "anthropic") {
     body <- list(model = session$chat_model, max_tokens = max_tokens, messages = messages)
     if (!is.null(system_prompt)) body$system <- system_prompt
-    resp <- .semantica_perform_request(
-      session, .build_request(session, session$chat_url, body),
-      rate_limit_policy = rate_limit_policy, api_max_retries = api_max_retries,
-      api_initial_wait_s = api_initial_wait_s, api_max_wait_s = api_max_wait_s,
-      api_retry_statuses = api_retry_statuses, request_spacing_s = request_spacing_s,
-      rate_limit_margin = rate_limit_margin
-    )
+    resp <- .build_request(session, session$chat_url, body) |> httr2::req_error(is_error = function(r) FALSE) |> httr2::req_perform()
     parsed <- httr2::resp_body_json(resp, simplifyVector = FALSE)
-    if (httr2::resp_status(resp) >= 400L) stop(.semantica_error_message("Anthropic error: ", parsed, resp))
+    if (httr2::resp_status(resp) >= 400L) stop("Anthropic error: ", parsed$error$message %||% httr2::resp_status(resp))
     txt <- parsed$content[[1L]]$text
     if (is.null(txt) || length(txt) == 0L) stop("Empty Anthropic response.")
     return(as.character(txt))
@@ -560,17 +1144,19 @@ print.semantica_session <- function(x, ...) {
   msgs <- messages
   if (!is.null(system_prompt)) msgs <- c(list(list(role = "system", content = system_prompt)), msgs)
   body <- list(model = session$chat_model, messages = msgs, max_tokens = max_tokens, temperature = temperature)
-  if (proto == "ollama") { body$stream <- FALSE; body$options <- list(temperature = temperature, num_predict = max_tokens); body$max_tokens <- NULL }
+  if (identical(response_format, "json") && isTRUE(session$supports_structured_output)) {
+    if (proto == "ollama") body$format <- "json" else body$response_format <- list(type = "json_object")
+  }
+  if (proto == "ollama") {
+    body$stream <- FALSE
+    body$options <- list(temperature = temperature, num_predict = max_tokens)
+    if (!is.null(seed)) body$options$seed <- seed
+    body$max_tokens <- NULL
+  }
 
-  resp <- .semantica_perform_request(
-    session, .build_request(session, session$chat_url, body),
-    rate_limit_policy = rate_limit_policy, api_max_retries = api_max_retries,
-    api_initial_wait_s = api_initial_wait_s, api_max_wait_s = api_max_wait_s,
-    api_retry_statuses = api_retry_statuses, request_spacing_s = request_spacing_s,
-    rate_limit_margin = rate_limit_margin
-  )
+  resp <- .build_request(session, session$chat_url, body) |> httr2::req_error(is_error = function(r) FALSE) |> httr2::req_perform()
   parsed <- httr2::resp_body_json(resp, simplifyVector = FALSE)
-  if (httr2::resp_status(resp) >= 400L) stop(.semantica_error_message("LLM API error: ", parsed, resp))
+  if (httr2::resp_status(resp) >= 400L) stop("LLM API error: ", parsed$error$message %||% parsed$error %||% httr2::resp_status(resp))
   txt <- if (proto == "ollama") parsed$message$content else parsed$choices[[1L]]$message$content
   if (is.null(txt) || length(txt) == 0L) stop("Empty response from backend '", session$backend, "'.")
   as.character(txt)
@@ -578,19 +1164,38 @@ print.semantica_session <- function(x, ...) {
 
 #' @keywords internal
 .call_embed <- function(session, texts) {
+  texts <- .semantica_prepare_embedding_texts(session, texts)
   proto <- session$protocol
   if (proto == "python_hf") return(.py_sentence_transformers(session, texts))
   if (proto == "python_llamacpp") return(.py_llamacpp_embed(session, texts))
   if (is.null(session$embed_url)) stop("Backend '", session$backend, "' has no embedding endpoint. Use a separate embed_session.")
 
   if (proto == "ollama") {
-    rows <- lapply(texts, function(txt) {
-      body <- list(model = session$embed_model, prompt = txt)
-      resp <- .build_request(session, session$embed_url, body) |> httr2::req_error(is_error = function(r) FALSE) |> httr2::req_perform()
-      if (httr2::resp_status(resp) >= 400L) stop("Ollama embed error: ", httr2::resp_status(resp))
-      unlist(httr2::resp_body_json(resp, simplifyVector = FALSE)$embedding)
-    })
-    mat <- do.call(rbind, rows); rownames(mat) <- NULL; return(mat)
+    body <- list(model = session$embed_model, input = as.list(texts))
+    resp <- .build_request(session, session$embed_url, body) |>
+      httr2::req_error(is_error = function(r) FALSE) |>
+      httr2::req_perform()
+    status <- httr2::resp_status(resp)
+    parsed <- tryCatch(httr2::resp_body_json(resp, simplifyVector = FALSE), error = function(e) NULL)
+    if (status < 400L && !is.null(parsed$embeddings)) {
+      mat <- do.call(rbind, lapply(parsed$embeddings, function(x) as.numeric(unlist(x, use.names = FALSE))))
+      rownames(mat) <- NULL
+      return(mat)
+    }
+    # Backward-compatible fallback for older Ollama versions using /api/embeddings.
+    if (status %in% c(404L, 405L)) {
+      legacy_url <- sub("/api/embed$", "/api/embeddings", session$embed_url)
+      rows <- lapply(texts, function(txt) {
+        legacy_body <- list(model = session$embed_model, prompt = txt)
+        legacy_resp <- .build_request(session, legacy_url, legacy_body) |>
+          httr2::req_error(is_error = function(r) FALSE) |>
+          httr2::req_perform()
+        if (httr2::resp_status(legacy_resp) >= 400L) stop("Ollama legacy embed error: ", httr2::resp_status(legacy_resp))
+        as.numeric(unlist(httr2::resp_body_json(legacy_resp, simplifyVector = FALSE)$embedding, use.names = FALSE))
+      })
+      mat <- do.call(rbind, rows); rownames(mat) <- NULL; return(mat)
+    }
+    stop("Ollama embed error: ", status)
   }
 
   body <- list(model = session$embed_model, input = as.list(texts))
@@ -642,21 +1247,128 @@ print.semantica_session <- function(x, ...) {
   get(module_name, envir = .py_modules, inherits = FALSE)
 }
 
+.semantica_resolve_python_inference_device <- function(requested_device) {
+  requested <- tolower(trimws(as.character(requested_device[1L])))
+  if (!grepl("^(auto|cpu|cuda(:[0-9]+)?|mps)$", requested)) {
+    stop("Unsupported Python inference device: ", requested)
+  }
+  if (identical(requested, "cpu")) return("cpu")
+
+  torch <- .py_get("torch")
+  cuda_available <- isTRUE(tryCatch(
+    reticulate::py_to_r(torch$cuda$is_available()),
+    error = function(e) FALSE
+  ))
+  mps_available <- isTRUE(tryCatch({
+    backend <- torch$backends$mps
+    reticulate::py_to_r(backend$is_available())
+  }, error = function(e) FALSE))
+
+  if (identical(requested, "auto")) {
+    if (cuda_available) return("cuda:0")
+    if (mps_available) return("mps")
+    return("cpu")
+  }
+  if (startsWith(requested, "cuda")) {
+    if (!cuda_available) {
+      stop(
+        "CUDA inference was requested, but Python PyTorch reports no CUDA device."
+      )
+    }
+    index <- if (grepl(":", requested, fixed = TRUE)) {
+      as.integer(sub("^cuda:", "", requested))
+    } else {
+      0L
+    }
+    count <- as.integer(tryCatch(
+      reticulate::py_to_r(torch$cuda$device_count()),
+      error = function(e) 0L
+    ))
+    if (!is.finite(count) || index >= count) {
+      stop(sprintf(
+        "CUDA inference device %d was requested, but Python reports %d device(s).",
+        index, if (is.finite(count)) count else 0L
+      ))
+    }
+    return(sprintf("cuda:%d", index))
+  }
+  if (!mps_available) {
+    stop("MPS inference was requested, but Python PyTorch reports no MPS device.")
+  }
+  "mps"
+}
+
+.semantica_python_torch_dtype <- function(torch, precision) {
+  switch(
+    precision,
+    float32 = torch$float32,
+    float16 = torch$float16,
+    bfloat16 = torch$bfloat16,
+    NULL
+  )
+}
+
+#' @keywords internal
+.semantica_python_cache_key <- function(...) {
+  parts <- vapply(list(...), function(x) {
+    if (is.null(x)) return("<null>")
+    paste(utils::capture.output(dput(x)), collapse = "")
+  }, character(1L))
+  paste(parts, collapse = "|")
+}
+
 #' @keywords internal
 .py_hf_chat <- function(session, messages, max_tokens, temperature, system_prompt) {
   transformers <- .py_get("transformers")
   model_id <- session$chat_model
-  cache_key <- paste0("hf_pipe_", model_id)
+  cache_key <- .semantica_python_cache_key(
+    "hf_pipe", model_id, session$chat_device,
+    session$device_map, session$model_precision
+  )
   if (!exists(cache_key, envir = .py_model_cache, inherits = FALSE)) {
     if (session$verbose) message("  Loading HF pipeline for '", model_id, "'...")
-    kwargs <- list(task = "text-generation", model = model_id, device_map = "auto")
+    kwargs <- list(task = "text-generation", model = model_id)
+    if (!is.null(session$device_map)) {
+      kwargs$device_map <- session$device_map
+    } else {
+      device <- session$chat_device %||% "cpu"
+      kwargs$device <- if (identical(device, "cpu")) {
+        -1L
+      } else if (identical(device, "cuda")) {
+        0L
+      } else if (grepl("^cuda:[0-9]+$", device)) {
+        as.integer(sub("^cuda:", "", device))
+      } else {
+        device
+      }
+    }
+    if (!identical(session$model_precision %||% "auto", "auto")) {
+      kwargs$torch_dtype <- .semantica_python_torch_dtype(
+        .py_get("torch"), session$model_precision
+      )
+    }
     if (!is.null(session$hf_token)) kwargs$token <- session$hf_token
     pipe <- do.call(transformers$pipeline, kwargs)
     assign(cache_key, pipe, envir = .py_model_cache)
   }
   pipe <- get(cache_key, envir = .py_model_cache)
   py_messages <- reticulate::r_to_py(if (!is.null(system_prompt)) c(list(list(role="system", content=system_prompt)), messages) else messages)
-  out <- pipe(py_messages, max_new_tokens = as.integer(max_tokens), temperature = temperature, do_sample = TRUE, return_full_text = FALSE)
+  generation_args <- list(
+    py_messages,
+    max_new_tokens = as.integer(max_tokens),
+    return_full_text = FALSE
+  )
+  # Hugging Face/Transformers treats temperature as a sampling control.  A
+  # zero-temperature request is therefore routed to greedy decoding rather than
+  # asking the backend to sample from a zero-temperature distribution, which is
+  # invalid or warning-prone across Transformers versions.
+  if (is.finite(temperature) && temperature > 0) {
+    generation_args$temperature <- temperature
+    generation_args$do_sample <- TRUE
+  } else {
+    generation_args$do_sample <- FALSE
+  }
+  out <- do.call(pipe, generation_args)
   txt <- tryCatch(out[[1L]]$generated_text, error = function(e) out[[1L]][[1L]]$generated_text)
   if (is.null(txt)) stop("HuggingFace pipeline returned NULL text.")
   as.character(txt)
@@ -666,10 +1378,17 @@ print.semantica_session <- function(x, ...) {
 .py_llamacpp_chat <- function(session, messages, max_tokens, temperature, system_prompt) {
   llama_cpp <- .py_get("llama_cpp")
   if (is.null(session$gguf_path) || !file.exists(session$gguf_path)) stop("python_llamacpp requires a valid gguf_path.")
-  cache_key <- paste0("llamacpp_chat_", session$gguf_path)
+  model_path <- normalizePath(session$gguf_path, winslash = "/", mustWork = TRUE)
+  cache_key <- .semantica_python_cache_key(
+    "llamacpp", model_path, "chat", 4096L, session$gpu_layers,
+    session$model_precision
+  )
   if (!exists(cache_key, envir = .py_model_cache, inherits = FALSE)) {
     if (session$verbose) message("  Loading GGUF model '", basename(session$gguf_path), "'...")
-    llm <- llama_cpp$Llama(model_path = session$gguf_path, n_ctx = 4096L, n_gpu_layers = -1L, verbose = FALSE)
+    llm <- llama_cpp$Llama(
+      model_path = model_path, n_ctx = 4096L,
+      n_gpu_layers = as.integer(session$gpu_layers %||% -1L), verbose = FALSE
+    )
     assign(cache_key, llm, envir = .py_model_cache)
   }
   llm <- get(cache_key, envir = .py_model_cache)
@@ -685,26 +1404,57 @@ print.semantica_session <- function(x, ...) {
 .py_sentence_transformers <- function(session, texts) {
   st <- .py_get("sentence_transformers")
   model_id <- session$embed_model %||% "sentence-transformers/all-MiniLM-L6-v2"
-  cache_key <- paste0("st_", model_id)
+  requested_device <- session$embedding_device %||% "auto"
+  resolved_device <- .semantica_resolve_python_inference_device(
+    requested_device
+  )
+  cache_key <- .semantica_python_cache_key(
+    "sentence_transformer", model_id, requested_device, resolved_device,
+    session$model_precision
+  )
   if (!exists(cache_key, envir = .py_model_cache, inherits = FALSE)) {
     if (session$verbose) message("  Loading sentence-transformer '", model_id, "'...")
-    model <- st$SentenceTransformer(model_id)
+    constructor_args <- list(model_id, device = resolved_device)
+    if (!identical(session$model_precision %||% "auto", "auto")) {
+      constructor_args$model_kwargs <- list(
+        torch_dtype = .semantica_python_torch_dtype(
+          .py_get("torch"), session$model_precision
+        )
+      )
+    }
+    if (!is.null(session$hf_token)) constructor_args$token <- session$hf_token
+    model <- do.call(st$SentenceTransformer, constructor_args)
     assign(cache_key, model, envir = .py_model_cache)
   }
   model <- get(cache_key, envir = .py_model_cache)
   embs <- model$encode(reticulate::r_to_py(as.list(texts)), normalize_embeddings = TRUE, show_progress_bar = FALSE)
   mat <- reticulate::py_to_r(embs)
   if (!is.matrix(mat)) mat <- matrix(mat, nrow = length(texts))
-  rownames(mat) <- NULL; mat
+  rownames(mat) <- NULL
+  attr(mat, "semantica_embedding_device") <- list(
+    requested = requested_device,
+    resolved = resolved_device,
+    precision = session$model_precision %||% "auto",
+    status = "resolved_by_python_torch"
+  )
+  mat
 }
 
 #' @keywords internal
 .py_llamacpp_embed <- function(session, texts) {
   llama_cpp <- .py_get("llama_cpp")
   if (is.null(session$gguf_path) || !file.exists(session$gguf_path)) stop("python_llamacpp embed requires gguf_path.")
-  cache_key <- paste0("llamacpp_embed_", session$gguf_path)
+  model_path <- normalizePath(session$gguf_path, winslash = "/", mustWork = TRUE)
+  cache_key <- .semantica_python_cache_key(
+    "llamacpp", model_path, "embed", 512L, session$gpu_layers,
+    session$model_precision
+  )
   if (!exists(cache_key, envir = .py_model_cache, inherits = FALSE)) {
-    llm <- llama_cpp$Llama(model_path = session$gguf_path, n_ctx = 512L, n_gpu_layers = -1L, embedding = TRUE, verbose = FALSE)
+    llm <- llama_cpp$Llama(
+      model_path = model_path, n_ctx = 512L,
+      n_gpu_layers = as.integer(session$gpu_layers %||% -1L),
+      embedding = TRUE, verbose = FALSE
+    )
     assign(cache_key, llm, envir = .py_model_cache)
   }
   llm <- get(cache_key, envir = .py_model_cache)
@@ -719,8 +1469,15 @@ print.semantica_session <- function(x, ...) {
 # P4  ITEM GENERATION HELPERS
 # =================================================================
 #' @keywords internal
-.build_system_prompt <- function(scale_name, scale_description, response_format, item_style, language) {
-  sprintf('You are an expert psychometrician...\nSCALE CONTEXT\nName: %s\nDescription: %s\nResponse: %s\nStyle: %s\nLanguage: %s\n\nOUTPUT CONTRACT:\nReturn ONLY a numbered list. No preamble. Each line: "<number>. <item text>". Avoid double-barrelled items, jargon, negations.', scale_name, scale_description, response_format, item_style, language)
+.build_system_prompt <- function(scale_name, scale_description, response_format, item_style, language,
+                                 output_mode = c("numbered", "json")) {
+  output_mode <- match.arg(output_mode)
+  contract <- if (output_mode == "json") {
+    'Return ONLY valid JSON with one top-level key "items" whose value is an array of item strings. No markdown or commentary.'
+  } else {
+    'Return ONLY a numbered list. No preamble. Each line: "<number>. <item text>".'
+  }
+  sprintf('You are an expert psychometrician...\nSCALE CONTEXT\nName: %s\nDescription: %s\nResponse: %s\nStyle: %s\nLanguage: %s\n\nOUTPUT CONTRACT:\n%s Avoid double-barrelled items, jargon, and avoid negations unless the construct definition explicitly requires negative polarity.', scale_name, scale_description, response_format, item_style, language, contract)
 }
 
 #' @keywords internal
@@ -728,7 +1485,9 @@ print.semantica_session <- function(x, ...) {
                                  user_examples = NULL, forbidden_concepts = NULL,
                                  extra_instructions = NULL,
                                  dimension_name = NULL, dimension_description = NULL,
-                                 facet_name = NULL) {
+                                 facet_name = NULL,
+                                 output_mode = c("numbered", "json")) {
+  output_mode <- match.arg(output_mode)
   if (!is.null(dimension_name) && !is.null(facet_name)) {
     lines <- c(
       sprintf("Generate exactly %d psychometric items for the following facet within a broader dimension.", n_items),
@@ -745,8 +1504,63 @@ print.semantica_session <- function(x, ...) {
   if (!is.null(user_examples) && length(user_examples) > 0L) lines <- c(lines, "", "EXAMPLE ITEMS:", paste0("  - ", user_examples))
   if (!is.null(forbidden_concepts) && length(forbidden_concepts) > 0L) lines <- c(lines, "", "DO NOT write about:", paste0("  - ", forbidden_concepts))
   if (!is.null(extra_instructions) && nchar(trimws(extra_instructions)) > 0L) lines <- c(lines, "", "ADDITIONAL INSTRUCTIONS:", extra_instructions)
-  lines <- c(lines, "", sprintf("Output exactly %d items, numbered 1 to %d.", n_items, n_items))
+  output_instruction <- if (output_mode == "json") {
+    sprintf('Output valid JSON only: {"items":["item 1", ..., "item %d"]}. Include exactly %d item strings.', n_items, n_items)
+  } else {
+    sprintf("Output exactly %d items, numbered 1 to %d.", n_items, n_items)
+  }
+  lines <- c(
+    lines,
+    "",
+    "ITEM-SET QUALITY REQUIREMENTS:",
+    "  - Every item must directly instantiate the stated factor/facet definition, not merely the broad scale topic.",
+    "  - Avoid paraphrases or near-duplicates of other items; vary the behavioral manifestation while preserving the same construct meaning.",
+    "  - Do not drift into adjacent constructs, consequences, causes, abilities, outcomes, or contextual features unless the definition explicitly includes them.",
+    "  - Prefer one clear psychological proposition per item.",
+    "",
+    output_instruction
+  )
   paste(lines, collapse = "\n")
+}
+
+# Normalize provider text line endings without turning a newline into the
+# literal character "n". Keep this internal so every fallback parser uses the
+# same transport-neutral text contract.
+.semantica_normalize_newlines <- function(x) {
+  if (is.null(x) || !length(x)) return("")
+  x <- as.character(x[[1L]])
+  gsub("\\r\\n?", "\n", x, perl = TRUE)
+}
+
+#' @keywords internal
+.parse_items_json <- function(raw_text, expected_n, factor_name, minimum_n = expected_n) {
+  if (is.null(raw_text) || !length(raw_text)) return(character(0L))
+  txt <- as.character(raw_text[[1L]])
+  candidates <- unique(c(
+    txt,
+    gsub("^\\s*```(?:json)?\\s*|\\s*```\\s*$", "", txt, ignore.case = TRUE, perl = TRUE),
+    if (grepl("\\{", txt) && grepl("\\}", txt)) sub("^[^{]*(\\{.*\\})[^}]*$", "\\1", txt, perl = TRUE) else character(0L)
+  ))
+  parsed <- NULL
+  for (candidate in candidates) {
+    parsed <- tryCatch(jsonlite::fromJSON(candidate, simplifyVector = TRUE), error = function(e) NULL)
+    if (!is.null(parsed)) break
+  }
+  if (is.null(parsed)) return(.parse_items(raw_text, expected_n, factor_name, minimum_n))
+  items <- parsed$items %||% parsed$item %||% NULL
+  if (is.data.frame(items)) {
+    candidate_col <- intersect(c("text", "item_text", "item"), names(items))
+    items <- if (length(candidate_col)) items[[candidate_col[[1L]]]] else unlist(items, use.names = FALSE)
+  }
+  items <- as.character(unlist(items, use.names = FALSE))
+  items <- stringr::str_trim(items)
+  items <- items[nchar(items) > 5L]
+  items <- unique(items)
+  if (length(items) < minimum_n) {
+    warning(sprintf("Structured response for '%s' yielded %d usable items; expected at least %d.", factor_name, length(items), minimum_n))
+  }
+  if (length(items) > expected_n) items <- items[seq_len(expected_n)]
+  items
 }
 
 #' @keywords internal
@@ -756,30 +1570,36 @@ print.semantica_session <- function(x, ...) {
     return(character(0L))
   }
 
-  txt <- as.character(raw_text[[1L]])
-  txt <- gsub("\r\n?", "\n", txt)
+  txt <- .semantica_normalize_newlines(raw_text)
   txt <- gsub("```[A-Za-z]*", "", txt)
   txt <- gsub("```", "", txt)
   # Some LLMs place all numbered items on one line; force a line break
   # before recognizable list markers before parsing.
   txt <- gsub("(?m)(^|\\s)(\\d+\\s*[\\.)\\:\\-]\\s+)", "\n\\2", txt, perl = TRUE)
 
-  lines <- stringr::str_trim(stringr::str_split(txt, "\n")[[1L]])
+  lines <- stringr::str_trim(strsplit(txt, "\n", fixed = TRUE)[[1L]])
   lines <- lines[nchar(lines) > 0L]
   if (length(lines) == 0L) {
     warning("Could not parse items for '", factor_name, "'.")
     return(character(0L))
   }
 
+  bullet <- intToUtf8(0x2022)
+  list_marker <- grepl("^\\s*\\d+\\s*[\\.)\\:\\-]\\s+", lines, perl = TRUE) |
+    grepl(paste0("^\\s*[-*", bullet, "]\\s+"), lines, perl = TRUE)
+  # If the response contains an actual list, prose before/after it is context,
+  # not item content. This prevents introductions/conclusions from becoming
+  # silently valid items while preserving plain one-item-per-line fallbacks.
+  if (any(list_marker)) lines <- lines[list_marker]
+
   strip_marker <- function(x) {
-    bullet <- intToUtf8(0x2022)
     left_quote <- intToUtf8(0x201c)
     right_quote <- intToUtf8(0x201d)
 
     x <- gsub("^\\s*\\d+\\s*[\\.)\\:\\-]\\s+", "", x, perl = TRUE)
     x <- gsub(paste0("^\\s*[-*", bullet, "]\\s+"), "", x, perl = TRUE)
     x <- gsub(
-      paste0("^\\s*[\"'", left_quote, right_quote, "]+|[\"'", left_quote, right_quote, "]+\\s*$"),
+      paste0("^\\s*[\\\"'", left_quote, right_quote, "]+|[\\\"'", left_quote, right_quote, "]+\\s*$"),
       "",
       x,
       perl = TRUE
@@ -791,7 +1611,7 @@ print.semantica_session <- function(x, ...) {
   items <- strip_marker(lines)
   prefix_text <- iconv(tolower(items), from = "", to = "ASCII//TRANSLIT")
   bad_prefix <- grepl(
-    "^(here|sure|certainly|below|these|the following|aqui|claro|por supuesto|lista|nota|note)\\b",
+    "^(here|sure|certainly|below|these|the following|aqui|claro|por supuesto|lista|nota|note|sorry|i am sorry|i'm sorry|i cannot|i can't|unable to|as an ai)\\b",
     prefix_text
   )
   items <- items[!bad_prefix]
@@ -807,13 +1627,172 @@ print.semantica_session <- function(x, ...) {
 }
 
 #' @keywords internal
+.semantica_parse_generation_response <- function(raw_text, expected_n, factor_name,
+                                                  minimum_n = expected_n,
+                                                  output_mode = c("numbered", "json")) {
+  output_mode <- match.arg(output_mode)
+  raw_scalar <- .semantica_normalize_newlines(raw_text)
+  nonempty_lines <- if (!nzchar(trimws(raw_scalar))) character(0L) else {
+    z <- trimws(strsplit(raw_scalar, "\n", fixed = TRUE)[[1L]])
+    z[nzchar(z)]
+  }
+  parsed_raw <- suppressWarnings(if (output_mode == "json") {
+    .parse_items_json(raw_text, expected_n, factor_name, minimum_n = minimum_n)
+  } else {
+    .parse_items(raw_text, expected_n, factor_name, minimum_n = minimum_n)
+  })
+  retained <- .dedup_items(parsed_raw)
+  reasons <- character(0L)
+  if (!length(nonempty_lines)) reasons <- c(reasons, "empty_response")
+  refusal <- grepl("\\b(sorry|cannot|can't|unable|refuse)\\b", tolower(raw_scalar), perl = TRUE)
+  if (isTRUE(refusal) && !length(retained)) reasons <- c(reasons, "refusal_or_non_item_response")
+  # "fewer_than_requested" is descriptive attempt metadata: compare with the
+  # number requested from the backend, not the lower usability floor. A response
+  # can therefore be usable for the current generation loop while still being
+  # truthfully recorded as shorter than requested. This does not change which
+  # items are retained or whether retries occur.
+  if (length(parsed_raw) < expected_n) reasons <- c(reasons, "fewer_than_requested")
+  if (length(parsed_raw) < minimum_n) reasons <- c(reasons, "below_minimum_usable")
+  if (length(parsed_raw) > expected_n) reasons <- c(reasons, "more_than_requested_truncated")
+  duplicate_n <- max(0L, length(parsed_raw) - length(retained))
+  if (duplicate_n > 0L) reasons <- c(reasons, "duplicates_removed")
+  list(
+    items = retained,
+    metadata = list(
+      requested = as.integer(expected_n),
+      received = as.integer(length(nonempty_lines)),
+      parsed = as.integer(length(parsed_raw)),
+      rejected = as.integer(max(0L, length(nonempty_lines) - length(parsed_raw))),
+      duplicate = as.integer(duplicate_n),
+      retained = as.integer(length(retained)),
+      rejection_reasons = unique(reasons),
+      output_mode = output_mode
+    )
+  )
+}
+
+#' @keywords internal
+.semantica_normalize_item_text <- function(x) {
+  x <- as.character(x)
+  x <- iconv(x, from = "", to = "ASCII//TRANSLIT", sub = "")
+  x <- tolower(x)
+  x <- gsub("[^[:alnum:]]+", " ", x, perl = TRUE)
+  trimws(gsub("\\s+", " ", x, perl = TRUE))
+}
+
+#' @keywords internal
+.semantica_char_bigram_set <- function(x) {
+  x <- gsub("\\s+", " ", .semantica_normalize_item_text(x), perl = TRUE)
+  ch <- strsplit(x, "", fixed = TRUE)[[1L]]
+  if (length(ch) < 2L) return(character(0L))
+  unique(paste0(ch[-length(ch)], ch[-1L]))
+}
+
+#' @keywords internal
+.semantica_lexical_jaccard <- function(a, b) {
+  aa <- .semantica_char_bigram_set(a)
+  bb <- .semantica_char_bigram_set(b)
+  if (!length(aa) || !length(bb)) return(0)
+  u <- union(aa, bb)
+  if (!length(u)) return(0)
+  length(intersect(aa, bb)) / length(u)
+}
+
+#' @keywords internal
 .dedup_items <- function(items, threshold = 0.92) {
   if (length(items) <= 1L) return(items)
-  bigrams <- function(s) { ch <- strsplit(tolower(s), "")[[1L]]; if (length(ch) < 2L) return(character(0L)); paste0(ch[-length(ch)], ch[-1L]) }
-  jaccard <- function(a, b) { ba <- bigrams(a); bb <- bigrams(b); if (!length(ba) || !length(bb)) return(0); length(intersect(ba, bb)) / length(union(ba, bb)) }
+  items <- as.character(items)
+  # First remove threshold-free lexical identity after case/punctuation/spacing
+  # normalization. Near-duplicate screening remains a separate lexical rule and
+  # does not reuse an embedding cosine threshold.
+  norm <- .semantica_normalize_item_text(items)
+  items <- items[!duplicated(norm)]
+  if (length(items) <= 1L) return(items)
   keep <- rep(TRUE, length(items))
-  for (i in seq_len(length(items) - 1L)) { if (!keep[i]) next; for (j in (i+1L):length(items)) { if (!keep[j]) next; if (jaccard(items[i], items[j]) >= threshold) keep[j] <- FALSE } }
+  for (i in seq_len(length(items) - 1L)) {
+    if (!keep[i]) next
+    for (j in (i + 1L):length(items)) {
+      if (!keep[j]) next
+      if (.semantica_lexical_jaccard(items[i], items[j]) >= threshold) keep[j] <- FALSE
+    }
+  }
   items[keep]
+}
+
+#' @keywords internal
+.semantica_select_diverse_generated_items <- function(items, n_target) {
+  items <- as.character(items)
+  n_target <- .as_positive_int(n_target, "'n_target'")
+  if (length(items) <= n_target) return(items)
+  n <- length(items)
+  sim <- matrix(0, n, n)
+  diag(sim) <- 1
+  for (i in seq_len(n - 1L)) {
+    for (j in (i + 1L):n) {
+      z <- .semantica_lexical_jaccard(items[i], items[j])
+      sim[i, j] <- sim[j, i] <- z
+    }
+  }
+  # Deterministic max-min diversity: seed with the item having the lowest
+  # typical lexical similarity to the rest, then repeatedly add the candidate
+  # whose closest selected neighbour is least similar. No new duplicate cutoff
+  # or model-dependent semantic threshold is introduced.
+  typical <- vapply(seq_len(n), function(i) stats::median(sim[i, -i], na.rm = TRUE), numeric(1L))
+  selected <- which.min(typical)
+  while (length(selected) < n_target) {
+    remaining <- setdiff(seq_len(n), selected)
+    max_to_selected <- vapply(remaining, function(i) max(sim[i, selected, drop = TRUE], na.rm = TRUE), numeric(1L))
+    mean_to_selected <- vapply(remaining, function(i) mean(sim[i, selected, drop = TRUE], na.rm = TRUE), numeric(1L))
+    ord <- order(max_to_selected, mean_to_selected, remaining, decreasing = FALSE)
+    selected <- c(selected, remaining[ord[1L]])
+  }
+  out <- items[selected]
+  attr(out, "generation_diversity") <- list(
+    policy = "deterministic_lexical_maxmin_v1",
+    candidate_n = n,
+    retained_n = length(out),
+    discarded_n = n - length(out)
+  )
+  out
+}
+
+#' @keywords internal
+.semantica_generation_replenishment_plan <- function(deficit, successful_requested, successful_new_retained, initial_request) {
+  deficit <- .as_positive_int(deficit, "'deficit'")
+  initial_request <- .as_positive_int(initial_request, "'initial_request'")
+  successful_requested <- suppressWarnings(as.integer(successful_requested))
+  successful_new_retained <- suppressWarnings(as.integer(successful_new_retained))
+
+  if (length(successful_requested) != 1L || is.na(successful_requested) || successful_requested < 0L) {
+    stop("'successful_requested' must be a non-negative integer.")
+  }
+  if (length(successful_new_retained) != 1L || is.na(successful_new_retained) || successful_new_retained < 0L) {
+    stop("'successful_new_retained' must be a non-negative integer.")
+  }
+
+  observed_yield <- if (successful_requested > 0L && successful_new_retained > 0L) {
+    min(1, successful_new_retained / successful_requested)
+  } else {
+    NA_real_
+  }
+
+  estimated <- if (is.finite(observed_yield) && observed_yield > 0) {
+    ceiling(deficit / observed_yield)
+  } else {
+    deficit
+  }
+
+  capped_estimate <- min(as.double(initial_request), as.double(estimated))
+  request_n <- max(deficit, as.integer(capped_estimate))
+  list(
+    deficit = as.integer(deficit),
+    request_n = as.integer(request_n),
+    observed_yield = observed_yield,
+    successful_requested = successful_requested,
+    successful_new_retained = successful_new_retained,
+    capped_at_initial_request = isTRUE(deficit <= initial_request && estimated > initial_request && request_n == initial_request),
+    policy = "yield_adaptive_v1"
+  )
 }
 
 #' @keywords internal
@@ -1003,29 +1982,27 @@ semantica_standardize_item_metadata <- function(x, id_col = NULL, dimension_col 
 #'   specification contains facet-level item counts. Defaults to `TRUE` for
 #'   direct calls that supply `n_per_factor`.
 #' @param overgenerate     LLM overgeneration multiplier.
-#' @param max_retries      Retries on short responses.
+#' @param max_retries      Maximum generation attempts. After a partial successful response, retries are deficit-aware: already usable items are preserved and the next request is sized from the observed new-item yield rather than regenerating the full target.
 #' @param global_forbidden_max Maximum number of previously generated items to
 #'   include as anti-duplicate examples in subsequent prompts.
 #' @param temperature      LLM temperature.
-#' @param rate_limit_policy Transport retry policy. `"auto"` retries temporary
-#'   API rate limits and transient server errors using provider headers and
-#'   exponential backoff; `"none"` preserves fail-fast behavior.
-#' @param api_max_retries Maximum number of transport-level retries for one LLM
-#'   request. These retries do not consume `max_retries`, which remains reserved
-#'   for short or unusable LLM content.
-#' @param api_initial_wait_s,api_max_wait_s Initial and maximum wait, in seconds,
-#'   for exponential backoff when a provider does not return retry timing.
-#' @param api_retry_statuses HTTP status codes treated as temporary transport
-#'   failures when `rate_limit_policy = "auto"`.
-#' @param request_spacing_s Minimum seconds between chat request starts for the
-#'   same backend/model. `NULL` uses `"auto"` when `rate_limit_policy = "auto"`
-#'   and no spacing when `rate_limit_policy = "none"`. Use `"auto"` explicitly
-#'   for conservative backend-specific spacing.
-#' @param rate_limit_margin Fraction of an auto-detected request rate to use
-#'   when `request_spacing_s = "auto"`.
+#' @param structured_output Output contract: `"auto"`, `"numbered"`, or structured `"json"` when supported.
 #' @param verbose          Print progress.
+#' @param seed Optional nonnegative master seed for LLM generation. SEMANTICA
+#'   currently forwards deterministically derived per-task seeds only to backends
+#'   with an implemented seed-control contract (Ollama). Unsupported protocols
+#'   are recorded as uncontrolled rather than silently treated as reproducible.
+#'   A requested backend seed controls SEMANTICA's deterministic seed schedule
+#'   but does not guarantee byte-identical backend output, even within one
+#'   runtime. Exact downstream replay requires saving and reusing the realized
+#'   item pool identified by its item-pool fingerprint.
 #' @return Tibble with legacy columns (`item_id`, `factor`, `item_text`,
 #'   `attempt`) and facet-aware columns (`ID`, `Dimension`, `Facet`, `item`).
+#'   Attribute `semantica_generation_metadata` records the generation contract,
+#'   backend seed-control status, a stable seed schedule separated from the
+#'   dynamic execution ledger, generation-specification and replay-plan
+#'   fingerprints, the exact retained-pool fingerprint, and whether downstream
+#'   content screening has occurred.
 #' @export
 #' @examples
 #' \dontrun{
@@ -1048,20 +2025,11 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
                                      language = "English", n_per_factor = NULL,
                                      n_per_factor_override = !is.null(n_per_factor),
                                      overgenerate = 2.0, max_retries = 3L,
-                                     global_forbidden_max = 40L, temperature = 0.8, verbose = TRUE,
-                                     rate_limit_policy = c("auto", "none"),
-                                     api_max_retries = 6L,
-                                     api_initial_wait_s = 1,
-                                     api_max_wait_s = 120,
-                                     api_retry_statuses = c(408L, 409L, 429L, 500L, 502L, 503L, 504L),
-                                     request_spacing_s = NULL,
-                                     rate_limit_margin = 0.85) {
+                                     global_forbidden_max = 40L, temperature = 0.8,
+                                     structured_output = c("auto", "numbered", "json"),
+                                     verbose = TRUE, seed = NULL) {
   if (!inherits(session, "semantica_session")) stop("'session' must be created with semantica_connect().")
   if (!is.list(factors) || is.null(names(factors))) stop("'factors' must be a named list.")
-  rate_limit_policy <- .semantica_normalize_retry_policy(rate_limit_policy)
-  if (is.null(request_spacing_s)) {
-    request_spacing_s <- if (identical(rate_limit_policy, "auto")) "auto" else 0
-  }
   if (!is.numeric(overgenerate) || length(overgenerate) != 1L || !is.finite(overgenerate) || overgenerate <= 0) {
     stop("'overgenerate' must be a positive finite number.")
   }
@@ -1072,31 +2040,51 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
   if (length(global_forbidden_max) != 1L || is.na(global_forbidden_max) || global_forbidden_max < 0L) {
     stop("'global_forbidden_max' must be a non-negative integer.")
   }
-  api_max_retries <- suppressWarnings(as.integer(api_max_retries[[1L]]))
-  if (!is.finite(api_max_retries) || api_max_retries < 0L) stop("'api_max_retries' must be a non-negative integer.")
-  api_initial_wait_s <- suppressWarnings(as.numeric(api_initial_wait_s[[1L]]))
-  if (!is.finite(api_initial_wait_s) || api_initial_wait_s < 0) stop("'api_initial_wait_s' must be a non-negative number.")
-  api_max_wait_s <- suppressWarnings(as.numeric(api_max_wait_s[[1L]]))
-  if (!is.finite(api_max_wait_s) || api_max_wait_s < 0) stop("'api_max_wait_s' must be a non-negative number.")
-  rate_limit_margin <- suppressWarnings(as.numeric(rate_limit_margin[[1L]]))
-  if (!is.finite(rate_limit_margin) || rate_limit_margin <= 0 || rate_limit_margin > 1) {
-    stop("'rate_limit_margin' must be a number greater than 0 and no greater than 1.")
+  structured_output <- match.arg(structured_output)
+  output_mode <- if (structured_output == "auto") {
+    if (isTRUE(session$supports_structured_output)) "json" else "numbered"
+  } else structured_output
+  if (output_mode == "json" && !requireNamespace("jsonlite", quietly = TRUE)) {
+    warning("Structured output requested but 'jsonlite' is unavailable; falling back to numbered text.", call. = FALSE)
+    output_mode <- "numbered"
   }
-  .semantica_normalize_request_spacing_s(request_spacing_s, session, rate_limit_margin)
+
+  seed <- .semantica_normalize_generation_seed(seed)
+  seed_capability <- .semantica_generation_seed_capability(session)
+  seed_controlled <- !is.null(seed) && isTRUE(seed_capability$supported)
 
   generation_plan <- .expand_generation_plan(factors, n_per_factor, n_per_factor_override)
   factor_names <- unique(vapply(generation_plan, `[[`, character(1L), "dimension"))
-  system_prompt <- .build_system_prompt(scale_name, scale_description, response_format, item_style, language)
+  system_prompt <- .build_system_prompt(scale_name, scale_description, response_format, item_style, language, output_mode = output_mode)
   if (verbose) {
     cat("============================================================\nSTEP 2 -- ITEM GENERATION\n============================================================\n")
     cat(sprintf("  Scale         : %s\n  Dimensions    : %d\n  Generation units: %d\n", scale_name, length(factor_names), length(generation_plan)))
     if (isTRUE(n_per_factor_override) && !is.null(n_per_factor)) {
-      cat(sprintf("  Count override: %d retained items per dimension, allocated across facets\n",
-                  .as_positive_int(n_per_factor, "'n_per_factor'")))
+      has_declared_facets <- any(vapply(factors, function(spec) {
+        if (!is.list(spec)) return(FALSE)
+        facets <- spec$facets %||% spec$Facets %||% NULL
+        !is.null(facets) && length(facets) > 0L
+      }, logical(1L)))
+      if (has_declared_facets) {
+        cat(sprintf("  Count override: %d retained items per dimension, allocated across facets\n",
+                    .as_positive_int(n_per_factor, "'n_per_factor'")))
+      } else {
+        cat(sprintf("  Count override: %d retained items per dimension\n",
+                    .as_positive_int(n_per_factor, "'n_per_factor'")))
+      }
+    }
+    if (!is.null(seed)) {
+      if (seed_controlled) {
+        cat(sprintf("  Generation seed: %d master seed -> deterministically derived per-call %s seeds\n", seed, seed_capability$protocol))
+      } else {
+        cat(sprintf("  Generation seed: %d requested, but protocol '%s' has no implemented seed-control contract in SEMANTICA; generation remains backend-uncontrolled\n", seed, seed_capability$protocol))
+      }
     }
   }
 
   all_rows <- list(); item_counter <- 1L; global_forbidden <- character(0L)
+  generation_attempts <- list()
+  diversity_curation <- list()
   for (unit in generation_plan) {
     n_target <- unit$n_items
     n_request <- ceiling(n_target * overgenerate)
@@ -1111,25 +2099,35 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
       forbidden_concepts = prompt_forbidden,
       extra_instructions = paste(
         unit$extra_instructions,
-        "Return only a plain numbered list. Do not add headings, explanations, markdown tables, JSON, or bullet points."
+        if (output_mode == "json") "Return only valid JSON with key 'items'." else "Return only a plain numbered list. Do not add headings, explanations, markdown tables, JSON, or bullet points."
       ),
       dimension_name = unit$dimension,
       dimension_description = unit$dimension_description,
-      facet_name = unit$facet
+      facet_name = unit$facet,
+      output_mode = output_mode
     )
     collected <- character(0L); attempt <- 1L; request_n <- n_request; last_error <- NULL
+    successful_requested <- 0L
+    successful_new_retained <- 0L
     while (length(collected) < n_target && attempt <= max_retries) {
+      needed_before <- n_target - length(collected)
+      collected_before <- collected
+      task_seed <- if (seed_controlled) {
+        .semantica_derive_generation_task_seed(seed, unit$dimension, unit$facet, attempt, request_n)
+      } else NA_integer_
+      prompt_fingerprint <- .semantica_object_md5(list(
+        schema = "semantica-generation-prompt-v1",
+        system_prompt = enc2utf8(system_prompt),
+        user_prompt = enc2utf8(user_prompt),
+        output_mode = output_mode,
+        request_n = as.integer(request_n)
+      ))
       raw <- tryCatch(
         .call_chat(session, messages = list(list(role="user", content=user_prompt)),
                    max_tokens = max(256L, request_n * 90L), temperature = temperature,
                    system_prompt = system_prompt,
-                   rate_limit_policy = rate_limit_policy,
-                   api_max_retries = api_max_retries,
-                   api_initial_wait_s = api_initial_wait_s,
-                   api_max_wait_s = api_max_wait_s,
-                   api_retry_statuses = api_retry_statuses,
-                   request_spacing_s = request_spacing_s,
-                   rate_limit_margin = rate_limit_margin),
+                   response_format = if (output_mode == "json") "json" else NULL,
+                   seed = if (is.finite(task_seed)) task_seed else NULL),
         error = function(e) {
           last_error <<- conditionMessage(e)
           if (verbose) message(sprintf("    Attempt %d failed for %s/%s: %s", attempt, unit$dimension, unit$facet, last_error))
@@ -1137,13 +2135,68 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
         }
       )
       if (!is.null(raw)) {
-        parsed <- .dedup_items(.parse_items(raw, request_n, unit$facet, minimum_n = min(n_target, request_n)))
-        collected <- unique(c(collected, parsed))
+        parsed_response <- .semantica_parse_generation_response(
+          raw, request_n, unit$facet, minimum_n = min(needed_before, request_n),
+          output_mode = output_mode
+        )
+        parsed <- parsed_response$items
+        new_items <- setdiff(parsed, collected_before)
+        collected <- unique(c(collected_before, new_items))
+        successful_requested <- successful_requested + as.integer(request_n)
+        successful_new_retained <- successful_new_retained + as.integer(length(new_items))
+        attempt_meta <- parsed_response$metadata
+        attempt_meta$dimension <- unit$dimension
+        attempt_meta$facet <- unit$facet
+        attempt_meta$attempt <- attempt
+        attempt_meta$retried <- attempt > 1L
+        attempt_meta$prompt_fingerprint <- prompt_fingerprint
+        attempt_meta$generation_seed_master <- if (is.null(seed)) NA_integer_ else seed
+        attempt_meta$generation_task_seed <- if (is.finite(task_seed)) as.integer(task_seed) else NA_integer_
+        attempt_meta$generation_seed_supported <- isTRUE(seed_capability$supported)
+        attempt_meta$generation_seed_control <- seed_capability$mechanism
+        attempt_meta$needed_before <- as.integer(needed_before)
+        attempt_meta$newly_retained <- as.integer(length(new_items))
+        attempt_meta$new_item_yield <- if (request_n > 0L) length(new_items) / request_n else NA_real_
+        attempt_meta$duplicate_existing <- as.integer(max(0L, length(parsed) - length(new_items)))
+        attempt_meta$retained_total <- length(collected)
+        attempt_meta$needed_after <- as.integer(max(0L, n_target - length(collected)))
+        generation_attempts[[length(generation_attempts) + 1L]] <- attempt_meta
+      }
+      if (is.null(raw)) {
+        generation_attempts[[length(generation_attempts) + 1L]] <- list(
+          requested = as.integer(request_n), received = 0L, parsed = 0L, rejected = 0L,
+          duplicate = 0L, retained = 0L, rejection_reasons = "backend_error",
+          output_mode = output_mode, dimension = unit$dimension, facet = unit$facet,
+          attempt = attempt, retried = attempt > 1L, prompt_fingerprint = prompt_fingerprint,
+          generation_seed_master = if (is.null(seed)) NA_integer_ else seed,
+          generation_task_seed = if (is.finite(task_seed)) as.integer(task_seed) else NA_integer_,
+          generation_seed_supported = isTRUE(seed_capability$supported),
+          generation_seed_control = seed_capability$mechanism,
+          needed_before = as.integer(needed_before),
+          newly_retained = 0L, new_item_yield = NA_real_, duplicate_existing = 0L, retained_total = length(collected),
+          needed_after = as.integer(max(0L, n_target - length(collected))),
+          backend_error = last_error
+        )
       }
       attempt <- attempt + 1L
       if (length(collected) < n_target && attempt <= max_retries) {
         n_miss <- n_target - length(collected)
-        request_n <- max(n_miss + 4L, n_target)
+        replenishment <- .semantica_generation_replenishment_plan(
+          deficit = n_miss,
+          successful_requested = successful_requested,
+          successful_new_retained = successful_new_retained,
+          initial_request = n_request
+        )
+        request_n <- replenishment$request_n
+        if (verbose) {
+          yield_txt <- if (is.finite(replenishment$observed_yield)) {
+            sprintf("%.1f%% observed new-item yield", 100 * replenishment$observed_yield)
+          } else {
+            "no successful yield estimate yet"
+          }
+          cat(sprintf("    Replenishment: %d item(s) still needed; requesting %d new candidate(s) (%s).\n",
+                      n_miss, request_n, yield_txt))
+        }
         prompt_forbidden <- unique(c(unit$forbidden, collected, tail(global_forbidden, global_forbidden_max)))
         user_prompt <- .build_factor_prompt(
           factor_name = unit$facet,
@@ -1153,23 +2206,33 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
           forbidden_concepts = prompt_forbidden,
           extra_instructions = paste(
             "Generate NEW items only.",
-            "Return exactly the requested number of items as '1. item text', one item per line, with no preamble.",
+            if (output_mode == "json") "Return valid JSON with key 'items' and exactly the requested number of strings." else "Return exactly the requested number of items as '1. item text', one item per line, with no preamble.",
             unit$extra_instructions
           ),
           dimension_name = unit$dimension,
           dimension_description = unit$dimension_description,
-          facet_name = unit$facet
+          facet_name = unit$facet,
+          output_mode = output_mode
         )
       }
     }
-    if (length(collected) > n_target) collected <- collected[seq_len(n_target)]
+    if (length(collected) > n_target) {
+      n_before_diversity <- length(collected)
+      collected <- .semantica_select_diverse_generated_items(collected, n_target)
+      diversity_curation[[length(diversity_curation) + 1L]] <- list(
+        dimension = unit$dimension, facet = unit$facet,
+        candidate_n = n_before_diversity, retained_n = length(collected),
+        discarded_n = n_before_diversity - length(collected),
+        policy = "deterministic_lexical_maxmin_v1"
+      )
+    }
     if (length(collected) < n_target) {
       # Continuing with too few items breaks the downstream ACO/ESEM constraints.
       err_suffix <- if (!is.null(last_error)) paste0(" Last backend error: ", last_error) else ""
       stop(sprintf("Facet '%s' in dimension '%s': generated only %d/%d usable items after %d attempt(s).%s",
                    unit$facet, unit$dimension, length(collected), n_target, max_retries, err_suffix))
     }
-    if (verbose) cat(sprintf("    --> Kept %d items\n", length(collected)))
+    if (verbose) cat(sprintf("    --> Retained %d generated candidates (pre-alignment)\n", length(collected)))
     for (txt in collected) {
       id <- sprintf("item%03d", item_counter)
       all_rows[[length(all_rows)+1L]] <- list(
@@ -1186,7 +2249,135 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
   out <- tibble::as_tibble(do.call(rbind, lapply(all_rows, as.data.frame, stringsAsFactors=FALSE)))
   out$ID <- as.character(out$ID); out$Dimension <- as.character(out$Dimension); out$Facet <- as.character(out$Facet); out$item <- as.character(out$item)
   out$item_id <- as.character(out$item_id); out$factor <- as.character(out$factor); out$type <- as.character(out$type); out$item_text <- as.character(out$item_text); out$attempt <- as.integer(out$attempt)
-  if (verbose) cat(sprintf("\n  Total items: %d\n", nrow(out)))
+  # Preserve the 0.5.3 contract fingerprint exactly for compatibility with
+  # stored provenance. The new specification fingerprint below has clearer
+  # semantics and may include additional model identity when available.
+  generation_contract_fingerprint <- .semantica_object_md5(list(
+    schema = "semantica-generation-contract-v1",
+    scale_name = enc2utf8(scale_name),
+    scale_description = enc2utf8(scale_description),
+    factors = factors,
+    response_format = response_format, item_style = item_style, language = language,
+    n_per_factor = n_per_factor, n_per_factor_override = n_per_factor_override,
+    overgenerate = overgenerate, max_retries = as.integer(max_retries),
+    global_forbidden_max = global_forbidden_max, temperature = temperature,
+    output_mode = output_mode, backend = session$backend %||% NA_character_,
+    protocol = session$protocol %||% NA_character_, chat_model = session$chat_model %||% NA_character_
+  ))
+  generation_spec_fingerprint <- .semantica_object_md5(list(
+    schema = "semantica-generation-spec-v1",
+    scale_name = enc2utf8(scale_name),
+    scale_description = enc2utf8(scale_description),
+    factors = factors,
+    response_format = response_format, item_style = item_style, language = language,
+    n_per_factor = n_per_factor, n_per_factor_override = n_per_factor_override,
+    overgenerate = overgenerate, max_retries = as.integer(max_retries),
+    global_forbidden_max = global_forbidden_max, temperature = temperature,
+    output_mode = output_mode, backend = session$backend %||% NA_character_,
+    protocol = session$protocol %||% NA_character_, chat_model = session$chat_model %||% NA_character_,
+    model_revision = session$model_revision %||% NA_character_,
+    model_precision = session$model_precision %||% NA_character_
+  ))
+  item_pool_fingerprint <- .semantica_object_md5(data.frame(
+    item_id = out$item_id, factor = out$factor, item_text = enc2utf8(out$item_text),
+    stringsAsFactors = FALSE
+  ))
+  seed_ledger <- if (length(generation_attempts)) {
+    do.call(rbind, lapply(generation_attempts, function(a) data.frame(
+      dimension = as.character(a$dimension %||% NA_character_),
+      facet = as.character(a$facet %||% NA_character_),
+      attempt = as.integer(a$attempt %||% NA_integer_),
+      requested_n = as.integer(a$requested %||% NA_integer_),
+      prompt_fingerprint = as.character(a$prompt_fingerprint %||% NA_character_),
+      generation_task_seed = as.integer(a$generation_task_seed %||% NA_integer_),
+      seed_supported = isTRUE(a$generation_seed_supported),
+      seed_control = as.character(a$generation_seed_control %||% "not_recorded"),
+      stringsAsFactors = FALSE
+    )))
+  } else data.frame(
+    dimension = character(0L), facet = character(0L), attempt = integer(0L),
+    requested_n = integer(0L), prompt_fingerprint = character(0L), generation_task_seed = integer(0L),
+    seed_supported = logical(0L), seed_control = character(0L), stringsAsFactors = FALSE
+  )
+  # The seed schedule intentionally excludes prompt fingerprints. Later prompts can
+  # legitimately depend on earlier generated text through the anti-duplication
+  # context, so prompt equality is an observed execution property rather than a
+  # stable seed-contract invariant.
+  generation_seed_schedule <- seed_ledger[, c(
+    "dimension", "facet", "attempt", "requested_n",
+    "generation_task_seed", "seed_supported", "seed_control"
+  ), drop = FALSE]
+  generation_replay_plan_fingerprint <- if (seed_controlled) {
+    .semantica_object_md5(list(
+      schema = "semantica-generation-replay-plan-v1",
+      generation_spec_fingerprint = generation_spec_fingerprint,
+      generation_seed_master = seed,
+      generation_seed_schedule = generation_seed_schedule
+    ))
+  } else {
+    NA_character_
+  }
+  attr(out, "semantica_generation_metadata") <- list(
+    schema = "semantica-generation-provenance-v1",
+    requested_total = sum(vapply(generation_plan, function(x) x$n_items, integer(1L))),
+    retained_total = nrow(out),
+    attempts = generation_attempts,
+    retry_count = sum(vapply(generation_attempts, function(x) isTRUE(x$retried), logical(1L))),
+    parser_contract = "semantica-generation-parser-1",
+    replenishment_policy = "yield_adaptive_v1",
+    lexical_deduplication = "normalized_identity_plus_char_bigram_jaccard",
+    overgeneration_curation = "deterministic_lexical_maxmin_v1",
+    diversity_curation = diversity_curation,
+    generation_backend = as.character(session$backend %||% NA_character_),
+    generation_protocol = as.character(session$protocol %||% NA_character_),
+    generation_chat_model = as.character(session$chat_model %||% NA_character_),
+    generation_temperature = as.numeric(temperature),
+    generation_output_mode = output_mode,
+    generation_seed_master = if (is.null(seed)) NA_integer_ else seed,
+    generation_seed_supported = isTRUE(seed_capability$supported),
+    generation_seed_controlled = seed_controlled,
+    generation_seed_protocol = seed_capability$protocol,
+    generation_seed_mechanism = seed_capability$mechanism,
+    generation_seed_guarantee = if (seed_controlled) {
+      "backend_seed_requested_not_runtime_guaranteed"
+    } else if (is.null(seed)) {
+      "not_requested"
+    } else {
+      "not_controlled"
+    },
+    task_seed_ledger = seed_ledger,
+    task_seed_ledger_role = "observed_execution_trace_including_dynamic_prompt_fingerprints",
+    generation_seed_schedule_schema = "semantica-generation-seed-schedule-v1",
+    generation_seed_schedule = generation_seed_schedule,
+    generation_seed_schedule_role = "stable_seed_control_fields_for_realized_generation_calls",
+    generation_spec_fingerprint_schema = "semantica-generation-spec-md5-v1",
+    generation_spec_fingerprint = generation_spec_fingerprint,
+    # Exact 0.5.3 fingerprint retained for compatibility with stored runs.
+    generation_contract_fingerprint = generation_contract_fingerprint,
+    generation_replay_plan_fingerprint_schema = "semantica-generation-replay-plan-md5-v1",
+    generation_replay_plan_fingerprint = generation_replay_plan_fingerprint,
+    exact_text_replay_guaranteed = FALSE,
+    generation_replay_note = paste(
+      "A controlled backend seed fixes SEMANTICA's seed schedule but does not guarantee",
+      "byte-identical LLM output. Exact downstream replay requires saving and reusing",
+      "the realized item pool identified by item_pool_fingerprint."
+    ),
+    item_pool_fingerprint_schema = "semantica-item-pool-md5-v1",
+    item_pool_fingerprint = item_pool_fingerprint,
+    content_screening_status = "not_yet_performed",
+    content_screening_note = paste(
+      "Retained candidates passed generation parsing and deterministic lexical curation only;",
+      "construct-definition alignment and other construct-alignment guards occur downstream."
+    )
+  )
+  if (verbose) {
+    cat(sprintf("\n  Total generated candidates retained: %d\n", nrow(out)))
+    cat("  Generation-stage status: lexical curation complete; construct-alignment screening not yet performed.\n")
+    if (seed_controlled) {
+      cat("  Replay semantics: backend seed controlled; exact text replay is not guaranteed. Reuse the fingerprinted item pool for exact downstream replay.\n")
+    }
+    cat(sprintf("  Item-pool fingerprint: %s\n", item_pool_fingerprint))
+  }
   out
 }
 
@@ -1201,8 +2392,33 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
 #' @param text_col      Column with item text.
 #' @param id_col        Column with item IDs.
 #' @param batch_size    Items per API call.
-#' @param normalize     L2-normalise vectors.
+#' @param normalize L2-normalise vectors.
+#' @param cache Use the persistent content-addressed embedding cache.
+#' @param cache_dir Cache directory; `NULL` uses an OS-appropriate SEMANTICA cache.
+#' @param cache_namespace Optional analyst-defined namespace included in cache keys.
 #' @param verbose       Print progress.
+#' @usage semantica_embed(
+#'   items_tbl,
+#'   session,
+#'   embed_session = NULL,
+#'   text_col = "item_text",
+#'   id_col = "item_id",
+#'   batch_size = 64L,
+#'   normalize = TRUE,
+#'   cache = TRUE,
+#'   cache_dir = NULL,
+#'   cache_namespace = NULL,
+#'   verbose = TRUE
+#' )
+#' @section Side effects:
+#' May call remote embedding APIs or local Python models and may read/write the
+#' persistent content-addressed embedding cache. Cache writes are RNG-neutral.
+#'
+#' @section Reproducibility:
+#' Embedding diagnostics record the resolved model/task/device information that is
+#' available. A stable remote model name may still be a mutable provider alias;
+#' cache reuse preserves the exact vectors previously stored for that cache key.
+#'
 #' @return List: `$embeddings`, `$items_tbl`, `$embed_model`, `$embed_dim`.
 #' @export
 #' @examples
@@ -1216,7 +2432,9 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
 #'   verbose = FALSE
 #' )
 #' }
-semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col = "item_text", id_col = "item_id", batch_size = 64L, normalize = TRUE, verbose = TRUE) {
+semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col = "item_text", id_col = "item_id", batch_size = 64L,
+                             normalize = TRUE, cache = TRUE, cache_dir = NULL,
+                             cache_namespace = NULL, verbose = TRUE) {
   esess <- embed_session %||% session
   if (is.null(esess$embed_url) && !esess$protocol %in% c("python_hf", "python_llamacpp")) stop("Backend has no embedding endpoint. Pass embed_session.")
   if (!is.data.frame(items_tbl)) stop("'items_tbl' must be a data.frame or tibble.")
@@ -1233,14 +2451,69 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
   if (anyDuplicated(ids)) stop("Item IDs must be unique before embedding.")
   if (verbose) cat("============================================================\nSTEP 3 -- EMBEDDING GENERATION\n============================================================\n")
 
+  cache <- isTRUE(cache)
+  cache_dir <- cache_dir %||% .semantica_default_cache_dir()
+  cache_hits <- 0L
+  cache_misses <- 0L
   batches <- split(seq_len(n), ceiling(seq_len(n) / batch_size))
   emb_matrix <- NULL
+  embedding_device_runtime <- NULL
   for (bi in seq_along(batches)) {
     idx <- batches[[bi]]
-    batch_matrix <- tryCatch(
-      .call_embed(esess, texts[idx]),
-      error = function(e) stop(sprintf("Embedding batch %d failed: %s", bi, e$message))
-    )
+    batch_texts <- texts[idx]
+    keys <- if (cache) vapply(batch_texts, .semantica_text_cache_key, character(1L),
+                              session = esess, normalize = normalize,
+                              cache_namespace = cache_namespace) else rep(NA_character_, length(idx))
+    cached_rows <- if (cache) lapply(keys, .semantica_embedding_cache_get, cache_dir = cache_dir) else vector("list", length(idx))
+    hit <- vapply(cached_rows, function(x) is.numeric(x) && length(x) > 0L && all(is.finite(x)), logical(1L))
+    cache_hits <- cache_hits + sum(hit)
+    cache_misses <- cache_misses + sum(!hit)
+    fresh <- NULL
+    fresh_device <- NULL
+    if (any(!hit)) {
+      fresh <- tryCatch(
+        .call_embed(esess, batch_texts[!hit]),
+        error = function(e) stop(sprintf("Embedding batch %d failed: %s", bi, e$message))
+      )
+      fresh_device <- attr(fresh, "semantica_embedding_device", exact = TRUE)
+      if (is.null(dim(fresh))) fresh <- matrix(fresh, nrow = 1L)
+      fresh <- as.matrix(fresh)
+      storage.mode(fresh) <- "double"
+      if (nrow(fresh) != sum(!hit)) stop(sprintf("Embedding batch %d returned the wrong number of fresh rows.", bi))
+      fresh_names <- colnames(fresh)
+      fresh_i <- 1L
+      for (k in which(!hit)) {
+        row_value <- as.numeric(fresh[fresh_i, ])
+        if (!is.null(fresh_names) && length(fresh_names) == length(row_value)) {
+          names(row_value) <- fresh_names
+        }
+        cached_rows[[k]] <- row_value
+        if (cache) .semantica_embedding_cache_set(keys[[k]], cached_rows[[k]], cache_dir)
+        fresh_i <- fresh_i + 1L
+      }
+    }
+    dims <- vapply(cached_rows, length, integer(1L))
+    if (length(unique(dims)) != 1L) stop(sprintf("Embedding batch %d mixed incompatible cached dimensions.", bi))
+    component_names <- NULL
+    named_row <- which(vapply(cached_rows, function(x) !is.null(names(x)), logical(1L)))[1L]
+    if (length(named_row) == 1L && !is.na(named_row)) component_names <- names(cached_rows[[named_row]])
+    batch_matrix <- do.call(rbind, cached_rows)
+    if (!is.null(component_names) && length(component_names) == ncol(batch_matrix)) {
+      colnames(batch_matrix) <- component_names
+    }
+    # Device consistency is meaningful only for backend inference. Cached
+    # vectors do not represent a runtime device and must not constrain later
+    # cache-miss batches.
+    batch_device <- fresh_device
+    if (!is.null(batch_device)) {
+      if (is.null(embedding_device_runtime)) {
+        embedding_device_runtime <- batch_device
+      } else if (!identical(
+        embedding_device_runtime$resolved, batch_device$resolved
+      )) {
+        stop("Embedding backend changed devices between batches.")
+      }
+    }
     if (is.null(dim(batch_matrix))) batch_matrix <- matrix(batch_matrix, nrow = 1L)
     batch_matrix <- as.matrix(batch_matrix)
     storage.mode(batch_matrix) <- "double"
@@ -1282,8 +2555,52 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
   }
   final_norms <- sqrt(rowSums(emb_matrix^2))
   rownames(emb_matrix) <- ids
+  embedding_policy <- .semantica_embedding_policy(
+    esess$embed_model, esess$embedding_task %||% "auto",
+    esess$embedding_instruction %||% NULL,
+    esess$embedding_spec %||% NULL
+  )
   embedding_diagnostics <- list(
     model = esess$embed_model %||% "unknown",
+    provider = esess$backend %||% "unknown",
+    model_revision = esess$model_revision %||% NA_character_,
+    analysis_intent = embedding_policy$analysis_intent %||% "psychometric_similarity",
+    provider_task = embedding_policy$provider_task %||% NA_character_,
+    embedding_task_requested = embedding_policy$requested_task,
+    embedding_task_resolved = embedding_policy$resolved_task,
+    instruction_applied = isTRUE(embedding_policy$instruction_applied),
+    embedding_instruction_source = embedding_policy$source,
+    embedding_instruction_fingerprint = embedding_policy$instruction_fingerprint %||% NA_character_,
+    embedding_instruction_prefix = embedding_policy$prefix %||% NA_character_,
+    embedding_capability_source = embedding_policy$capability_source %||% "unknown",
+    embedding_capability_fingerprint = embedding_policy$capability_fingerprint %||% NA_character_,
+    embedding_capability_note = embedding_policy$capability_note %||% NA_character_,
+    requested_device = if (identical(esess$protocol, "python_llamacpp")) {
+      paste0("gpu_layers=", esess$gpu_layers %||% 0L)
+    } else {
+      embedding_device_runtime$requested %||%
+        esess$embedding_device %||% "backend_default"
+    },
+    resolved_device = if (!is.null(embedding_device_runtime$resolved)) {
+      embedding_device_runtime$resolved
+    } else if (cache && cache_hits == n) {
+      "persistent_cache"
+    } else if (identical(esess$protocol, "python_llamacpp")) {
+      if (identical(as.integer(esess$gpu_layers %||% 0L), 0L)) {
+        "cpu"
+      } else {
+        "configured_gpu_layers_unverified"
+      }
+    } else if ((esess$embedding_device %||% "auto") == "auto") {
+      "backend_auto_unverified"
+    } else {
+      esess$embedding_device
+    },
+    device_status = if (cache && cache_hits == n && is.null(embedding_device_runtime)) {
+      "cached_vectors"
+    } else {
+      embedding_device_runtime$status %||% esess$device_status %||% "not_reported"
+    },
     n_items = nrow(emb_matrix),
     embed_dim = ncol(emb_matrix),
     expected_dim = expected_dim,
@@ -1294,20 +2611,163 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
     final_norm_min = min(final_norms),
     final_norm_median = stats::median(final_norms),
     final_norm_max = max(final_norms),
+    cache_enabled = cache,
+    cache_dir = if (cache) normalizePath(cache_dir, mustWork = FALSE) else NA_character_,
+    cache_hits = cache_hits,
+    cache_misses = cache_misses,
+    cache_hit_rate = if ((cache_hits + cache_misses) > 0L) cache_hits / (cache_hits + cache_misses) else NA_real_,
     warnings = dim_warning
   )
   if (verbose) {
     cat(sprintf("  Embedding matrix: %d x %d\n", nrow(emb_matrix), ncol(emb_matrix)))
+    if (!is.null(embedding_policy$prefix)) {
+      cat(sprintf("  Embedding task  : %s (%s instruction)\n",
+                  embedding_policy$resolved_task, embedding_policy$source))
+    }
     cat(sprintf("  Vector norms    : median %.4f%s\n",
                 embedding_diagnostics$final_norm_median,
                 if (isTRUE(normalize)) " (L2-normalized)" else ""))
+    if (cache) cat(sprintf("  Embedding cache : %d hit(s), %d miss(es)\n", cache_hits, cache_misses))
   }
+  representation_provenance <- list(
+    provider = esess$backend %||% "unknown",
+    model = esess$embed_model %||% "unknown",
+    model_revision = esess$model_revision %||% NA_character_,
+    analysis_intent = embedding_policy$analysis_intent %||% "psychometric_similarity",
+    provider_task = embedding_policy$provider_task %||% NULL,
+    instruction_applied = isTRUE(embedding_policy$instruction_applied),
+    instruction_source = embedding_policy$source %||% "none",
+    instruction_fingerprint = embedding_policy$instruction_fingerprint %||% NA_character_,
+    capability_source = embedding_policy$capability_source %||% "unknown",
+    capability_fingerprint = embedding_policy$capability_fingerprint %||% NA_character_,
+    embedding_dimension = ncol(emb_matrix),
+    normalization = if (isTRUE(normalize)) "l2" else "none"
+  )
   list(
     embeddings = emb_matrix, items_tbl = items_tbl,
     embed_model = esess$embed_model %||% "unknown",
     embed_dim = ncol(emb_matrix),
-    embedding_diagnostics = embedding_diagnostics
+    embedding_diagnostics = embedding_diagnostics,
+    representation_provenance = representation_provenance
   )
+}
+
+#' Import externally produced embeddings into SEMANTICA
+#'
+#' Creates the same validated embedding-result contract consumed by
+#' [semantica_wrap()] without requiring a SEMANTICA provider session. This is
+#' the preferred boundary for embeddings produced by Python, another R package,
+#' a corporate inference service, or a future/custom model.
+#'
+#' @param embeddings Numeric matrix with one row per item and any positive
+#'   embedding dimension.
+#' @param items_tbl Data frame containing item identity/metadata.
+#' @param id_col Item-ID column in `items_tbl`.
+#' @param embedding_ids Explicit row IDs for `embeddings`. Defaults to matrix
+#'   row names. Positional alignment is intentionally not guessed.
+#' @param normalize Logical; explicitly L2-normalize imported rows.
+#' @param provider,model,model_version,task,instruction,source Optional safe
+#'   representation provenance. Unknown values may be `NULL`.
+#' @param provenance Optional additional named provenance fields. Credential-like
+#'   fields are removed by SEMANTICA's provenance sanitizer.
+#' @return A `semantica_embedding_result` list compatible with [semantica_wrap()].
+#' @export
+semantica_import_embeddings <- function(
+  embeddings, items_tbl, id_col = "item_id", embedding_ids = rownames(embeddings),
+  normalize = FALSE, provider = "external", model = NULL, model_version = NULL,
+  task = NULL, instruction = NULL, source = "external", provenance = NULL
+) {
+  if (!is.data.frame(items_tbl)) stop("'items_tbl' must be a data.frame or tibble.")
+  if (!id_col %in% names(items_tbl) && "ID" %in% names(items_tbl)) id_col <- "ID"
+  if (!id_col %in% names(items_tbl)) stop("Missing item-ID column: ", id_col)
+  if (!is.matrix(embeddings)) {
+    if (is.data.frame(embeddings) && all(vapply(embeddings, is.numeric, logical(1L)))) {
+      embeddings <- as.matrix(embeddings)
+    } else {
+      stop("'embeddings' must be a numeric two-dimensional matrix.")
+    }
+  }
+  if (!is.numeric(embeddings) || length(dim(embeddings)) != 2L) {
+    stop("'embeddings' must be a numeric two-dimensional matrix.")
+  }
+  if (nrow(embeddings) < 1L || ncol(embeddings) < 1L) {
+    stop("'embeddings' must contain at least one row and one dimension.")
+  }
+  if (any(!is.finite(embeddings))) stop("'embeddings' contains NA, NaN, or Inf values.")
+  normalize <- .semantica_assert_flag(normalize, "normalize", condition_class = "semantica_error_input")
+
+  item_ids <- as.character(items_tbl[[id_col]])
+  if (anyNA(item_ids) || any(!nzchar(trimws(item_ids)))) stop("All item IDs must be non-empty.")
+  if (anyDuplicated(item_ids)) stop("Item IDs in 'items_tbl' must be unique.")
+  if (is.null(embedding_ids)) {
+    stop("Embedding row identity is required. Supply matrix row names or 'embedding_ids'; positional alignment is not guessed.")
+  }
+  embedding_ids <- as.character(embedding_ids)
+  if (length(embedding_ids) != nrow(embeddings)) stop("'embedding_ids' length must equal nrow(embeddings).")
+  if (anyNA(embedding_ids) || any(!nzchar(trimws(embedding_ids)))) stop("Embedding IDs must be non-empty.")
+  if (anyDuplicated(embedding_ids)) stop("Embedding IDs must be unique.")
+  missing_embeddings <- setdiff(item_ids, embedding_ids)
+  extra_embeddings <- setdiff(embedding_ids, item_ids)
+  if (length(missing_embeddings) || length(extra_embeddings)) {
+    stop(sprintf(
+      "Embedding/item ID sets differ (missing embeddings: %d; extra embedding rows: %d).",
+      length(missing_embeddings), length(extra_embeddings)
+    ))
+  }
+  embeddings <- embeddings[match(item_ids, embedding_ids), , drop = FALSE]
+  storage.mode(embeddings) <- "double"
+  raw_norms <- sqrt(rowSums(embeddings^2))
+  if (any(!is.finite(raw_norms) | raw_norms <= .Machine$double.eps)) {
+    stop("'embeddings' contains at least one zero or invalid vector.")
+  }
+  input_normalized <- all(abs(raw_norms - 1) < 1e-4)
+  normalization_applied <- isTRUE(normalize)
+  if (normalization_applied) embeddings <- embeddings / raw_norms
+  final_norms <- sqrt(rowSums(embeddings^2))
+  rownames(embeddings) <- item_ids
+
+  safe_extra <- .semantica_sanitize_config_provenance(provenance %||% list())
+  representation_provenance <- c(list(
+    provider = provider %||% "external",
+    model = model %||% "unknown",
+    model_version = model_version,
+    task = task,
+    instruction = instruction,
+    dimension = ncol(embeddings),
+    input_normalized = input_normalized,
+    normalization_applied = normalization_applied,
+    normalized = all(abs(final_norms - 1) < 1e-4),
+    source = source %||% "external"
+  ), safe_extra)
+  representation_provenance <- .semantica_sanitize_config_provenance(representation_provenance)
+
+  out <- list(
+    embeddings = embeddings,
+    items_tbl = items_tbl,
+    embed_model = model %||% "unknown",
+    embed_dim = ncol(embeddings),
+    embedding_diagnostics = list(
+      model = model %||% "unknown",
+      provider = provider %||% "external",
+      n_items = nrow(embeddings),
+      embed_dim = ncol(embeddings),
+      input_normalized = input_normalized,
+      normalization_applied = normalization_applied,
+      normalized = all(abs(final_norms - 1) < 1e-4),
+      raw_norm_min = min(raw_norms),
+      raw_norm_median = stats::median(raw_norms),
+      raw_norm_max = max(raw_norms),
+      final_norm_min = min(final_norms),
+      final_norm_median = stats::median(final_norms),
+      final_norm_max = max(final_norms),
+      source = source %||% "external",
+      representation_provenance = representation_provenance,
+      warnings = character(0L)
+    ),
+    representation_provenance = representation_provenance
+  )
+  class(out) <- c("semantica_embedding_result", "list")
+  out
 }
 
 # =================================================================
@@ -1315,43 +2775,103 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
 # =================================================================
 #' @keywords internal
 .compute_cosine_matrix <- function(emb_matrix, already_normalized = TRUE,
-                                   adjustment = c("none", "mean_center")) {
+                                   adjustment = c("none", "mean_center"),
+                                   compute_device = "cpu",
+                                   gpu_fallback = NULL,
+                                   gpu_precision = "double",
+                                   memory_limit = NULL) {
   adjustment <- match.arg(adjustment)
-  emb_matrix <- as.matrix(emb_matrix)
-  storage.mode(emb_matrix) <- "double"
-  if (adjustment == "mean_center") {
-    # Optional anisotropy diagnostic path: subtract the common embedding
-    # direction before cosine calculation, then renormalize rows.
-    emb_matrix <- sweep(emb_matrix, 2L, colMeans(emb_matrix), FUN = "-")
-    already_normalized <- FALSE
+  requested_device <- .semantica_normalize_device(compute_device)
+  if (is.null(gpu_fallback)) {
+    gpu_fallback <- if (requested_device == "auto") "cpu" else "error"
   }
-  if (!already_normalized) {
-    norms <- sqrt(rowSums(emb_matrix^2))
-    if (any(!is.finite(norms) | norms <= .Machine$double.eps)) {
-      stop("Cannot compute cosine matrix from zero or invalid embedding vectors.")
-    }
-    emb_matrix <- emb_matrix / norms
-  }
-  cos_mat <- tcrossprod(emb_matrix)
-  cos_mat <- (cos_mat + t(cos_mat)) / 2
-  cos_mat[cos_mat > 1] <- 1; cos_mat[cos_mat < -1] <- -1
-  diag(cos_mat) <- 1
-  cos_mat
+  computed <- .semantica_compute_cosine(
+    emb_matrix = emb_matrix,
+    already_normalized = already_normalized,
+    adjustment = adjustment,
+    compute_device = requested_device,
+    gpu_fallback = gpu_fallback,
+    gpu_precision = gpu_precision,
+    memory_limit = memory_limit
+  )
+  out <- computed$matrix
+  attr(out, "semantica_compute_telemetry") <- computed$telemetry
+  out
 }
 
 .cosine_diagnostics <- function(cos_mat, factor_assignment = NULL) {
   off <- cos_mat[upper.tri(cos_mat)]
   off <- off[is.finite(off)]
+  n_items <- nrow(cos_mat)
+  off_mean <- if (length(off)) mean(off) else NA_real_
+  # For a cosine Gram matrix of unit vectors, this quantity equals the norm
+  # of the mean embedding vector. It is a continuous description of common
+  # directional concentration and does not require a model-invariant cutoff.
+  common_direction_strength <- if (is.finite(off_mean) && n_items > 0L) {
+    sqrt(max(0, (1 + (n_items - 1) * off_mean) / n_items))
+  } else NA_real_
+
+  # Spectral concentration is reported descriptively rather than thresholded.
+  # Embedding models legitimately differ in anisotropy and effective rank; these
+  # quantities are therefore representation-health context, not pass/fail rules.
+  spectral <- tryCatch({
+    sym <- (cos_mat + t(cos_mat)) / 2
+    vals <- eigen(sym, symmetric = TRUE, only.values = TRUE)$values
+    finite_vals <- vals[is.finite(vals)]
+    positive <- pmax(finite_vals, 0)
+    total_positive <- sum(positive)
+    if (!length(finite_vals) || !is.finite(total_positive) || total_positive <= 0) {
+      list(
+        effective_rank = NA_real_, effective_rank_ratio = NA_real_,
+        top_eigen_share = NA_real_, top3_eigen_share = NA_real_,
+        negative_eigen_mass_ratio = NA_real_
+      )
+    } else {
+      prob <- positive[positive > 0] / total_positive
+      eff_rank <- exp(-sum(prob * log(prob)))
+      sorted_positive <- sort(positive, decreasing = TRUE)
+      negative_mass <- sum(abs(finite_vals[finite_vals < 0]))
+      total_abs <- sum(abs(finite_vals))
+      list(
+        effective_rank = eff_rank,
+        effective_rank_ratio = eff_rank / max(1, n_items),
+        top_eigen_share = sorted_positive[[1L]] / total_positive,
+        top3_eigen_share = sum(utils::head(sorted_positive, 3L)) / total_positive,
+        negative_eigen_mass_ratio = if (total_abs > 0) negative_mass / total_abs else 0
+      )
+    }
+  }, error = function(e) {
+    list(
+      effective_rank = NA_real_, effective_rank_ratio = NA_real_,
+      top_eigen_share = NA_real_, top3_eigen_share = NA_real_,
+      negative_eigen_mass_ratio = NA_real_
+    )
+  })
+
   out <- list(
-    n_items = nrow(cos_mat),
-    offdiag_mean = if (length(off)) mean(off) else NA_real_,
+    n_items = n_items,
+    offdiag_mean = off_mean,
     offdiag_median = if (length(off)) stats::median(off) else NA_real_,
     offdiag_sd = if (length(off) > 1L) stats::sd(off) else NA_real_,
     offdiag_q05 = if (length(off)) as.numeric(stats::quantile(off, 0.05, names = FALSE, na.rm = TRUE)) else NA_real_,
     offdiag_q95 = if (length(off)) as.numeric(stats::quantile(off, 0.95, names = FALSE, na.rm = TRUE)) else NA_real_,
     offdiag_min = if (length(off)) min(off) else NA_real_,
     offdiag_max = if (length(off)) max(off) else NA_real_,
-    possible_anisotropy = if (length(off)) mean(off) > 0.35 else NA
+    common_direction_strength = common_direction_strength,
+    effective_rank = spectral$effective_rank,
+    effective_rank_ratio = spectral$effective_rank_ratio,
+    top_eigen_share = spectral$top_eigen_share,
+    top3_eigen_share = spectral$top3_eigen_share,
+    negative_eigen_mass_ratio = spectral$negative_eigen_mass_ratio,
+    spectral_note = paste(
+      "Effective rank and eigenvalue concentration are descriptive representation-health metrics.",
+      "No model-invariant cutoff is applied and SEMANTICA does not alter the representation from them."
+    ),
+    possible_anisotropy = NA,
+    possible_anisotropy_note = paste(
+      "No universal anisotropy cutoff is applied.",
+      "Inspect common_direction_strength and none-vs-mean-center sensitivity for the configured embedding model."
+    )
   )
   if (!is.null(factor_assignment)) {
     factors <- unique(as.character(factor_assignment))
@@ -1381,8 +2901,13 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
 .compute_cosine_adjustment_sensitivity <- function(emb_matrix, already_normalized = TRUE,
                                                    factor_assignment = NULL,
                                                    high_similarity_threshold = 0.85,
+                                                   top_pair_fraction = 0.05,
                                                    standard_cosine = NULL,
-                                                   centered_cosine = NULL) {
+                                                   centered_cosine = NULL,
+                                                   compute_device = "cpu",
+                                                   gpu_fallback = NULL,
+                                                   gpu_precision = "double",
+                                                   memory_limit = NULL) {
   fail <- list(
     available = FALSE,
     source = "none_vs_mean_center",
@@ -1392,14 +2917,22 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
   standard <- standard_cosine
   if (is.null(standard)) {
     standard <- tryCatch(
-      .compute_cosine_matrix(emb_matrix, already_normalized = already_normalized, adjustment = "none"),
+      .compute_cosine_matrix(
+        emb_matrix, already_normalized = already_normalized, adjustment = "none",
+        compute_device = compute_device, gpu_fallback = gpu_fallback,
+        gpu_precision = gpu_precision, memory_limit = memory_limit
+      ),
       error = function(e) NULL
     )
   }
   centered <- centered_cosine
   if (is.null(centered)) {
     centered <- tryCatch(
-      .compute_cosine_matrix(emb_matrix, already_normalized = already_normalized, adjustment = "mean_center"),
+      .compute_cosine_matrix(
+        emb_matrix, already_normalized = already_normalized, adjustment = "mean_center",
+        compute_device = compute_device, gpu_fallback = gpu_fallback,
+        gpu_precision = gpu_precision, memory_limit = memory_limit
+      ),
       error = function(e) NULL
     )
   }
@@ -1416,6 +2949,41 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
   high_standard <- off_standard[finite] >= high_similarity_threshold
   high_centered <- off_centered[finite] >= high_similarity_threshold
   high_union <- sum(high_standard | high_centered)
+
+  # Model-relative sensitivity: compare the identity of the strongest pairwise
+  # relations by rank rather than relying only on an absolute cosine cutoff.
+  top_pair_fraction <- suppressWarnings(as.numeric(top_pair_fraction[1L]))
+  if (!is.finite(top_pair_fraction) || top_pair_fraction <= 0 || top_pair_fraction > 1) {
+    top_pair_fraction <- 0.05
+  }
+  n_pair <- sum(finite)
+  top_n <- max(1L, min(n_pair, as.integer(ceiling(n_pair * top_pair_fraction))))
+  std_order <- order(off_standard[finite], decreasing = TRUE, na.last = NA)
+  ctr_order <- order(off_centered[finite], decreasing = TRUE, na.last = NA)
+  top_standard_idx <- std_order[seq_len(min(top_n, length(std_order)))]
+  top_centered_idx <- ctr_order[seq_len(min(top_n, length(ctr_order)))]
+  top_union <- union(top_standard_idx, top_centered_idx)
+  top_pair_jaccard <- if (length(top_union)) {
+    length(intersect(top_standard_idx, top_centered_idx)) / length(top_union)
+  } else {
+    NA_real_
+  }
+  # For two independently selected top-k sets among N pairs, the ratio of the
+  # expected intersection size to expected union size is k / (2N - k). This
+  # provides a finite-pool random-overlap reference without inventing a model-
+  # specific stability cutoff. Falling at/below this baseline is a strong
+  # warning that the identity of the strongest semantic relations is not more
+  # reproducible across preprocessing choices than random top-pair membership.
+  effective_top_fraction <- top_n / max(1L, n_pair)
+  top_pair_random_baseline <- effective_top_fraction / (2 - effective_top_fraction)
+  top_pair_excess_over_random <- top_pair_jaccard - top_pair_random_baseline
+  top_pair_overlap_vs_random <- if (!is.finite(top_pair_jaccard)) {
+    NA_character_
+  } else if (top_pair_jaccard <= top_pair_random_baseline) {
+    "at_or_below_random_reference"
+  } else {
+    "above_random_reference"
+  }
   fa <- factor_assignment
   if (!is.null(fa) && is.null(names(fa)) && length(fa) == nrow(standard)) {
     fa <- stats::setNames(as.character(fa), rownames(standard))
@@ -1431,6 +2999,13 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
     max_abs_delta = max(abs_delta),
     high_similarity_threshold = high_similarity_threshold,
     high_pair_jaccard = if (high_union > 0L) sum(high_standard & high_centered) / high_union else 1,
+    top_pair_fraction = top_pair_fraction,
+    top_pair_fraction_effective = effective_top_fraction,
+    top_pair_n = top_n,
+    top_pair_jaccard = top_pair_jaccard,
+    top_pair_jaccard_random_baseline = top_pair_random_baseline,
+    top_pair_jaccard_excess_over_random = top_pair_excess_over_random,
+    top_pair_overlap_vs_random = top_pair_overlap_vs_random,
     none = d_standard,
     mean_center = d_centered,
     within_between_gap_delta = (d_centered$within_between_gap %||% NA_real_) -
@@ -1505,8 +3080,32 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
 #'   none-versus-mean-centered cosine sensitivity diagnostic. Set to `FALSE`
 #'   when only the selected cosine representation is required and memory is
 #'   constrained; this does not affect the matrix supplied to optimization.
+#' @param cosine_sensitivity_max_items Maximum item count used directly in the optional sensitivity diagnostic before deterministic subsampling.
+#' @param cosine_sensitivity_seed Seed used if the sensitivity diagnostic subsamples a large item pool.
+#' @param compute_device Cosine compute backend: `"cpu"` (compatibility
+#'   default), `"auto"` (currently CPU until crossover benchmarks are
+#'   validated), `"cuda"`, `"cuda:N"`, or `"mps"`.
+#' @param gpu_fallback Optional fallback policy. `NULL` means an explicit GPU
+#'   request errors if unavailable, while `"auto"` may use CPU. Set to `"cpu"`
+#'   to explicitly permit CPU fallback for a requested accelerator.
+#' @param gpu_precision `"double"` (default) or explicitly requested
+#'   `"single"`. MPS requires single precision for the torch path.
+#' @param compute_memory_limit Optional conservative working-memory ceiling in
+#'   bytes for the cosine calculation.
 #' @param verbose              Print summary.
-#' @return Named list: `$cosine_sim_matrix`, `$df`, `$i.per.f` + metadata.
+#' @section Side effects:
+#' Computes local matrix diagnostics. If the optional cosine-sensitivity
+#' diagnostic must subsample a large pool, it uses the documented seed inside a
+#' caller-RNG-preserving scope; no provider or filesystem I/O is performed here.
+#'
+#' @section Reproducibility:
+#' `cosine_sensitivity_seed` controls the deliberate large-pool subsample and the
+#' sampled seed is recorded in the returned sensitivity diagnostics. The selected
+#' cosine representation itself is deterministic for fixed embeddings/settings.
+#'
+#' @return Named list with `$cosine_sim_matrix`, `$df`, `$i.per.f`, cosine and
+#'   adjustment diagnostics, and `$compute_telemetry` describing the requested
+#'   and resolved backend, precision, fallback, memory estimate, and timing.
 #' @export
 #' @examples
 #' items_tbl <- data.frame(
@@ -1540,6 +3139,11 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
                            cosine_adjustment = c("none", "mean_center"),
                            semantic_calibration = NULL,
                            compute_cosine_sensitivity = TRUE,
+                           cosine_sensitivity_max_items = 1500L,
+                           cosine_sensitivity_seed = 1L,
+                           compute_device = "cpu", gpu_fallback = NULL,
+                           gpu_precision = "double",
+                           compute_memory_limit = NULL,
                            verbose = TRUE) {
   cosine_adjustment <- match.arg(cosine_adjustment)
   itbl <- items_tbl %||% embed_result$items_tbl; emb <- embed_result$embeddings
@@ -1576,16 +3180,54 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
     already_normalized <- FALSE
   }
   factor_lookup <- stats::setNames(factors_v, common_ids)
-  cos_mat <- .compute_cosine_matrix(emb_a, already_normalized = already_normalized, adjustment = cosine_adjustment)
+  cos_mat <- .compute_cosine_matrix(
+    emb_a,
+    already_normalized = already_normalized,
+    adjustment = cosine_adjustment,
+    compute_device = compute_device,
+    gpu_fallback = gpu_fallback,
+    gpu_precision = gpu_precision,
+    memory_limit = compute_memory_limit
+  )
+  compute_telemetry <- attr(cos_mat, "semantica_compute_telemetry", exact = TRUE)
+  attr(cos_mat, "semantica_compute_telemetry") <- NULL
   rownames(cos_mat) <- colnames(cos_mat) <- common_ids; storage.mode(cos_mat) <- "double"
   cosine_adjustment_sensitivity <- if (isTRUE(compute_cosine_sensitivity)) {
-    .compute_cosine_adjustment_sensitivity(
-      emb_a,
+    max_sens <- suppressWarnings(as.integer(cosine_sensitivity_max_items[1L]))
+    if (!is.finite(max_sens) || max_sens < 4L) max_sens <- 1500L
+    sens_ids <- common_ids
+    sampled <- FALSE
+    if (length(sens_ids) > max_sens) {
+      had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+      if (had_seed) old_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+      on.exit({
+        if (had_seed) assign(".Random.seed", old_seed, envir = .GlobalEnv)
+        else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) rm(".Random.seed", envir = .GlobalEnv)
+      }, add = TRUE)
+      set.seed(as.integer(cosine_sensitivity_seed[1L]))
+      sens_ids <- sample(sens_ids, max_sens, replace = FALSE)
+      sampled <- TRUE
+    }
+    emb_sens <- emb_a[sens_ids, , drop = FALSE]
+    fa_sens <- factor_lookup[sens_ids]
+    standard_sens <- if (cosine_adjustment == "none") cos_mat[sens_ids, sens_ids, drop = FALSE] else NULL
+    centered_sens <- if (cosine_adjustment == "mean_center") cos_mat[sens_ids, sens_ids, drop = FALSE] else NULL
+    ans <- .compute_cosine_adjustment_sensitivity(
+      emb_sens,
       already_normalized = already_normalized,
-      factor_assignment = factor_lookup,
-      standard_cosine = if (cosine_adjustment == "none") cos_mat else NULL,
-      centered_cosine = if (cosine_adjustment == "mean_center") cos_mat else NULL
+      factor_assignment = fa_sens,
+      standard_cosine = standard_sens,
+      centered_cosine = centered_sens,
+      compute_device = compute_device,
+      gpu_fallback = gpu_fallback,
+      gpu_precision = gpu_precision,
+      memory_limit = compute_memory_limit
     )
+    ans$sampled <- sampled
+    ans$n_items_total <- length(common_ids)
+    ans$n_items_used <- length(sens_ids)
+    ans$sample_seed <- if (sampled) as.integer(cosine_sensitivity_seed[1L]) else NA_integer_
+    ans
   } else {
     list(
       available = FALSE,
@@ -1604,6 +3246,13 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
   )
   cos_mat <- calibration$matrix
   cosine_diagnostics <- .cosine_diagnostics(cos_mat, factor_lookup)
+  discrimination_diag <- tryCatch(
+    semantica_semantic_discrimination(cos_mat, factor_lookup),
+    error = function(e) list(estimate = NA_real_, status = "failed", reason = conditionMessage(e))
+  )
+  cosine_diagnostics$stochastic_superiority <- discrimination_diag$estimate %||% NA_real_
+  cosine_diagnostics$stochastic_superiority_status <- discrimination_diag$status %||% "unavailable"
+  cosine_diagnostics$stochastic_superiority_reason <- discrimination_diag$reason %||% NULL
   df_s <- data.frame(item = common_ids, type = factors_v, factor = factors_v, item_text = item_text,
                      ID = metadata$ID, Dimension = metadata$Dimension, Facet = metadata$Facet,
                      stringsAsFactors = FALSE)
@@ -1613,24 +3262,82 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
   if (verbose) {
     cat("============================================================\nSTEP 4 -- SEMANTICA INPUT WRAPPER\n============================================================\n")
     cat(sprintf("  Cosine adjustment: %s\n", cosine_adjustment))
+    if (!is.null(compute_telemetry)) {
+      cat(sprintf(
+        "  Compute device   : %s -> %s (%s, %s precision)\n",
+        compute_telemetry$requested_device,
+        compute_telemetry$resolved_device,
+        compute_telemetry$backend,
+        compute_telemetry$resolved_precision
+      ))
+      if (isTRUE(compute_telemetry$used_fallback)) {
+        cat(sprintf("  Compute fallback : %s\n", compute_telemetry$fallback_reason))
+      }
+    }
     cat(sprintf("  Cosine offdiag   : mean %.4f | q95 %.4f | max %.4f\n",
                 cosine_diagnostics$offdiag_mean,
                 cosine_diagnostics$offdiag_q95,
                 cosine_diagnostics$offdiag_max))
-    if (isTRUE(cosine_diagnostics$possible_anisotropy)) {
-      cat("  Note             : high mean cosine; consider cosine_adjustment = 'mean_center' as a sensitivity check.\n")
+    if (is.finite(cosine_diagnostics$common_direction_strength %||% NA_real_)) {
+      cat(sprintf("  Common direction : %.4f (descriptive; no universal cutoff applied)\n",
+                  cosine_diagnostics$common_direction_strength))
+    }
+    if (is.finite(cosine_diagnostics$effective_rank %||% NA_real_)) {
+      cat(sprintf(
+        "  Spectral profile : effective rank %.2f/%d | top eigen share %.3f (descriptive)\n",
+        cosine_diagnostics$effective_rank, nrow(cos_mat),
+        cosine_diagnostics$top_eigen_share %||% NA_real_
+      ))
     }
     if (isTRUE(cosine_adjustment_sensitivity$available)) {
-      cat(sprintf("  Cosine sensitivity: none vs mean_center offdiag r=%.3f | q95 |delta|=%.3f | high-pair J=%.3f\n",
+      cat(sprintf("  Cosine sensitivity: none vs mean_center offdiag r=%.3f | q95 |delta|=%.3f | top %.1f%% pair J=%.3f (random ref=%.3f)\n",
                   cosine_adjustment_sensitivity$offdiag_correlation,
                   cosine_adjustment_sensitivity$q95_abs_delta,
-                  cosine_adjustment_sensitivity$high_pair_jaccard))
+                  100 * (cosine_adjustment_sensitivity$top_pair_fraction_effective %||% cosine_adjustment_sensitivity$top_pair_fraction %||% 0.05),
+                  cosine_adjustment_sensitivity$top_pair_jaccard %||% NA_real_,
+                  cosine_adjustment_sensitivity$top_pair_jaccard_random_baseline %||% NA_real_))
+      if (identical(cosine_adjustment_sensitivity$top_pair_overlap_vs_random %||% "",
+                    "at_or_below_random_reference")) {
+        cat("  Representation  : WARNING -- top-pair agreement across cosine preprocessing is at/below its finite-pool random reference.\n")
+      }
     }
     if (isTRUE(calibration$info$applied)) {
       cat(sprintf("  Calibration      : %s semantic proxy calibration applied before ACO/ESEM.\n",
                   calibration$info$method %||% "external"))
     }
   }
+  representation_stability <- list(
+    common_direction_strength = cosine_diagnostics$common_direction_strength %||% NA_real_,
+    effective_rank = cosine_diagnostics$effective_rank %||% NA_real_,
+    effective_rank_ratio = cosine_diagnostics$effective_rank_ratio %||% NA_real_,
+    top_eigen_share = cosine_diagnostics$top_eigen_share %||% NA_real_,
+    top3_eigen_share = cosine_diagnostics$top3_eigen_share %||% NA_real_,
+    negative_eigen_mass_ratio = cosine_diagnostics$negative_eigen_mass_ratio %||% NA_real_,
+    cosine_adjustment_sensitivity = cosine_adjustment_sensitivity,
+    top_pair_overlap_warning = isTRUE(
+      identical(
+        cosine_adjustment_sensitivity$top_pair_overlap_vs_random %||% NA_character_,
+        "at_or_below_random_reference"
+      )
+    ),
+    automatic_adjustment = FALSE,
+    note = paste(
+      "SEMANTICA reports representation sensitivity but does not automatically switch cosine transformations.",
+      "Representation concentration is referenced descriptively to an isotropic random-vector null and",
+      "does not by itself invalidate a language embedding representation."
+    )
+  )
+  embedding_diag_for_state <- embed_result$embedding_diagnostics %||% list(
+    n_items = nrow(emb_a), embed_dim = ncol(emb_a)
+  )
+  if (is.null(embedding_diag_for_state$n_items)) embedding_diag_for_state$n_items <- nrow(emb_a)
+  if (is.null(embedding_diag_for_state$embed_dim)) embedding_diag_for_state$embed_dim <- ncol(emb_a)
+  representation_evidence_state <- .semantica_representation_evidence_state(
+    representation_stability = representation_stability,
+    cosine_diagnostics = cosine_diagnostics,
+    embedding_diagnostics = embedding_diag_for_state
+  )
+
   list(cosine_sim_matrix = cos_mat, df = df_s, items_tbl = itbl_a, item_metadata = metadata,
        generated_item_metadata = metadata, n_items = nrow(itbl_a), n_factors = length(factors_u),
        i.per.f = i_per_f, embed_model = embed_result$embed_model,
@@ -1644,6 +3351,9 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
        ),
        cosine_diagnostics = cosine_diagnostics,
        cosine_adjustment_sensitivity = cosine_adjustment_sensitivity,
+       representation_stability = representation_stability,
+       representation_evidence_state = representation_evidence_state,
+       compute_telemetry = compute_telemetry,
        semantic_calibration = calibration$info,
        cosine_adjustment = cosine_adjustment)
 }
@@ -1655,14 +3365,30 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
 #'
 #' @param backend          Generation backend.
 #' @param embed_backend    Embedding backend. `NULL` = same as backend.
+#' @param backend_spec,embed_backend_spec Optional explicit custom backend
+#'   contracts created by [semantica_backend_spec()] for generation and
+#'   embeddings respectively.
 #' @param base_url         Override host:port for generation.
 #' @param embed_base_url   Override host:port for embedding.
 #' @param api_key          Generation API key.
 #' @param embed_api_key    Embedding API key.
+#' @param hf_token,embed_hf_token Hugging Face tokens for local generation and
+#'   an optional separate embedding session. Tokens are used only by live
+#'   sessions and are removed from returned results.
 #' @param chat_model       Override default chat model.
 #' @param embed_model      Override default embed model.
+#' @param embedding_device,chat_device,device_map,gpu_layers,model_precision
+#'   Local-model device controls passed to [semantica_connect()].
 #' @param embed_batch_size Items per embedding backend request. Smaller values
 #'   reduce per-request memory pressure for local embedding models.
+#' @param timeout_s,embed_timeout_s HTTP timeout in seconds for generation and
+#'   optional separate embedding sessions. `embed_timeout_s = NULL` reuses
+#'   `timeout_s`.
+#' @param retry_max_tries,retry_on_failure HTTP resilience controls for retryable provider failures.
+#' @param embedding_cache,embedding_cache_dir,embedding_cache_namespace Persistent embedding-cache controls.
+#' @param embedding_spec Optional embedding capability contract created by
+#'   [semantica_embedding_spec()]. It controls provider/task text preparation
+#'   only; it does not change psychometric thresholds or objective weights.
 #' @param cosine_adjustment Cosine preprocessing for embeddings. `"none"`
 #'   preserves standard normalized cosine; `"mean_center"` subtracts the pool
 #'   centroid before cosine as an anisotropy sensitivity check.
@@ -1670,6 +3396,17 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
 #'   `semantica_wrap()` to calibrate the embedding cosine proxy.
 #' @param compute_cosine_sensitivity Logical; compute the optional
 #'   none-versus-mean-centered cosine sensitivity diagnostic.
+#' @param cosine_sensitivity_max_items Maximum number of items used for the optional sensitivity diagnostic; the optimization matrix still uses all items.
+#' @param cosine_sensitivity_seed Seed used when the sensitivity diagnostic samples a very large pool.
+#' @param compute_device Cosine compute backend passed to [semantica_wrap()]:
+#'   `"cpu"`, conservative `"auto"`, `"cuda"`, `"cuda:N"`, or `"mps"`.
+#' @param gpu_fallback Optional explicit accelerator fallback policy. `NULL`
+#'   errors for an unavailable requested GPU and permits CPU for `"auto"`;
+#'   use `"cpu"` to permit an explicit GPU request to fall back.
+#' @param gpu_precision Cosine precision policy: `"double"` or explicitly
+#'   requested `"single"`; the MPS path requires single precision.
+#' @param compute_memory_limit Optional conservative cosine working-memory
+#'   ceiling in bytes.
 #' @param release_local_models Logical; after embedding and wrapping, remove
 #'   cached `python_llamacpp` model instances and request garbage collection.
 #'   This reduces retained RAM for one-shot local runs at the cost of reloading
@@ -1677,6 +3414,20 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
 #' @param retain_embeddings Logical; retain the dense embedding matrix in the
 #'   returned `embed_result`. Set to `FALSE` after the cosine matrix has been
 #'   built when later facet/unit embedding diagnostics are not needed.
+#' @param preflight Logical; run provider/model preflight checks.
+#' @param embedding_task Embedding-task policy. `"auto"` applies documented model-specific task instructions only when the configured embedding model requires them.
+#' @param embedding_instruction Optional explicit embedding prefix/instruction overriding the automatic model policy.
+#' @param content_alignment Logical; compute item-to-factor/facet definition
+#'   alignment when usable definitions and embeddings are available.
+#' @param content_exclusions Optional named list of factor-specific concepts
+#'   that should not define each construct. The high-level full pipeline derives
+#'   this automatically from a construct blueprint or factor `forbidden` fields.
+#' @param generation_seed Optional nonnegative generation master seed forwarded
+#'   to [semantica_generate_items()]. In the high-level pipeline this inherits
+#'   the run master seed. Seed control is backend-specific and is recorded in
+#'   generation provenance. A controlled seed fixes SEMANTICA's seed schedule;
+#'   exact LLM text replay is not guaranteed, so exact downstream replay uses
+#'   the saved item pool and its fingerprint.
 #' @param gguf_path        Path to `.gguf` file.
 #' @param scale_name       Short scale name.
 #' @param scale_description Overall construct description.
@@ -1687,7 +3438,20 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
 #'   omitted, item counts stored in `factors` keep their existing precedence.
 #' @param verbose          Print progress.
 #' @param ...              Further args to `semantica_generate_items()`.
-#' @return Named list ready for `ACO_with_ESEM()`.
+#' @section Side effects:
+#' May read credentials/environment settings, perform provider network I/O or
+#' local Python inference, and read/write the persistent embedding cache. The
+#' optional cosine-sensitivity subsample uses its documented seed in a
+#' caller-RNG-preserving scope.
+#'
+#' @section Reproducibility:
+#' Returned session/model/device diagnostics describe the resolved execution
+#' environment available to SEMANTICA. Remote model aliases may remain mutable;
+#' cached embeddings preserve the vectors associated with their recorded key.
+#'
+#' @return A `semantica_pipeline_result` ready for `ACO_with_ESEM()`, including
+#'   the cosine matrix and item metadata, sanitized session metadata,
+#'   embedding/cosine diagnostics, and stage `$performance` telemetry.
 #' @export
 #' @examples
 #' \dontrun{
@@ -1707,63 +3471,188 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
 #' }
 semantica_pipeline <- function(backend = "openai", embed_backend = NULL, base_url = NULL, embed_base_url = NULL, api_key = NULL,
                                embed_api_key = NULL, chat_model = NULL, embed_model = NULL, embed_batch_size = 64L,
+                               hf_token = NULL, embed_hf_token = NULL,
+                               embedding_device = "auto", chat_device = "auto",
+                               device_map = NULL, gpu_layers = "auto",
+                               model_precision = "auto",
+                               timeout_s = 120L, embed_timeout_s = NULL,
+                               retry_max_tries = 4L, retry_on_failure = TRUE,
+                               preflight = TRUE,
                                gguf_path = NULL, scale_name,
                                scale_description, factors, n_per_factor = 15L,
                                n_per_factor_override = !missing(n_per_factor),
                                cosine_adjustment = c("none", "mean_center"),
                                semantic_calibration = NULL,
                                compute_cosine_sensitivity = TRUE,
+                               cosine_sensitivity_max_items = 1500L,
+                               cosine_sensitivity_seed = 1L,
+                               compute_device = "cpu", gpu_fallback = NULL,
+                               gpu_precision = "double",
+                               compute_memory_limit = NULL,
                                release_local_models = FALSE,
                                retain_embeddings = TRUE,
-                               verbose = TRUE, ...) {
+                               embedding_cache = TRUE,
+                               embedding_cache_dir = NULL,
+                               embedding_cache_namespace = NULL,
+                               embedding_spec = NULL,
+                               verbose = TRUE,
+                               embedding_task = "auto", embedding_instruction = NULL,
+                               content_alignment = TRUE, content_exclusions = NULL, ...,
+                               backend_spec = NULL, embed_backend_spec = NULL,
+                               generation_seed = NULL) {
+  pipeline_started <- proc.time()[["elapsed"]]
   cosine_adjustment <- match.arg(cosine_adjustment)
   embed_backend_eff <- embed_backend %||% backend
-  if (backend == "anthropic" && is.null(embed_backend)) stop("Anthropic has no embed API. Specify embed_backend.")
+  generation_spec <- if (!is.null(backend_spec)) backend_spec else SEMANTICA_BACKENDS[[backend]]
+  generation_caps <- if (!is.null(generation_spec)) .semantica_backend_capabilities(generation_spec) else NULL
+  if (is.null(generation_caps) && is.null(backend_spec)) {
+    stop("Unknown generation backend '", backend, "'. Provide an explicit semantica_backend_spec().")
+  }
+  if (!isTRUE(generation_caps$can_embed) && is.null(embed_backend) && is.null(embed_backend_spec)) {
+    stop("Backend '", backend, "' does not provide embeddings in SEMANTICA. Specify 'embed_backend'/'embed_backend_spec'.")
+  }
 
-  separate_embed <- !identical(embed_backend_eff, backend) || !is.null(embed_api_key) || !is.null(embed_base_url)
+  separate_embed <- !identical(embed_backend_eff, backend) || !is.null(embed_backend_spec) ||
+    !is.null(embed_api_key) || !is.null(embed_base_url) ||
+    !is.null(embed_hf_token)
   session <- semantica_connect(
     backend = backend, api_key = api_key, chat_model = chat_model,
     embed_model = if (separate_embed) NULL else embed_model,
-    base_url = base_url, gguf_path = gguf_path, verbose = verbose
+    base_url = base_url, gguf_path = gguf_path, hf_token = hf_token,
+    embedding_device = embedding_device, chat_device = chat_device,
+    device_map = device_map, gpu_layers = gpu_layers,
+    model_precision = model_precision, timeout_s = timeout_s,
+    retry_max_tries = retry_max_tries,
+    retry_on_failure = retry_on_failure,
+    preflight = preflight, purpose = if (separate_embed) "chat" else "both",
+    embedding_task = embedding_task, embedding_instruction = embedding_instruction,
+    embedding_spec = if (separate_embed) NULL else embedding_spec,
+    backend_spec = backend_spec, verbose = verbose
   )
 
   embed_key <- if (!is.null(embed_api_key)) embed_api_key else if (identical(embed_backend_eff, backend)) api_key else NULL
   embed_session <- if (separate_embed) {
     semantica_connect(
       backend = embed_backend_eff, api_key = embed_key, embed_model = embed_model,
-      base_url = embed_base_url %||% base_url, gguf_path = gguf_path, verbose = verbose
+      base_url = embed_base_url %||% base_url, gguf_path = gguf_path,
+      hf_token = embed_hf_token %||% hf_token,
+      embedding_device = embedding_device,
+      chat_device = "auto", device_map = NULL, gpu_layers = gpu_layers,
+      model_precision = model_precision,
+      timeout_s = embed_timeout_s %||% timeout_s,
+      retry_max_tries = retry_max_tries,
+      retry_on_failure = retry_on_failure,
+      preflight = preflight, purpose = "embed",
+      embedding_task = embedding_task, embedding_instruction = embedding_instruction,
+      embedding_spec = embedding_spec,
+      backend_spec = embed_backend_spec, verbose = verbose
     )
   } else NULL
+  generation_started <- proc.time()[["elapsed"]]
   items_tbl <- semantica_generate_items(
     session, scale_name, scale_description, factors,
     n_per_factor = n_per_factor,
     n_per_factor_override = n_per_factor_override,
-    verbose = verbose, ...
+    verbose = verbose, seed = generation_seed, ...
+  )
+  generation_seconds <- proc.time()[["elapsed"]] - generation_started
+  generation_provenance <- attr(items_tbl, "semantica_generation_metadata") %||% list(
+    schema = "semantica-generation-provenance-unavailable",
+    content_screening_status = "unknown"
   )
   generated_item_metadata <- semantica_standardize_item_metadata(items_tbl)
+  embedding_started <- proc.time()[["elapsed"]]
   embed_result <- semantica_embed(
     items_tbl, session, embed_session,
     batch_size = embed_batch_size,
+    cache = embedding_cache,
+    cache_dir = embedding_cache_dir,
+    cache_namespace = embedding_cache_namespace,
     verbose = verbose
   )
+  embedding_seconds <- proc.time()[["elapsed"]] - embedding_started
+  content_alignment_result <- NULL
+  if (isTRUE(content_alignment)) {
+    content_alignment_result <- tryCatch(
+      .semantica_definition_alignment(
+        items_tbl, embed_result$embeddings, factors, embed_session %||% session,
+        cache = embedding_cache, cache_dir = embedding_cache_dir,
+        cache_namespace = embedding_cache_namespace, batch_size = embed_batch_size,
+        exclusions = content_exclusions
+      ), error = function(e) list(available = FALSE, note = conditionMessage(e), table = NULL)
+    )
+    if (isTRUE(content_alignment_result$available) && !is.null(content_alignment_result$table)) {
+      at <- content_alignment_result$table
+      idxa <- match(as.character(items_tbl$item_id %||% items_tbl$ID), at$item_id)
+      addcols <- setdiff(names(at), "item_id")
+      for (cc in addcols) items_tbl[[cc]] <- at[[cc]][idxa]
+      generated_item_metadata <- semantica_standardize_item_metadata(items_tbl)
+    }
+  }
+  generation_provenance$content_screening_status <- if (isTRUE(content_alignment_result$available) && !is.null(content_alignment_result$table)) {
+    "definition_alignment_performed_downstream"
+  } else if (isTRUE(content_alignment)) {
+    "definition_alignment_requested_but_unavailable"
+  } else {
+    "definition_alignment_not_requested"
+  }
+  generation_provenance$content_screening_note <- if (identical(generation_provenance$content_screening_status, "definition_alignment_performed_downstream")) {
+    "Generation/lexical curation was followed by embedding-derived construct-definition alignment; later ACO guards remain feasibility-aware."
+  } else {
+    "Generated candidates were not construct-qualified by a successful definition-alignment stage in this pipeline call."
+  }
+  cosine_started <- proc.time()[["elapsed"]]
   wrapped <- semantica_wrap(
-    embed_result,
+    embed_result, items_tbl = items_tbl,
     cosine_adjustment = cosine_adjustment,
     semantic_calibration = semantic_calibration,
     compute_cosine_sensitivity = compute_cosine_sensitivity,
+    cosine_sensitivity_max_items = cosine_sensitivity_max_items,
+    cosine_sensitivity_seed = cosine_sensitivity_seed,
+    compute_device = compute_device,
+    gpu_fallback = gpu_fallback,
+    gpu_precision = gpu_precision,
+    compute_memory_limit = compute_memory_limit,
     verbose = verbose
   )
-  result <- c(wrapped, list(session = session, embed_session = embed_session, items_tbl_raw = items_tbl,
-                            generated_item_metadata = generated_item_metadata, item_metadata = generated_item_metadata,
-                            embed_result = embed_result))
+  cosine_seconds <- proc.time()[["elapsed"]] - cosine_started
+  align_cols <- grep("^semantica_", names(items_tbl), value = TRUE)
+  if (length(align_cols) && !is.null(wrapped$df)) {
+    mid <- if ("item_id" %in% names(items_tbl)) as.character(items_tbl$item_id) else as.character(items_tbl$ID)
+    wi <- match(as.character(wrapped$df$item), mid)
+    for (cc in align_cols) wrapped$df[[cc]] <- items_tbl[[cc]][wi]
+    wi2 <- match(wrapped$item_metadata$ID, mid)
+    for (cc in align_cols) wrapped$item_metadata[[cc]] <- items_tbl[[cc]][wi2]
+    wrapped$generated_item_metadata <- wrapped$item_metadata
+  }
+  result <- c(wrapped, list(session = sanitize_session_for_result(session),
+                            embed_session = sanitize_session_for_result(embed_session), items_tbl_raw = items_tbl,
+                            generation_provenance = generation_provenance,
+                            generated_item_metadata = wrapped$generated_item_metadata %||% generated_item_metadata,
+                            item_metadata = wrapped$item_metadata %||% generated_item_metadata,
+                            embed_result = embed_result, content_alignment = content_alignment_result,
+                            embedding_policy = .semantica_embedding_policy(
+                              (embed_session %||% session)$embed_model,
+                              (embed_session %||% session)$embedding_task %||% "auto",
+                              (embed_session %||% session)$embedding_instruction %||% NULL,
+                              (embed_session %||% session)$embedding_spec %||% NULL
+                            ),
+                            performance = list(
+                              generation_seconds = unname(generation_seconds),
+                              embedding_seconds = unname(embedding_seconds),
+                              cosine_seconds = unname(cosine_seconds),
+                              total_seconds = unname(proc.time()[["elapsed"]] - pipeline_started),
+                              compute = wrapped$compute_telemetry
+                            )))
   if (!isTRUE(retain_embeddings)) {
     result$embed_result$embeddings <- NULL
   }
   if (isTRUE(release_local_models) &&
       any(c(session$protocol, embed_session$protocol %||% NA_character_) == "python_llamacpp", na.rm = TRUE)) {
-    .semantica_clear_python_model_cache()
+    .semantica_clear_python_model_cache(pattern = '^"llamacpp"\\|')
   }
-  result
+  class(result) <- c("semantica_pipeline_result", "list")
+  sanitize_result_for_serialization(result)
 }
 
 # =================================================================
@@ -1792,14 +3681,34 @@ semantica_print_items <- function(items_tbl, max_chars = 80L) {
   invisible(items_tbl)
 }
 
-#' Export pipeline results to CSV files
+#' Export SEMANTICA results for human-readable/interchange use
 #'
-#' Saves the generated item table, metadata dataframe, and cosine similarity
-#' matrix to separate CSV files in the working directory for offline use or sharing.
+#' For a high-level [semantica_run()] or [semantica_full_pipeline()] result,
+#' writes the selected final scale, evidence status, readable summary, and
+#' sanitized resolved configuration. For legacy component results from
+#' [semantica_pipeline()] or [semantica_wrap()], preserves the historical
+#' item/metadata/cosine CSV export unchanged.
 #'
-#' @param pipeline_result Output list from \code{\link{semantica_pipeline}} or \code{\link{semantica_wrap}}.
+#' @param pipeline_result A high-level SEMANTICA result, or a legacy component
+#'   result from [semantica_pipeline()] or [semantica_wrap()].
 #' @param prefix Character string to prepend to output filenames.
-#' @return Invisibly returns the prefix used.
+#' @param include_candidates Logical; for high-level results, also export the
+#'   generated candidate-item table when it is available.
+#' @param format Export contract: `"auto"` selects a report for high-level results and optimizer interchange for component results; `"report"` and `"optimizer"` require the matching result type.
+#' @param quiet Logical; suppress completion messages while still returning written paths.
+#' @section Side effects:
+#' High-level results write `_selected_items.csv`, `_evidence_status.csv`,
+#' `_summary.txt`, and `_config.json`, plus an optional `_candidate_items.csv`.
+#' Legacy component results retain the existing `_items.csv`, `_df.csv`, and
+#' `_cosine_matrix.csv` files consumed by [semantica_reload()].
+#'
+#' @section Reproducibility:
+#' These exports are human-readable/interchange artifacts, not the canonical
+#' exact-replay artifact. Use [semantica_save_bundle()] to preserve full
+#' provenance and analysis state.
+#'
+#' @return For high-level results, invisibly returns a named list of written
+#'   paths. For legacy component results, invisibly returns the prefix as before.
 #' @export
 #' @examples
 #' \donttest{
@@ -1821,24 +3730,77 @@ semantica_print_items <- function(items_tbl, max_chars = 80L) {
 #' )
 #' semantica_export(wrapped, prefix = file.path(tempdir(), "example_scale"))
 #' }
-semantica_export <- function(pipeline_result, prefix = "SEMANTICA") {
-  write.csv(pipeline_result$items_tbl, paste0(prefix,"_items.csv"), row.names=FALSE)
-  write.csv(pipeline_result$df, paste0(prefix,"_df.csv"), row.names=FALSE)
-  write.csv(pipeline_result$cosine_sim_matrix, paste0(prefix,"_cosine_matrix.csv"))
-  cat(sprintf("Exported: %s_items.csv | %s_df.csv | %s_cosine_matrix.csv\n", prefix, prefix, prefix))
+semantica_export <- function(pipeline_result, prefix = "SEMANTICA", include_candidates = FALSE, format = c("auto", "report", "optimizer"), quiet = FALSE) {
+  include_candidates <- .semantica_assert_flag(include_candidates, "include_candidates")
+  quiet <- .semantica_assert_flag(quiet, "quiet")
+  format <- match.arg(format)
+  is_high_level <- inherits(pipeline_result, "semantica_full_pipeline_result")
+  if (identical(format, "report") && !is_high_level) stop("format = 'report' requires a semantica_run()/semantica_full_pipeline() result.", call. = FALSE)
+  if (identical(format, "optimizer") && is_high_level) stop("format = 'optimizer' expects a semantica_wrap()/semantica_pipeline() component result. Use format = 'report' for a completed high-level analysis, or semantica_save_bundle() for exact replay.", call. = FALSE)
+
+  # High-level results get a user-oriented export: the final selected scale,
+  # evidence state, a readable summary, and sanitized resolved configuration.
+  # This is presentation/interchange only; semantica_save_bundle() remains the
+  # canonical provenance-preserving artifact.
+  if (is_high_level) {
+    out_dir <- dirname(prefix)
+    if (!identical(out_dir, ".") && !dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
+    paths <- list(
+      selected_items = paste0(prefix, "_selected_items.csv"),
+      evidence_status = paste0(prefix, "_evidence_status.csv"),
+      summary = paste0(prefix, "_summary.txt"),
+      config = paste0(prefix, "_config.json")
+    )
+    utils::write.csv(semantica_items(pipeline_result, details = TRUE), paths$selected_items, row.names = FALSE)
+    evidence <- tryCatch(semantica_evidence_status(pipeline_result), error = function(e) NULL)
+    if (is.data.frame(evidence)) {
+      utils::write.csv(evidence, paths$evidence_status, row.names = FALSE)
+    } else {
+      utils::write.csv(data.frame(status = "Evidence status unavailable.", stringsAsFactors = FALSE), paths$evidence_status, row.names = FALSE)
+    }
+    writeLines(utils::capture.output(print(summary(pipeline_result))), paths$summary, useBytes = TRUE)
+    cfg <- tryCatch(semantica_config(pipeline_result), error = function(e) list(note = conditionMessage(e)))
+    jsonlite::write_json(cfg, paths$config, pretty = TRUE, auto_unbox = TRUE, null = "null", na = "null")
+    if (isTRUE(include_candidates)) {
+      candidates <- pipeline_result$generated_item_metadata %||% pipeline_result$generation$items_tbl %||% NULL
+      if (is.data.frame(candidates)) {
+        paths$candidate_items <- paste0(prefix, "_candidate_items.csv")
+        utils::write.csv(candidates, paths$candidate_items, row.names = FALSE)
+      }
+    }
+    if (!isTRUE(quiet)) cat(sprintf(
+      "Exported selected scale and user-facing diagnostics with prefix '%s'.\nFor exact reproducibility, also use semantica_save_bundle().\n",
+      prefix
+    ))
+    return(invisible(paths))
+  }
+
+  # Backward-compatible component/interchange export.
+  utils::write.csv(pipeline_result$items_tbl, paste0(prefix,"_items.csv"), row.names=FALSE)
+  utils::write.csv(pipeline_result$df, paste0(prefix,"_df.csv"), row.names=FALSE)
+  utils::write.csv(pipeline_result$cosine_sim_matrix, paste0(prefix,"_cosine_matrix.csv"))
+  if (!isTRUE(quiet)) cat(sprintf("Exported optimizer-interchange files: %s_items.csv | %s_df.csv | %s_cosine_matrix.csv\n", prefix, prefix, prefix))
   invisible(prefix)
 }
 
-#' Reload previously exported pipeline results
+#' Reload an optimizer-interchange export
 #'
-#' Reads CSV files created by \code{\link{semantica_export}} back into an R
-#' list ready for the ACO optimizer.
+#' Reads the legacy/component optimizer-interchange CSV files created by
+#' [semantica_export()] with `format = "optimizer"` (or `format = "auto"` for a component result). Human-readable high-level report exports are not reconstructive; use [semantica_load_bundle()] to restore a complete analysis.
 #'
 #' @param prefix Character string matching the prefix used during export.
 #' @param i.per.f Optional named integer vector overriding the number of items
 #'   to select per factor after reload.
 #' @param default_i_per_f Default number of items to select per factor when
 #'   `i.per.f` is not supplied; capped at the number of available items.
+#' @section Side effects:
+#' Reads the three CSV files created by [semantica_export()] and performs
+#' cross-file structural integrity checks before returning optimizer inputs.
+#'
+#' @section Reproducibility:
+#' Reload validates structure and consistency but does not make CSV files
+#' equivalent to a provenance-preserving SEMANTICA analysis bundle.
+#'
 #' @return Named list containing \code{cosine_sim_matrix}, \code{df},
 #'   \code{items_tbl}, and \code{i.per.f}.
 #' @export
@@ -1852,34 +3814,166 @@ semantica_export <- function(pipeline_result, prefix = "SEMANTICA") {
 #' )
 #' }
 semantica_reload <- function(prefix = "SEMANTICA", i.per.f = NULL, default_i_per_f = 3L) {
-  items_tbl <- read.csv(paste0(prefix, "_items.csv"), stringsAsFactors=FALSE)
-  df <- read.csv(paste0(prefix, "_df.csv"), stringsAsFactors=FALSE)
-  cos_mat <- as.matrix(read.csv(paste0(prefix, "_cosine_matrix.csv"), row.names=1, stringsAsFactors=FALSE))
+  reload_abort <- function(message, invariant, ...) {
+    .semantica_abort(
+      message,
+      subclass = "semantica_error_integrity",
+      stage = "reload",
+      invariant = invariant,
+      ...
+    )
+  }
+  read_reload_csv <- function(path, ...) {
+    tryCatch(
+      read.csv(path, stringsAsFactors = FALSE, check.names = FALSE, ...),
+      error = function(e) reload_abort(
+        sprintf("Could not read SEMANTICA reload file '%s': %s", basename(path), conditionMessage(e)),
+        "csv_parse",
+        file = basename(path)
+      )
+    )
+  }
+  pick_id <- function(x, candidates, label) {
+    hit <- intersect(candidates, names(x))
+    if (length(hit) == 0L) {
+      reload_abort(
+        sprintf("Reloaded %s file has no supported item-ID column (%s).",
+                label, paste(candidates, collapse = ", ")),
+        paste0(label, "_item_id_column")
+      )
+    }
+    ids <- as.character(x[[hit[[1L]]]])
+    if (anyNA(ids) || any(!nzchar(trimws(ids)))) {
+      reload_abort(sprintf("Reloaded %s file contains missing/empty item IDs.", label),
+                   paste0(label, "_item_ids_complete"))
+    }
+    if (anyDuplicated(ids)) {
+      reload_abort(sprintf("Reloaded %s file contains duplicated item IDs.", label),
+                   paste0(label, "_item_ids_unique"))
+    }
+    ids
+  }
+
+  items_tbl <- read_reload_csv(paste0(prefix, "_items.csv"))
+  df <- read_reload_csv(paste0(prefix, "_df.csv"))
+  cos_df <- read_reload_csv(
+    paste0(prefix, "_cosine_matrix.csv"), row.names = 1
+  )
+
+  if (nrow(cos_df) != ncol(cos_df) || nrow(cos_df) < 1L) {
+    reload_abort("Reloaded cosine matrix must be a non-empty square matrix.",
+                 "cosine_square")
+  }
+  if (!all(vapply(cos_df, is.numeric, logical(1L)))) {
+    reload_abort("Reloaded cosine matrix contains non-numeric columns.",
+                 "cosine_numeric")
+  }
+  cos_mat <- as.matrix(cos_df)
   storage.mode(cos_mat) <- "double"
-  counts <- table(df$type)
+  if (any(!is.finite(cos_mat))) {
+    reload_abort("Reloaded cosine matrix contains non-finite values.",
+                 "cosine_finite")
+  }
+  rn <- rownames(cos_mat)
+  cn <- colnames(cos_mat)
+  if (is.null(rn) || is.null(cn) || anyNA(rn) || anyNA(cn) ||
+      any(!nzchar(rn)) || any(!nzchar(cn)) || anyDuplicated(rn) || anyDuplicated(cn)) {
+    reload_abort("Reloaded cosine matrix must have unique, non-empty row and column item IDs.",
+                 "cosine_dimnames")
+  }
+  if (!identical(rn, cn)) {
+    reload_abort("Reloaded cosine matrix row and column item IDs must match in the same order.",
+                 "cosine_dimnames_match")
+  }
+  symmetry_tol <- sqrt(.Machine$double.eps)
+  if (max(abs(cos_mat - t(cos_mat))) > symmetry_tol) {
+    reload_abort(
+      sprintf("Reloaded cosine matrix is not symmetric within tolerance %.3g.", symmetry_tol),
+      "cosine_symmetric",
+      tolerance = symmetry_tol
+    )
+  }
+
+  df_ids <- pick_id(df, c("item", "ID", "item_id"), "df")
+  item_ids <- pick_id(items_tbl, c("item_id", "ID", "item"), "items")
+  if (!setequal(df_ids, rn)) {
+    reload_abort("Reloaded df item IDs do not match cosine-matrix item IDs.",
+                 "df_cosine_ids_match")
+  }
+  if (!setequal(item_ids, rn)) {
+    reload_abort("Reloaded item-table IDs do not match cosine-matrix item IDs.",
+                 "items_cosine_ids_match")
+  }
+  if (!"type" %in% names(df)) {
+    reload_abort("Reloaded df file is missing the factor-assignment column 'type'.",
+                 "factor_assignment_column")
+  }
+  factor_values <- as.character(df$type)
+  if (anyNA(factor_values) || any(!nzchar(trimws(factor_values)))) {
+    reload_abort("Reloaded df contains missing/empty factor assignments.",
+                 "factor_assignments_complete")
+  }
+  counts <- table(factor_values)
+  default_i_per_f <- .semantica_assert_positive_integer(
+    default_i_per_f, "default_i_per_f", condition_class = "semantica_error_integrity"
+  )
   if (is.null(i.per.f)) {
     # `i.per.f` is a selection target, not the number of available items.
-    i_per_f <- setNames(pmin(as.integer(default_i_per_f), as.integer(counts)), names(counts))
+    i_per_f <- setNames(pmin(default_i_per_f, as.integer(counts)), names(counts))
   } else {
-    i_per_f <- i.per.f
+    i_per_f <- .semantica_assert_positive_integer_vector(
+      i.per.f, "i.per.f", condition_class = "semantica_error_integrity"
+    )
+    if (is.null(names(i_per_f)) || anyNA(names(i_per_f)) ||
+        any(!nzchar(names(i_per_f))) || anyDuplicated(names(i_per_f))) {
+      reload_abort("'i.per.f' must be a uniquely named vector of factor selection targets.",
+                   "i_per_f_named")
+    }
+    unknown_factors <- setdiff(names(i_per_f), names(counts))
+    if (length(unknown_factors) > 0L) {
+      reload_abort(
+        sprintf("'i.per.f' references unknown factor(s): %s.",
+                paste(unknown_factors, collapse = ", ")),
+        "i_per_f_factor_names",
+        factors = unknown_factors
+      )
+    }
+    infeasible <- names(i_per_f)[i_per_f > as.integer(counts[names(i_per_f)])]
+    if (length(infeasible) > 0L) {
+      reload_abort(
+        sprintf("'i.per.f' exceeds available items for factor(s): %s.",
+                paste(infeasible, collapse = ", ")),
+        "i_per_f_feasible",
+        factors = infeasible
+      )
+    }
   }
-  list(cosine_sim_matrix=cos_mat, df=df, items_tbl=tibble::as_tibble(items_tbl), i.per.f=i_per_f)
+  list(cosine_sim_matrix = cos_mat, df = df,
+       items_tbl = tibble::as_tibble(items_tbl), i.per.f = i_per_f)
 }
 
 #' List all available backends
 #'
-#' Prints a compact registry of SEMANTICA generation and embedding backends.
+#' Prints a task-oriented backend table showing local/cloud type, credential
+#' environment variable, generation and embedding capability, and default
+#' models. It also highlights generation-only backends that require a separate
+#' embedding provider.
 #'
-#' @return Invisibly returns `SEMANTICA_BACKENDS`.
+#' @return Invisibly returns `SEMANTICA_BACKENDS`; the printed table is for user guidance.
 #' @export
 #' @examples
 #' backends <- semantica_list_backends()
 #' names(backends)
 semantica_list_backends <- function() {
-  cat("\nSEMANTICA v2 -- available backends\n", rep("=", 70), "\n", sep="")
-  fmt <- "  %-20s  %-18s  %-28s  %s\n"
-  cat(sprintf(fmt, "BACKEND", "PROTOCOL", "DEFAULT CHAT MODEL", "EMBED?"))
-  for (k in names(SEMANTICA_BACKENDS)) { b <- SEMANTICA_BACKENDS[[k]]; cat(sprintf(fmt, k, b$protocol, b$default_chat_model %||% "(user-specified)", if (isTRUE(b$has_embed)) "YES" else "NO")) }
-  cat("For custom servers pass backend='generic_openai' and base_url='http://...'.\n\n")
+  rows <- do.call(rbind, lapply(names(SEMANTICA_BACKENDS), .semantica_backend_row))
+  cat("\nSEMANTICA -- user-facing backend guide\n")
+  cat("========================================\n")
+  print(rows, row.names = FALSE, right = FALSE)
+  cat("\nNotes:\n")
+  cat("  - 'auth' is the environment variable SEMANTICA checks when credentials are required.\n")
+  cat("  - Anthropic and Groq are generation-only in the built-in registry; pair them with an embedding backend.\n")
+  cat("  - Local/server backends require the corresponding local service or Python environment to be available.\n")
+  cat("  - Run semantica_check_setup(...) before an expensive run; set probe = TRUE to verify reachable model registries.\n")
+  cat("  - For custom OpenAI-compatible servers use backend = 'generic_openai' plus base_url.\n\n")
   invisible(SEMANTICA_BACKENDS)
 }

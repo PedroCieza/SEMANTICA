@@ -18,14 +18,9 @@ semantica_generate_items(
   max_retries = 3L,
   global_forbidden_max = 40L,
   temperature = 0.8,
+  structured_output = c("auto", "numbered", "json"),
   verbose = TRUE,
-  rate_limit_policy = c("auto", "none"),
-  api_max_retries = 6L,
-  api_initial_wait_s = 1,
-  api_max_wait_s = 120,
-  api_retry_statuses = c(408L, 409L, 429L, 500L, 502L, 503L, 504L),
-  request_spacing_s = NULL,
-  rate_limit_margin = 0.85
+  seed = NULL
 )
 }
 \arguments{
@@ -53,40 +48,34 @@ direct calls that supply \code{n_per_factor}.}
 
 \item{overgenerate}{LLM overgeneration multiplier.}
 
-\item{max_retries}{Retries on short responses.}
+\item{max_retries}{Maximum generation attempts. After a partial successful response, retries are deficit-aware: already usable items are preserved and the next request is sized from the observed new-item yield rather than regenerating the full target.}
 
 \item{global_forbidden_max}{Maximum number of previously generated items to
 include as anti-duplicate examples in subsequent prompts.}
 
 \item{temperature}{LLM temperature.}
 
-\item{rate_limit_policy}{Transport retry policy. \code{"auto"} retries temporary
-API rate limits and transient server errors using provider headers and
-exponential backoff; \code{"none"} preserves fail-fast behavior.}
-
-\item{api_max_retries}{Maximum number of transport-level retries for one LLM
-request. These retries do not consume \code{max_retries}, which remains reserved
-for short or unusable LLM content.}
-
-\item{api_initial_wait_s, api_max_wait_s}{Initial and maximum wait, in seconds,
-for exponential backoff when a provider does not return retry timing.}
-
-\item{api_retry_statuses}{HTTP status codes treated as temporary transport
-failures when \code{rate_limit_policy = "auto"}.}
-
-\item{request_spacing_s}{Minimum seconds between chat request starts for the
-same backend/model. \code{NULL} uses \code{"auto"} when \code{rate_limit_policy = "auto"}
-and no spacing when \code{rate_limit_policy = "none"}. Use \code{"auto"} explicitly
-for conservative backend-specific spacing.}
-
-\item{rate_limit_margin}{Fraction of an auto-detected request rate to use
-when \code{request_spacing_s = "auto"}.}
+\item{structured_output}{Output contract: \code{"auto"}, \code{"numbered"}, or structured \code{"json"} when supported.}
 
 \item{verbose}{Print progress.}
+
+\item{seed}{Optional nonnegative master seed for LLM generation. SEMANTICA
+currently forwards deterministically derived per-task seeds only to backends
+with an implemented seed-control contract (Ollama). Unsupported protocols
+are recorded as uncontrolled rather than silently treated as reproducible.
+A requested backend seed controls SEMANTICA's deterministic seed schedule
+but does not guarantee byte-identical backend output, even within one
+runtime. Exact downstream replay requires saving and reusing the realized
+item pool identified by its item-pool fingerprint.}
 }
 \value{
 Tibble with legacy columns (\code{item_id}, \code{factor}, \code{item_text},
 \code{attempt}) and facet-aware columns (\code{ID}, \code{Dimension}, \code{Facet}, \code{item}).
+Attribute \code{semantica_generation_metadata} records the generation contract,
+backend seed-control status, a stable seed schedule separated from the
+dynamic execution ledger, generation-specification and replay-plan
+fingerprints, the exact retained-pool fingerprint, and whether downstream
+content screening has occurred.
 }
 \description{
 Generate psychometric items for all factors using an LLM

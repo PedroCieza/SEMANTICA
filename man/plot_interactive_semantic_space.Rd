@@ -13,9 +13,9 @@ plot_interactive_semantic_space(
 )
 }
 \arguments{
-\item{result}{Output from \code{ACO_with_ESEM()}.}
+\item{result}{A high-level SEMANTICA result or output from \code{ACO_with_ESEM()}.}
 
-\item{cosine_sim_matrix}{Full cosine similarity matrix.}
+\item{cosine_sim_matrix}{Full cosine similarity matrix. Optional for a high-level result because the stored matrix is reused.}
 
 \item{label_all}{Label all pool items.}
 

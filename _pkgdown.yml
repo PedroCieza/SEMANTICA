@@ -1,0 +1,173 @@
+url: https://PedroCieza.github.io/SEMANTICA/
+
+template:
+  bootstrap: 5
+
+home:
+  title: "SEMANTICA"
+  description: >
+    Semantic-assisted psychometric scale development with a streamlined
+    interface over the canonical SEMANTICA analytical engine.
+
+navbar:
+  structure:
+    left: [intro, reference, articles]
+    right: [search, github]
+
+reference:
+- title: "Start here"
+  desc: >
+    Run, inspect, interpret, plot, export, and preserve a scale-development analysis.
+  contents:
+  - SEMANTICA-package
+  - semantica_run
+  - semantica_run_plan
+  - semantica_execute
+  - semantica_check_setup
+  - semantica_list_backends
+  - semantica_view
+  - semantica_items
+  - semantica_overview
+  - semantica_result_info
+  - semantica_provenance
+  - semantica_item_review
+  - semantica_factor_review
+  - semantica_diagnostics
+  - semantica_evidence_status
+  - semantica_config
+  - semantica_models
+
+- title: "Plot, export, save, and resume"
+  contents:
+  - semantica_plot_all
+  - plot.semantica_full_pipeline_result
+  - semantica_export
+  - semantica_save_bundle
+  - semantica_load_bundle
+  - semantica_cache_info
+  - semantica_clear_cache
+  - semantica_reset_resources
+
+- title: "Advanced applied configuration"
+  desc: >
+    Use these when semantica_run() does not expose a required applied setting,
+    such as participant validation or specialist proxy/compute controls.
+  contents:
+  - semantica_full_pipeline
+  - semantica_validate
+  - semantica_aco_config
+  - semantica_llm_config
+  - semantica_item_count_config
+  - semantica_generation_config
+  - semantica_quality_config
+  - semantica_compute_config
+  - semantica_resource_config
+  - semantica_pfa_config
+  - semantica_esem_config
+  - semantica_fit_calibration_config
+  - semantica_diagnostics_config
+  - semantica_plot_config
+  - semantica_construct_blueprint
+
+- title: "Existing item pools and external embeddings"
+  desc: >
+    Supported component boundary for workflows that begin after item generation.
+  contents:
+  - semantica_import_embeddings
+  - semantica_connect
+  - semantica_backend_preflight
+  - semantica_embed
+  - semantica_standardize_item_metadata
+  - semantica_wrap
+  - ACO_with_ESEM
+  - semantica_reload
+  - semantica_reload_optimizer
+
+- title: "Backends, resources, and local environments"
+  contents:
+  - SEMANTICA_BACKENDS
+  - semantica_backend_spec
+  - semantica_capabilities
+  - semantica_resource_plan
+  - semantica_embedding_cache_config
+  - semantica_setup_conda
+  - semantica_activate_conda
+
+- title: "Component / method-development interfaces"
+  desc: >
+    Low-level generation and orchestration interfaces for custom workflows and method development.
+  contents:
+  - semantica_generate_items
+  - semantica_pipeline
+  - semantica_full_pipeline_custom
+  - run_multi_seed_semantica
+  - inspect_elite_archive
+  - inspect_solution_history
+  - semantica_print_items
+  - report_semantica_v2
+
+- title: "Methodological diagnostics and extensions"
+  desc: >
+    Optional robustness, empirical-calibration, benchmarking, and methodological extension functions.
+  contents:
+  - semantica_assess_construct_coverage
+  - semantica_polarity_diagnostics
+  - semantica_factor_semantic_diagnostics
+  - semantica_selection_context
+  - semantica_matrix_repair_diagnostics
+  - semantica_semantic_robustness
+  - semantica_semantic_resampling_stability
+  - semantica_calibrate_similarity_thresholds
+  - semantica_fit_empirical_calibration
+  - semantica_apply_empirical_calibration
+  - semantica_leave_one_scale_out_calibration
+  - semantica_benchmark_matrix_prediction
+  - semantica_compare_selection_methods
+  - semantica_ensemble_similarity
+  - semantica_ensemble_cluster_similarity
+  - semantica_signed_semantic_matrix
+  - semantica_contrastive_construct_alignment
+  - semantica_counterfactual_stress_test
+  - semantica_update_with_pilot
+  - semantica_construct_graph
+  - semantica_scale_fingerprint
+  - semantica_compare_scale_versions
+  - semantica_cross_language_equivalence
+  - semantica_expert_review_queue
+  - semantica_suggest_coverage_prompts
+  - semantica_preregistration_manifest
+
+- title: "Individual visualization functions"
+  desc: >
+    Direct plot functions for selecting individual diagnostics; plot(result) and semantica_plot_all(result) provide the consolidated entry points.
+  contents:
+  - plot_summary_of_results
+  - plot_pheromone_heatmap
+  - plot_fitness_evolution
+  - plot_semantic_networks
+  - plot_esem_loadings
+  - plot_loading_profiles
+  - plot_dfi_gauges
+  - plot_score_radar
+  - plot_semantic_discrimination
+  - plot_interactive_semantic_space
+  - plot_esem_path_diagrams
+  - plot_item_selection_frequency
+  - plot_crossloading_specificity
+  - plot_pfa_diagnostics
+  - plot_semantic_n_sensitivity
+
+articles:
+- title: "Start here"
+  contents:
+  - semantica-workflow
+  - semantica-user-workflows
+- title: "Understand and troubleshoot"
+  contents:
+  - semantica-glossary
+  - methodological-foundations
+  - evidence-interpretation
+  - semantica-troubleshooting
+- title: "Advanced optimizer notes"
+  contents:
+  - aco-esem-roadmap

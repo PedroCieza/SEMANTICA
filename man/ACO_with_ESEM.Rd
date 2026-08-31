@@ -11,10 +11,12 @@ ACO_with_ESEM(
   i.per.f,
   ants = 90,
   max.iter = 50,
+  search_patience = NULL,
   esem_every = 10,
   run_esem_during_search = TRUE,
   max_total_iter = NULL,
   max_esem_fits = NULL,
+  evaporation = NULL,
   esem_weight = 0.5,
   esem_failure_policy = c("stop", "semantic_fallback"),
   esem_sample_size = "auto",
@@ -60,6 +62,9 @@ ACO_with_ESEM(
   cohesion_retention = 0.75,
   within_similarity_target = NULL,
   within_similarity_band = 0.08,
+  semantic_objective_mode = c("relative_conservative", "legacy_target_burden"),
+  expected_factor_relations = NULL,
+  nomological_weight = 0,
   facet_coverage_weight = 0.15,
   psychometric_guard_weight = 0.5,
   psychometric_guard_min_ave = 0.3,
@@ -67,6 +72,9 @@ ACO_with_ESEM(
   psychometric_guard_min_primary_ge_50 = 0.7,
   pfa_mode = c("diagnostic", "objective", "off"),
   pfa_weight = 0.2,
+  pfa_failure_policy = c("semantic_fallback", "penalize", "stop"),
+  run_pfa_during_search = TRUE,
+  pfa_every = 1L,
   pfa_extraction = c("principal", "ml"),
   pfa_final_extraction = c("ml", "principal"),
   pfa_rotation = c("promax", "target_oblique", "oblimin", "varimax", "none"),
@@ -76,7 +84,7 @@ ACO_with_ESEM(
   reference_rmsea_poor = 0.06,
   reference_power = 0.8,
   reference_alpha = 0.05,
-  reference_max_n = 5000L,
+  reference_max_n = Inf,
   semantic_n_sensitivity = TRUE,
   semantic_n_grid = NULL,
   semantic_n_multipliers = c(0.5, 1, 1.5, 2),
@@ -95,11 +103,14 @@ ACO_with_ESEM(
   validation_n_max_factor_cor_error = NULL,
   sigmoid_center = 0.15,
   sigmoid_steepness = 10,
-  elite_pareto_rerank = TRUE,
+  elite_pareto_rerank = NULL,
   validation_data = NULL,
   validation_ordered = NULL,
   heuristic_beta = 0.5,
   archive_stable_window = 8L,
+  structural_archive_stable_window = 2L,
+  min_successful_pfa_checkpoints = 2L,
+  min_successful_esem_checkpoints = 2L,
   pheromone_update = c("top_elite", "best_ant"),
   fixed_evaporation = NULL,
   debug_mode = FALSE,
@@ -107,7 +118,17 @@ ACO_with_ESEM(
   history_mode = c("full", "summary", "none"),
   use_parallel = TRUE,
   n.cores = 2L,
+  reserve.cores = 1L,
+  max.cores = NULL,
+  seed = NULL,
   verbose = TRUE,
+  content_alignment_mode = c("diagnostic", "guard", "off"),
+  polarity_action = c("diagnostic", "guard", "off"),
+  within_target_method = c("nonredundant_median", "legacy_q40"),
+  validation_n_on_inadmissible = c("skip", "run"),
+  esem_cadence_mode = c("adaptive", "fixed"),
+  htmt_objective_role = c("diagnostic", "penalty"),
+  elite_multicriteria_rerank = NULL,
   ...
 )
 }
@@ -122,31 +143,44 @@ ACO_with_ESEM(
 
 \item{ants}{Number of ants in the colony.}
 
-\item{max.iter}{Maximum consecutive non-improving iterations before patience
-stopping.}
+\item{max.iter}{Deprecated compatibility alias for \code{search_patience}. It no
+longer affects pheromone evaporation.}
+
+\item{search_patience}{Optional positive integer non-improvement/stagnation
+patience. \code{NULL} resolves to \code{max.iter} for backward compatibility.}
 
 \item{esem_every}{Base interval for ESEM evaluations during ACO search.}
 
-\item{run_esem_during_search}{Logical; if \code{FALSE}, ACO selection is based on
-semantic redundancy only and ESEM is run only for final diagnostics.}
+\item{run_esem_during_search}{Logical; if \code{FALSE}, ACO selection uses semantic
+and, when configured, PFA criteria without search-time ESEM; ESEM is then run
+only for final diagnostics.}
 
-\item{max_total_iter}{Optional hard ceiling for all ACO iterations. \code{NULL}
+\item{max_total_iter}{Optional hard total-iteration ceiling. \code{NULL}
 preserves the legacy patience-only stopping behavior; use a positive
 integer to impose a resource budget.}
 
-\item{max_esem_fits}{Optional hard ceiling for ESEM fits attempted during
-ACO search checkpoints. \code{NULL} imposes no separate checkpoint-fit ceiling.}
+\item{max_esem_fits}{Optional ceiling for unique search-time ESEM candidate
+jobs admitted to execution. Cache hits and duplicate requests are not
+charged. DFI calibration, solver fallback attempts, archive/full refits,
+and final diagnostics are separately reported. \code{NULL} imposes no separate
+search-job ceiling.}
+
+\item{evaporation}{Pheromone-memory configuration from
+\code{\link[=semantica_evaporation_config]{semantica_evaporation_config()}}. The default adaptive schedule depends on
+iteration progress, never on search patience.}
 
 \item{esem_weight}{Weight for the ESEM component in the objective function.}
 
 \item{esem_failure_policy}{Behavior when an ESEM-guided search checkpoint
-produces no usable ESEM solutions. \code{"stop"} prevents a semantic-only
-selection from being mislabeled as ESEM-guided; \code{"semantic_fallback"}
-continues explicitly as a semantic/PFA-only search and records a warning.}
+produces no usable ESEM solutions. \code{"stop"} terminates rather than select
+without ESEM evidence. \code{"semantic_fallback"} uses semantic/PFA scoring for
+that checkpoint, records the fallback, and continues attempting ESEM at
+later checkpoints. Before final non-ESEM fallback, archived candidates are
+each given a full-ESEM refit opportunity.}
 
 \item{esem_sample_size}{Sample size for DFI simulation and ESEM estimation.
 \code{"auto"} chooses a non-arbitrary reference N by RMSEA power analysis for
-detecting poor approximate fit (\code{reference_rmsea_poor}) against close fit
+detecting approximate misfit (\code{reference_rmsea_poor}) against close fit
 (\code{reference_rmsea_close}).}
 
 \item{elite_k}{Number of solutions to retain in the elite archive.}
@@ -244,7 +278,7 @@ equivalence-testing companion diagnostic when available.}
 
 \item{dup_threshold}{Near-duplicate detection threshold.}
 
-\item{htmt_threshold}{HTMT validity threshold.}
+\item{htmt_threshold}{Descriptive reference for the HTMT-like semantic proxy.}
 
 \item{cohesion_quantile}{Deprecated inverse form of \code{cohesion_retention}.
 When supplied, retention is computed as \code{1 - cohesion_quantile}.}
@@ -258,21 +292,47 @@ minimum-pool safeguard is applied. Higher values retain broader content.}
 
 \item{within_similarity_band}{Tolerance around \code{within_similarity_target}.}
 
+\item{semantic_objective_mode}{Multidimensional semantic objective.
+\code{"relative_conservative"} uses stochastic superiority plus a robust
+within-between median-gap score and treats the adaptive within target as a
+cohesion guard. \code{"legacy_target_burden"} reproduces the 0.4.x scoring
+regime. One-factor models always retain target-centered scoring because
+between-factor discrimination is not defined.}
+
+\item{expected_factor_relations}{Optional theory-specified factor-relation matrix interpreted in the semantic-similarity domain, not as empirical latent correlations.}
+
+\item{nomological_weight}{Optional weight between 0 and 1 for matching \code{expected_factor_relations}; defaults to zero and requires an explicit validation rationale before use.}
+
 \item{facet_coverage_weight}{Soft weight rewarding coverage of distinct facets
 within each dimension.}
 
-\item{psychometric_guard_weight}{Soft penalty strength for ESEM solutions with
-weak loadings, very low AVE, high HTMT, or improper standardized parameters.}
+\item{psychometric_guard_weight}{Soft penalty/diagnostic strength for ESEM
+solutions with weak loadings, very low AVE, high HTMT, or improper
+standardized parameters; it is not a strict admissibility predicate.}
 
-\item{psychometric_guard_min_ave, psychometric_guard_min_loading, psychometric_guard_min_primary_ge_50}{Minimum convergent-validity diagnostics used by the soft psychometric guard.}
+\item{psychometric_guard_min_ave, psychometric_guard_min_loading, psychometric_guard_min_primary_ge_50}{Minimum sample-free proxy-structure diagnostics used by the soft psychometric guard.}
 
-\item{pfa_mode}{Sample-free pseudo-factor-analysis mode. \code{"diagnostic"}
+\item{pfa_mode}{Sample-free pseudo-factor-analysis mode. \code{"diagnostic"}}
+
+\item{pfa_weight}{Weight for the PFA component in the semantic/PFA part of
+the ACO objective. The ESEM weight is applied after this composite is formed.}
+
+\item{pfa_failure_policy}{Behavior when objective-mode PFA is unavailable for
+a candidate: \code{"semantic_fallback"} (default) preserves its semantic score,
+\code{"penalize"} uses a zero PFA component for backward-compatible penalization,
+and \code{"stop"} rejects the candidate and aborts a checkpoint if none are usable.
 (the default) reports PFA diagnostics without adding them to the ACO
 objective, \code{"objective"} includes PFA simple-structure diagnostics in the
 ACO objective, and \code{"off"} disables them.}
 
-\item{pfa_weight}{Weight for the PFA component in the semantic/PFA part of
-the ACO objective. The ESEM weight is applied after this composite is formed.}
+\item{run_pfa_during_search}{Logical; when \code{pfa_mode = "objective"}, allow
+sample-free PFA diagnostics to enter ACO proposal scoring during search.
+Set to \code{FALSE} to keep PFA for final/diagnostic reporting only.}
+
+\item{pfa_every}{Positive integer interval for PFA-guided ACO proposal
+scoring. The default \code{1L} preserves the previous objective-mode behavior;
+for example, \code{pfa_every = 10L} runs PFA-guided proposal scoring every tenth
+ACO iteration.}
 
 \item{pfa_extraction}{Extraction used for ACO PFA scoring (\code{"principal"} is
 fast and sample-free; \code{"ml"} uses covariance-matrix ML via \code{factanal}).}
@@ -290,7 +350,12 @@ unrotated.}
 
 \item{reference_rmsea_close, reference_rmsea_poor, reference_power, reference_alpha}{RMSEA-power settings used when \code{esem_sample_size = "auto"}.}
 
-\item{reference_max_n}{Maximum reference N searched by the RMSEA-power solver.}
+\item{reference_max_n}{Optional maximum reference N searched by the
+RMSEA-power solver. The default \code{Inf} lets \code{"auto"} use the calculated
+RMSEA-power solution. Set a finite value to impose a computational ceiling;
+if the requested target is not reachable within that ceiling, the ceiling
+itself is used as the semantic-proxy ESEM anchor rather than a very small
+positive-definite fallback.}
 
 \item{semantic_n_sensitivity}{Logical; refit the final selected semantic-proxy
 ESEM over nearby reference-N anchors and report fit/structure stability.}
@@ -328,18 +393,30 @@ the metric without using it to pass/fail the candidate N.}
 
 \item{sigmoid_steepness}{Sigmoid steepness for semantic scoring.}
 
-\item{elite_pareto_rerank}{Logical; use final elite-archive ESEM diagnostics
-to rerank solutions with a Pareto-style quality bonus.}
+\item{elite_pareto_rerank}{Deprecated compatibility alias for
+\code{elite_multicriteria_rerank}. Supplying it emits a deprecation warning;
+do not supply both arguments.}
 
-\item{validation_data}{Optional item-response dataset for a final response-data
-ESEM validation fit using the selected items.}
+\item{validation_data}{Optional item-response dataset for a separate final
+response-data validation fit using the selected items. It does not turn
+search-time proxy diagnostics into proof of construct validity.}
 
 \item{validation_ordered}{Optional ordered item names for ordinal response-data
 validation.}
 
 \item{heuristic_beta}{Heuristic influence in ACO probability.}
 
-\item{archive_stable_window}{Iterations of stable archive to trigger early stop.}
+\item{archive_stable_window}{Stable semantic-archive updates required before
+semantic stabilization can contribute to early stopping. This is a search
+heuristic, not evidence of global optimality.}
+
+\item{structural_archive_stable_window}{Stable successful PFA/ESEM archive
+updates required for each active structural evidence track.}
+
+\item{min_successful_pfa_checkpoints, min_successful_esem_checkpoints}{Minimum
+successful structural checkpoints required before archive-based early
+stopping is eligible. These counts refer to evidence-bearing checkpoints,
+not raw iterations.}
 
 \item{pheromone_update}{Pheromone update mode (\code{"top_elite"}, \code{"best_ant"}).}
 
@@ -357,10 +434,52 @@ no history.}
 
 \item{use_parallel}{Enable parallel processing.}
 
-\item{n.cores}{Requested number of parallel workers. Values greater than
-\code{2} are capped at two workers for resource-conscious execution.}
+\item{n.cores}{Requested number of parallel workers, or \code{"auto"}. Explicit
+numeric requests are bounded by the CPU allocation visible to R and
+\code{max.cores}; automatic mode also applies \code{reserve.cores}.}
+
+\item{reserve.cores}{Nonnegative number of cores retained for the operating
+system/user only when \code{n.cores = "auto"}.}
+
+\item{max.cores}{Optional user ceiling on effective workers.}
+
+\item{seed}{Optional master seed. Ant construction remains serial, while
+expensive task seeds are generated before dispatch so worker scheduling
+does not determine random-number streams.}
 
 \item{verbose}{Print progress.}
+
+\item{content_alignment_mode}{Content-definition selection policy.
+\code{"diagnostic"} (default) reports alignment without restricting candidates;
+\code{"guard"} excludes only pool-relative clear factor mismatches or explicit
+exclusion conflicts when enough alternatives remain; \code{"off"} disables it.
+Facet ambiguity is retained as soft evidence rather than a hard exclusion.}
+
+\item{polarity_action}{Wording-polarity selection policy. \code{"guard"} excludes
+flagged wording only when the requested factor size remains feasible;
+\code{"diagnostic"} (default) reports flags and \code{"off"} disables guarding.}
+
+\item{within_target_method}{Automatic cohesion-target estimator when
+\code{within_similarity_target = NULL}: \code{"nonredundant_median"} (default) uses
+nonredundant within-factor similarities from the current pool/model;
+\code{"legacy_q40"} reproduces the older 0.25--0.55-clamped rule.}
+
+\item{validation_n_on_inadmissible}{When validation-N planning is requested
+and the selected semantic-proxy ESEM is inadmissible, \code{"skip"} (default)
+avoids a misleading sample-size calculation; \code{"run"} forces the legacy
+PFA-informed sensitivity exercise.}
+
+\item{esem_cadence_mode}{\code{"adaptive"} preserves entropy-responsive checkpoint
+scheduling; \code{"fixed"} evaluates ESEM exactly every \code{esem_every} iterations.}
+
+\item{htmt_objective_role}{Whether HTMT-like semantic overlap is diagnostic
+only (default) or enters the scalar proxy objective as a legacy penalty.}
+
+\item{elite_multicriteria_rerank}{Logical; apply the scalar final ESEM
+diagnostic rerank/quality bonus to the elite archive. This is a
+multicriteria decision-utility rerank, not Pareto dominance or a
+multiobjective ACO archive. \code{NULL} resolves to \code{TRUE} unless the deprecated
+compatibility alias is supplied.}
 
 \item{...}{Additional arguments (unused).}
 }
@@ -369,16 +488,63 @@ A named list containing \code{best_items}, \code{esem_fit}, \code{dfi_cutoffs},
 a unique \code{elite_archive}, psychometric indices, diagnostic metadata, and
 \code{selected_items_detail} when item text is available in \code{df}. Objective
 transparency fields include \code{proposal_objective_score},
-\code{final_guided_objective_score}, \code{search_guidance_status},
-\code{candidate_counts}, and ESEM attempt/success/failure telemetry.
+\code{final_guided_objective_score}, \code{search_guidance_status}, and
+\code{objective_context}; the latter records the evidence regime and explicitly
+marks the objective as an optimization utility rather than a universal
+quality score. \code{selection_semantic_context} retains candidate-pool versus
+selected semantic discrimination/gap values, while
+\code{factor_semantic_diagnostics} exposes local factor separation.
+\code{candidate_counts} and ESEM attempt/success/failure telemetry are also
+returned. Quality and
+execution metadata are returned in \code{esem_alignment},
+\code{esem_admissibility}, \code{semantic_pair_perturbation_stability},
+\code{resource_plan}, \code{performance}, \code{evaluation_telemetry}, and
+\code{reproducibility}; \code{split_half_stability} remains a compatibility alias.
 \code{search_objective_score} is retained as a backward-compatible alias for
 \code{proposal_objective_score}.
 }
 \description{
-Optimizes item selection for a target factor structure using semantic similarity
-and exploratory structural equation modeling (full-ESEM). Includes DFI-calibrated
-cutoffs, heuristic pre-filtering, and parallel ACO search.
+Performs exploratory item-subset selection for a target factor structure using
+semantic similarity and full exploratory structural equation modeling (ESEM).
+Search-time ESEM, PFA, and DFI diagnostics are sample-free proxies derived
+from item embeddings. Optional response data add a separate final validation
+fit; they do not change the proxy basis of the search.
 }
+\details{
+The search constructs fixed-cardinality subsets from factor-labeled metadata:
+the requested counts in \code{i.per.f} are enforced, while semantic, facet, PFA,
+proxy-ESEM, loading, HTMT, and guard criteria are otherwise scored or softly
+penalized according to the selected options. Factor membership is not inferred
+or reassigned. The default \code{pfa_mode = "diagnostic"} reports PFA diagnostics
+without adding them to the search objective.
+
+Search-time ESEM fits embedding-derived correlation matrices. In SEMANTICA
+0.3.0, search patience and pheromone evaporation are independent:
+\code{search_patience} controls non-improvement/stagnation stopping, legacy
+\code{max.iter} is its compatibility alias, \code{max_total_iter} is an optional hard
+iteration ceiling, and \code{evaporation} controls pheromone memory. \code{max_esem_fits}
+limits unique search-time ESEM candidate jobs admitted to execution. Cache
+hits and coalesced duplicate requests do not consume that budget.
+DFI calibration, solver fallback attempts, final archive/full refits, and
+diagnostics are reported separately and can add fits outside that limit.
+Treat the selected form as exploratory and confirm it with participant response
+data; semantic similarity and proxy ESEM/PFA do not establish construct validity.
+}
+\section{Side effects}{
+
+Consumes R RNG state intentionally for ACO search and enabled simulation/
+sensitivity procedures, may create parallel workers, and performs CPU-based
+ESEM/PFA/DFI computation. It does not perform provider network I/O.
+}
+
+\section{Reproducibility}{
+
+Use \code{seed} for repeatable stochastic execution. The result records the master
+seed, task-level seeds, RNG kind, resource decisions, and evaluation telemetry.
+Parallel and serial execution remain subject to the documented algorithmic
+seed ledger rather than incidental cache/plot RNG use.
+}
+
 \examples{
 \dontrun{
 # See vignette("function-reference", package = "SEMANTICA") for an

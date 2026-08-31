@@ -13,6 +13,12 @@ semantica_wrap(
   cosine_adjustment = c("none", "mean_center"),
   semantic_calibration = NULL,
   compute_cosine_sensitivity = TRUE,
+  cosine_sensitivity_max_items = 1500L,
+  cosine_sensitivity_seed = 1L,
+  compute_device = "cpu",
+  gpu_fallback = NULL,
+  gpu_precision = "double",
+  compute_memory_limit = NULL,
   verbose = TRUE
 )
 }
@@ -40,14 +46,48 @@ none-versus-mean-centered cosine sensitivity diagnostic. Set to \code{FALSE}
 when only the selected cosine representation is required and memory is
 constrained; this does not affect the matrix supplied to optimization.}
 
+\item{cosine_sensitivity_max_items}{Maximum item count used directly in the optional sensitivity diagnostic before deterministic subsampling.}
+
+\item{cosine_sensitivity_seed}{Seed used if the sensitivity diagnostic subsamples a large item pool.}
+
+\item{compute_device}{Cosine compute backend: \code{"cpu"} (compatibility
+default), \code{"auto"} (currently CPU until crossover benchmarks are
+validated), \code{"cuda"}, \code{"cuda:N"}, or \code{"mps"}.}
+
+\item{gpu_fallback}{Optional fallback policy. \code{NULL} means an explicit GPU
+request errors if unavailable, while \code{"auto"} may use CPU. Set to \code{"cpu"}
+to explicitly permit CPU fallback for a requested accelerator.}
+
+\item{gpu_precision}{\code{"double"} (default) or explicitly requested
+\code{"single"}. MPS requires single precision for the torch path.}
+
+\item{compute_memory_limit}{Optional conservative working-memory ceiling in
+bytes for the cosine calculation.}
+
 \item{verbose}{Print summary.}
 }
 \value{
-Named list: \verb{$cosine_sim_matrix}, \verb{$df}, \verb{$i.per.f} + metadata.
+Named list with \verb{$cosine_sim_matrix}, \verb{$df}, \verb{$i.per.f}, cosine and
+adjustment diagnostics, and \verb{$compute_telemetry} describing the requested
+and resolved backend, precision, fallback, memory estimate, and timing.
 }
 \description{
 Prepare cosine_sim_matrix and df for SEMANTICA optimizers
 }
+\section{Side effects}{
+
+Computes local matrix diagnostics. If the optional cosine-sensitivity
+diagnostic must subsample a large pool, it uses the documented seed inside a
+caller-RNG-preserving scope; no provider or filesystem I/O is performed here.
+}
+
+\section{Reproducibility}{
+
+\code{cosine_sensitivity_seed} controls the deliberate large-pool subsample and the
+sampled seed is recorded in the returned sensitivity diagnostics. The selected
+cosine representation itself is deterministic for fixed embeddings/settings.
+}
+
 \examples{
 items_tbl <- data.frame(
   item_id = paste0("item_", 1:6),

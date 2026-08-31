@@ -1,0 +1,214 @@
+---
+title: "Methodological Foundations and Citation Guide"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Methodological Foundations and Citation Guide}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+# Why this article exists
+
+SEMANTICA combines established statistical methods, recent semantic-embedding
+research, and package-specific decision policies. Those three categories should
+not be conflated when reporting a study.
+
+This article therefore answers three separate questions:
+
+1. **Which published methods motivate or define a calculation?**
+2. **Which parts are SEMANTICA-specific adaptations or decision policies?**
+3. **What should a researcher cite when using the package?**
+
+The package citation can be obtained with:
+
+```{r citation, eval=FALSE}
+citation("SEMANTICA")
+```
+
+The GitHub repository also contains `CITATION.cff` for machine-readable software
+citation. Method-specific references below should be cited when they are
+material to the analysis being reported.
+
+# Method-to-source map
+
+| Component | SEMANTICA role | Literature basis | Important boundary |
+|---|---|---|---|
+| Construct definition and item-pool development | Guides construct descriptions, broad initial pools, wording review, and comparison with neighboring constructs | Clark & Watson (1995, 2019) | SEMANTICA assists pre-data development; it does not replace substantive theory, expert review, or participant validation. |
+| Semantic embeddings and cosine geometry | Represents item wording in vector space and derives semantic similarities | Wulff & Mata (2025); Kilmen & Bulut (2025); Jung & Seo (2025) provide direct psychometric evidence that embeddings can encode useful item/scale relations | The exact embedding model remains a user/backend choice. No cited paper establishes a universal cosine cutoff across models. |
+| Ant colony optimization | Searches fixed-cardinality item subsets under a multi-component objective | Dorigo & Stützle (2004); Leite, Huang, & Marcoulides (2008); Raborn & Leite (2018) | SEMANTICA's exact presets, objective weights, evidence cadence, archive rules, and stopping safeguards are package policy, not universal constants from these sources. |
+| Stochastic-superiority semantic discrimination | Compares within-factor versus between-factor similarity distributions | Vargha & Delaney (2000) | The `A` statistic follows the stochastic-superiority framework. SEMANTICA's conservative combination of `A`, robust gaps, weakest-factor behavior, and safeguards is package-specific. |
+| Sample-free PFA | Applies factor-extraction/rotation ideas to an embedding-derived correlation proxy | Fabrigar et al. (1999) for general exploratory-factor-analysis principles | SEMANTICA PFA is **not** factor analysis of participant responses. Its scoring schema and recovery summaries are package-specific diagnostics. |
+| ESEM | Fits exploratory structural equation models to the representation-derived proxy correlation matrix | Asparouhov & Muthén (2009); Rosseel (2012) for the `lavaan` implementation used by SEMANTICA | Proxy ESEM is sample-free and must not be reported as participant-based construct validation. SEMANTICA adds alignment, admissibility, and structural-quality safeguards around the fitted model. |
+| HTMT-like separation | Uses an HTMT-inspired ratio as a complementary construct-separation proxy | Henseler, Ringle, & Sarstedt (2015) | SEMANTICA reports an **HTMT-like semantic proxy**, not empirical HTMT from participant correlations. Published HTMT thresholds are therefore not automatically transferable. |
+| Dynamic fit-index calibration | Uses model-specific fit calibration where the `dynamic` implementation is available and otherwise retains SEMANTICA simulation fallbacks | McNeish & Wolf (2023); Wolf & McNeish (2023); McNeish & Wolf (2024) | SEMANTICA's ESEM-parametric, semantic-approximate, semantic-ROC, and heuristic fallback layers are adaptations for a sample-free semantic-proxy context and are labeled accordingly. |
+| RMSEA-power reference N | Chooses a reference N for proxy fit testing through noncentral-chi-square RMSEA power calculations | MacCallum, Browne, & Sugawara (1996) | The resulting N is a **fit-calibration anchor**, not a recommended participant validation sample size. |
+| Adjusted Rand index | Compares intended and recovered item partitions in PFA diagnostics | Hubert & Arabie (1985); Warrens & van der Hoef (2022) | ARI is descriptive recovery evidence for the semantic proxy; it does not establish factorial validity in responses. |
+| Selection-conditioned interpretation | Keeps candidate-pool and selected-set semantic diagnostics distinct | Berk et al. (2013) motivates caution after data-driven selection | SEMANTICA does not claim formal selective-inference correction. Selected-set statistics are labeled descriptive/post-selection evidence. |
+| Local structural diagnostics | Prevents global fit/admissibility from being treated as sufficient evidence | Saris, Satorra, & van der Veld (2009) | SEMANTICA's reporting aggregation is package-specific; the cited work supports the broader principle of diagnosing localized misspecification. |
+| Correlation-matrix repair | Repairs a representation-derived matrix only when needed for downstream structural fitting | Higham (2002); `Matrix::nearPD()` implements a nearest-positive-definite approach | Repair magnitude is exposed as a diagnostic. A repaired matrix remains a semantic proxy and is not upgraded into empirical covariance evidence. |
+
+# What is literature-derived and what is not
+
+SEMANTICA deliberately distinguishes **methodological foundations** from
+**software decision policy**.
+
+For example, the use of ACO for scale/item subset search is literature-based,
+but there is no published result showing that one colony size, one patience
+value, or one pheromone schedule is uniformly optimal for every psychometric
+item pool. Consequently, `semantica_aco_config()` describes its presets as
+literature-informed defaults rather than universal optima.
+
+Likewise, stochastic superiority `A` has a published statistical definition, but
+SEMANTICA's `relative_conservative` semantic objective is not copied from Vargha
+and Delaney (2000). It combines that distributional descriptor with robust
+within-versus-between separation and conservative weakest-factor behavior for
+the package's specific search problem.
+
+The same principle applies to semantic PFA, proxy ESEM, and semantic DFI. The
+underlying factor-analysis, ESEM, fit-index, and power-analysis literature is
+real and directly relevant, but the use of **embedding-derived similarity as the
+input representation** is a SEMANTICA adaptation. The package therefore labels
+these outputs as proxy diagnostics throughout its result and reporting layers.
+
+# How to cite SEMANTICA in a paper
+
+A reproducible methods section should normally report both the software and the
+material methods. A minimal pattern is:
+
+> Analyses used SEMANTICA (version X.Y.Z) for semantic-assisted item screening
+> and fixed-cardinality ACO selection. The ACO item-selection framework was
+> informed by Leite et al. (2008), while sample-free ESEM diagnostics followed
+> the ESEM framework of Asparouhov and Muthén (2009). Embedding-derived PFA/ESEM
+> outputs were treated as pre-data proxy evidence and were subsequently checked
+> against participant-response evidence.
+
+Only cite components actually used or discussed. For example, a run that never
+uses an HTMT-like diagnostic does not need an HTMT citation merely because the
+package contains that capability.
+
+When reporting the exact software build, use the output of:
+
+```{r session-citation, eval=FALSE}
+packageVersion("SEMANTICA")
+citation("SEMANTICA")
+```
+
+For a GitHub-based analysis, recording the tagged release or commit in the
+analysis repository is also recommended.
+
+# Reporting boundaries that should remain explicit
+
+SEMANTICA's documentation intentionally uses the following distinctions:
+
+- **Semantic evidence** comes from item text and the chosen embedding
+  representation.
+- **Sample-free PFA/ESEM/DFI** are structural proxies computed from that same
+  representation family.
+- **Participant-response evidence** comes from observed responses and has a
+  different evidential status.
+- **Optimization utility** is a search objective, not a universal psychometric
+  quality score.
+- **Technically admissible ESEM** is not synonymous with a clean intended
+  structure.
+- **Reference N** used for semantic-proxy fit calibration is not a participant
+  sample-size recommendation.
+
+These are not stylistic caveats. They are necessary to avoid making stronger
+measurement claims than the calculations support.
+
+# References
+
+Asparouhov, T., & Muthén, B. (2009). Exploratory structural equation modeling.
+*Structural Equation Modeling: A Multidisciplinary Journal, 16*(3), 397-438.
+https://doi.org/10.1080/10705510903008204
+
+Berk, R., Brown, L., Buja, A., Zhang, K., & Zhao, L. (2013). Valid post-selection
+inference. *The Annals of Statistics, 41*(2), 802-837.
+https://doi.org/10.1214/12-AOS1077
+
+Clark, L. A., & Watson, D. (1995). Constructing validity: Basic issues in
+objective scale development. *Psychological Assessment, 7*(3), 309-319.
+https://doi.org/10.1037/1040-3590.7.3.309
+
+Clark, L. A., & Watson, D. (2019). Constructing validity: New developments in
+creating objective measuring instruments. *Psychological Assessment, 31*(12),
+1412-1427. https://doi.org/10.1037/pas0000626
+
+Dorigo, M., & Stützle, T. (2004). *Ant Colony Optimization*. MIT Press.
+
+Fabrigar, L. R., Wegener, D. T., MacCallum, R. C., & Strahan, E. J. (1999).
+Evaluating the use of exploratory factor analysis in psychological research.
+*Psychological Methods, 4*(3), 272-299.
+https://doi.org/10.1037/1082-989X.4.3.272
+
+Henseler, J., Ringle, C. M., & Sarstedt, M. (2015). A new criterion for
+assessing discriminant validity in variance-based structural equation modeling.
+*Journal of the Academy of Marketing Science, 43*, 115-135.
+https://doi.org/10.1007/s11747-014-0403-8
+
+Higham, N. J. (2002). Computing the nearest correlation matrix-a problem from
+finance. *IMA Journal of Numerical Analysis, 22*(3), 329-343.
+https://doi.org/10.1093/imanum/22.3.329
+
+Hubert, L., & Arabie, P. (1985). Comparing partitions. *Journal of
+Classification, 2*, 193-218. https://doi.org/10.1007/BF01908075
+
+Jung, S.-J., & Seo, J.-W. (2025). A transformer-based embedding approach to
+developing short-form psychological measures. *Frontiers in Psychology, 16*,
+1640864. https://doi.org/10.3389/fpsyg.2025.1640864
+
+Kilmen, S., & Bulut, O. (2025). Shortening psychological scales: Semantic
+similarity matters. *Educational and Psychological Measurement, 85*(5),
+910-934. https://doi.org/10.1177/00131644251319047
+
+Leite, W. L., Huang, I.-C., & Marcoulides, G. A. (2008). Item selection for the
+development of short forms of scales using an ant colony optimization algorithm.
+*Multivariate Behavioral Research, 43*(3), 411-431.
+https://doi.org/10.1080/00273170802285743
+
+MacCallum, R. C., Browne, M. W., & Sugawara, H. M. (1996). Power analysis and
+determination of sample size for covariance structure modeling. *Psychological
+Methods, 1*(2), 130-149. https://doi.org/10.1037/1082-989X.1.2.130
+
+McNeish, D., & Wolf, M. G. (2023). Dynamic fit index cutoffs for confirmatory
+factor analysis models. *Psychological Methods, 28*(1), 61-88.
+https://doi.org/10.1037/met0000425
+
+McNeish, D., & Wolf, M. G. (2024). Direct discrepancy dynamic fit index cutoffs
+for arbitrary covariance structure models. *Structural Equation Modeling: A
+Multidisciplinary Journal, 31*(5), 835-862.
+https://doi.org/10.1080/10705511.2024.2308005
+
+Raborn, A. W., & Leite, W. L. (2018). ShortForm: An R package to select scale
+short forms with the ant colony optimization algorithm. *Applied Psychological
+Measurement, 42*(6), 516-517. https://doi.org/10.1177/0146621617752993
+
+Rosseel, Y. (2012). lavaan: An R package for structural equation modeling.
+*Journal of Statistical Software, 48*(2), 1-36.
+https://doi.org/10.18637/jss.v048.i02
+
+Saris, W. E., Satorra, A., & van der Veld, W. M. (2009). Testing structural
+equation models or detection of misspecifications? *Structural Equation
+Modeling: A Multidisciplinary Journal, 16*(4), 561-582.
+https://doi.org/10.1080/10705510903203433
+
+Vargha, A., & Delaney, H. D. (2000). A critique and improvement of the CL common
+language effect size statistics of McGraw and Wong. *Journal of Educational and
+Behavioral Statistics, 25*(2), 101-132.
+https://doi.org/10.3102/10769986025002101
+
+Warrens, M. J., & van der Hoef, H. (2022). Understanding the adjusted Rand index
+and other partition comparison indices based on counting object pairs. *Journal
+of Classification, 39*, 487-509. https://doi.org/10.1007/s00357-022-09413-z
+
+Wolf, M. G., & McNeish, D. (2023). `dynamic`: An R package for deriving dynamic
+fit index cutoffs for factor analysis. *Multivariate Behavioral Research, 58*(1),
+189-194. https://doi.org/10.1080/00273171.2022.2163476
+
+Wulff, D. U., & Mata, R. (2025). Semantic embeddings reveal and address
+taxonomic incommensurability in psychological measurement. *Nature Human
+Behaviour, 9*, 944-954. https://doi.org/10.1038/s41562-024-02089-y

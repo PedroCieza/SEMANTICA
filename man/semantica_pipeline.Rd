@@ -14,6 +14,18 @@ semantica_pipeline(
   chat_model = NULL,
   embed_model = NULL,
   embed_batch_size = 64L,
+  hf_token = NULL,
+  embed_hf_token = NULL,
+  embedding_device = "auto",
+  chat_device = "auto",
+  device_map = NULL,
+  gpu_layers = "auto",
+  model_precision = "auto",
+  timeout_s = 120L,
+  embed_timeout_s = NULL,
+  retry_max_tries = 4L,
+  retry_on_failure = TRUE,
+  preflight = TRUE,
   gguf_path = NULL,
   scale_name,
   scale_description,
@@ -23,10 +35,27 @@ semantica_pipeline(
   cosine_adjustment = c("none", "mean_center"),
   semantic_calibration = NULL,
   compute_cosine_sensitivity = TRUE,
+  cosine_sensitivity_max_items = 1500L,
+  cosine_sensitivity_seed = 1L,
+  compute_device = "cpu",
+  gpu_fallback = NULL,
+  gpu_precision = "double",
+  compute_memory_limit = NULL,
   release_local_models = FALSE,
   retain_embeddings = TRUE,
+  embedding_cache = TRUE,
+  embedding_cache_dir = NULL,
+  embedding_cache_namespace = NULL,
+  embedding_spec = NULL,
   verbose = TRUE,
-  ...
+  embedding_task = "auto",
+  embedding_instruction = NULL,
+  content_alignment = TRUE,
+  content_exclusions = NULL,
+  ...,
+  backend_spec = NULL,
+  embed_backend_spec = NULL,
+  generation_seed = NULL
 )
 }
 \arguments{
@@ -48,6 +77,20 @@ semantica_pipeline(
 
 \item{embed_batch_size}{Items per embedding backend request. Smaller values
 reduce per-request memory pressure for local embedding models.}
+
+\item{hf_token, embed_hf_token}{Hugging Face tokens for local generation and
+an optional separate embedding session. Tokens are used only by live
+sessions and are removed from returned results.}
+
+\item{embedding_device, chat_device, device_map, gpu_layers, model_precision}{Local-model device controls passed to \code{\link[=semantica_connect]{semantica_connect()}}.}
+
+\item{timeout_s, embed_timeout_s}{HTTP timeout in seconds for generation and
+optional separate embedding sessions. \code{embed_timeout_s = NULL} reuses
+\code{timeout_s}.}
+
+\item{retry_max_tries, retry_on_failure}{HTTP resilience controls for retryable provider failures.}
+
+\item{preflight}{Logical; run provider/model preflight checks.}
 
 \item{gguf_path}{Path to \code{.gguf} file.}
 
@@ -73,6 +116,23 @@ centroid before cosine as an anisotropy sensitivity check.}
 \item{compute_cosine_sensitivity}{Logical; compute the optional
 none-versus-mean-centered cosine sensitivity diagnostic.}
 
+\item{cosine_sensitivity_max_items}{Maximum number of items used for the optional sensitivity diagnostic; the optimization matrix still uses all items.}
+
+\item{cosine_sensitivity_seed}{Seed used when the sensitivity diagnostic samples a very large pool.}
+
+\item{compute_device}{Cosine compute backend passed to \code{\link[=semantica_wrap]{semantica_wrap()}}:
+\code{"cpu"}, conservative \code{"auto"}, \code{"cuda"}, \code{"cuda:N"}, or \code{"mps"}.}
+
+\item{gpu_fallback}{Optional explicit accelerator fallback policy. \code{NULL}
+errors for an unavailable requested GPU and permits CPU for \code{"auto"};
+use \code{"cpu"} to permit an explicit GPU request to fall back.}
+
+\item{gpu_precision}{Cosine precision policy: \code{"double"} or explicitly
+requested \code{"single"}; the MPS path requires single precision.}
+
+\item{compute_memory_limit}{Optional conservative cosine working-memory
+ceiling in bytes.}
+
 \item{release_local_models}{Logical; after embedding and wrapping, remove
 cached \code{python_llamacpp} model instances and request garbage collection.
 This reduces retained RAM for one-shot local runs at the cost of reloading
@@ -82,16 +142,61 @@ models in a subsequent call.}
 returned \code{embed_result}. Set to \code{FALSE} after the cosine matrix has been
 built when later facet/unit embedding diagnostics are not needed.}
 
+\item{embedding_cache, embedding_cache_dir, embedding_cache_namespace}{Persistent embedding-cache controls.}
+
+\item{embedding_spec}{Optional embedding capability contract created by
+\code{\link[=semantica_embedding_spec]{semantica_embedding_spec()}}. It controls provider/task text preparation
+only; it does not change psychometric thresholds or objective weights.}
+
 \item{verbose}{Print progress.}
 
+\item{embedding_task}{Embedding-task policy. \code{"auto"} applies documented model-specific task instructions only when the configured embedding model requires them.}
+
+\item{embedding_instruction}{Optional explicit embedding prefix/instruction overriding the automatic model policy.}
+
+\item{content_alignment}{Logical; compute item-to-factor/facet definition
+alignment when usable definitions and embeddings are available.}
+
+\item{content_exclusions}{Optional named list of factor-specific concepts
+that should not define each construct. The high-level full pipeline derives
+this automatically from a construct blueprint or factor \code{forbidden} fields.}
+
 \item{...}{Further args to \code{semantica_generate_items()}.}
+
+\item{backend_spec, embed_backend_spec}{Optional explicit custom backend
+contracts created by \code{\link[=semantica_backend_spec]{semantica_backend_spec()}} for generation and
+embeddings respectively.}
+
+\item{generation_seed}{Optional nonnegative generation master seed forwarded
+to \code{\link[=semantica_generate_items]{semantica_generate_items()}}. In the high-level pipeline this inherits
+the run master seed. Seed control is backend-specific and is recorded in
+generation provenance. A controlled seed fixes SEMANTICA's seed schedule;
+exact LLM text replay is not guaranteed, so exact downstream replay uses
+the saved item pool and its fingerprint.}
 }
 \value{
-Named list ready for \code{ACO_with_ESEM()}.
+A \code{semantica_pipeline_result} ready for \code{ACO_with_ESEM()}, including
+the cosine matrix and item metadata, sanitized session metadata,
+embedding/cosine diagnostics, and stage \verb{$performance} telemetry.
 }
 \description{
 Run all four pipeline steps in sequence
 }
+\section{Side effects}{
+
+May read credentials/environment settings, perform provider network I/O or
+local Python inference, and read/write the persistent embedding cache. The
+optional cosine-sensitivity subsample uses its documented seed in a
+caller-RNG-preserving scope.
+}
+
+\section{Reproducibility}{
+
+Returned session/model/device diagnostics describe the resolved execution
+environment available to SEMANTICA. Remote model aliases may remain mutable;
+cached embeddings preserve the vectors associated with their recorded key.
+}
+
 \examples{
 \dontrun{
 factors <- list(

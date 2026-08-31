@@ -2,7 +2,7 @@
 % Please edit documentation in R/item_generation.R
 \name{semantica_reload}
 \alias{semantica_reload}
-\title{Reload previously exported pipeline results}
+\title{Reload an optimizer-interchange export}
 \usage{
 semantica_reload(prefix = "SEMANTICA", i.per.f = NULL, default_i_per_f = 3L)
 }
@@ -20,9 +20,21 @@ Named list containing \code{cosine_sim_matrix}, \code{df},
 \code{items_tbl}, and \code{i.per.f}.
 }
 \description{
-Reads CSV files created by \code{\link{semantica_export}} back into an R
-list ready for the ACO optimizer.
+Reads the legacy/component optimizer-interchange CSV files created by
+\code{\link[=semantica_export]{semantica_export()}} with \code{format = "optimizer"} (or \code{format = "auto"} for a component result). Human-readable high-level report exports are not reconstructive; use \code{\link[=semantica_load_bundle]{semantica_load_bundle()}} to restore a complete analysis.
 }
+\section{Side effects}{
+
+Reads the three CSV files created by \code{\link[=semantica_export]{semantica_export()}} and performs
+cross-file structural integrity checks before returning optimizer inputs.
+}
+
+\section{Reproducibility}{
+
+Reload validates structure and consistency but does not make CSV files
+equivalent to a provenance-preserving SEMANTICA analysis bundle.
+}
+
 \examples{
 \dontrun{
 # Following semantica_export(wrapped, prefix = "example_scale"):

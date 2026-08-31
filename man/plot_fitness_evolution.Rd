@@ -7,7 +7,7 @@
 plot_fitness_evolution(result)
 }
 \arguments{
-\item{result}{Output from \code{ACO_with_ESEM()}.}
+\item{result}{A high-level SEMANTICA result or output from \code{ACO_with_ESEM()}.}
 }
 \value{
 A \code{ggplot} object.

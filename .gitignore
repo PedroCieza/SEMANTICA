@@ -1,11 +1,38 @@
 .Rhistory
 .RData
 .Ruserdata
+.Renviron
+.env
+.env.*
+!.env.example
 .Rproj.user/
 *.tar.gz
 *.Rcheck/
 docs/
 inst/doc/
 Meta/
-*.csv
 semantica_plots/
+credentials/
+.credentials/
+*.pem
+*.key
+# Local source/distribution archives
+SEMANTICA_*.zip
+
+# Generated SEMANTICA stress/benchmark outputs (keep ordinary CSV fixtures trackable)
+SEMANTICA_*_controlled_stress_test.rds
+SEMANTICA_*_stress_checks.csv
+SEMANTICA_*_stress_runs.csv
+SEMANTICA_*_stress_summary.csv
+SEMANTICA_cross_model_*.csv
+SEMANTICA_cross_model_*.rds
+SEMANTICA_stochastic_replication_*.csv
+SEMANTICA_stochastic_replication_*.rds
+semantica_gemini_embedding2_stress_cache.rds
+
+# Local SEMANTICA analysis/demo output directories
+SEMANTICA_*_demo/
+SEMANTICA_*_results/
+SEMANTICA_*_output/
+SEMANTICA_[0-9]*.[0-9]*.[0-9]*_*_test/
+SEMANTICA_frozen_*_test/

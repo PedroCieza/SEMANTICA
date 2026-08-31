@@ -107,10 +107,51 @@ test_that("semantica_embed fills its result incrementally in requested batches",
     items, session,
     batch_size = 2L,
     normalize = FALSE,
+    cache = FALSE,
     verbose = FALSE
   )
 
   expect_equal(batch_sizes, c(2L, 2L, 1L))
   expect_equal(unname(out$embeddings[, "text_length"]), nchar(items$item_text))
   expect_equal(rownames(out$embeddings), items$item_id)
+})
+
+test_that("embedding cache preserves component names and avoids recomputation", {
+  calls <- 0L
+  local_mocked_bindings(
+    .call_embed = function(session, texts) {
+      calls <<- calls + 1L
+      cbind(text_length = nchar(texts), marker = seq_along(texts))
+    },
+    .package = "SEMANTICA"
+  )
+  items <- data.frame(
+    item_id = c("cache_1", "cache_2"),
+    item_text = c("alpha", "beta")
+  )
+  session <- list(protocol = "python_hf", embed_url = NULL, embed_model = "cache-name-test")
+  cache_dir <- tempfile("semantica-cache-test-")
+  on.exit(unlink(cache_dir, recursive = TRUE, force = TRUE), add = TRUE)
+
+  first <- semantica_embed(
+    items, session,
+    batch_size = 2L,
+    normalize = FALSE,
+    cache = TRUE,
+    cache_dir = cache_dir,
+    verbose = FALSE
+  )
+  second <- semantica_embed(
+    items, session,
+    batch_size = 2L,
+    normalize = FALSE,
+    cache = TRUE,
+    cache_dir = cache_dir,
+    verbose = FALSE
+  )
+
+  expect_equal(calls, 1L)
+  expect_equal(colnames(first$embeddings), c("text_length", "marker"))
+  expect_equal(colnames(second$embeddings), c("text_length", "marker"))
+  expect_equal(unname(first$embeddings), unname(second$embeddings))
 })

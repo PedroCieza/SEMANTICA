@@ -7,7 +7,7 @@
 plot_item_selection_frequency(result = NULL, multi_result = NULL)
 }
 \arguments{
-\item{result}{Output from \code{ACO_with_ESEM()}.}
+\item{result}{A high-level SEMANTICA result or output from \code{ACO_with_ESEM()}.}
 
 \item{multi_result}{Output from \code{run_multi_seed_semantica()} (optional).}
 }

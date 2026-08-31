@@ -1,0 +1,17 @@
+# Compatibility ranges used by semantica_setup_conda().
+#
+# PyTorch is installed separately so CPU and explicitly selected CUDA wheel
+# indexes cannot accidentally be mixed. The R package `torch` is a distinct,
+# optional dependency and is not installed by this Python manifest.
+torch>=2.2,<3
+transformers>=4.40,<6
+sentence-transformers>=3,<6
+accelerate>=0.30,<2
+einops>=0.7,<1
+numpy>=1.26,<3
+scipy>=1.11,<2
+
+# Optional local GGUF profile. Ordinary pip wheels are generally CPU builds;
+# GPU build flags/toolchains are platform-specific and must be configured by
+# the user rather than inferred from n_gpu_layers.
+llama-cpp-python>=0.2.90,<1
