@@ -6,6 +6,8 @@
 
 SEMANTICA is an R package for **semantic-assisted psychometric scale development and pre-data item screening**. It combines LLM item generation, semantic embeddings, construct-coverage diagnostics, ant colony optimization (ACO), sample-free PFA/ESEM/DFI proxy diagnostics, optional participant-response validation, reproducibility bundles, and visualization tools.
 
+<img width="2276" height="1018" alt="semantica logo" src="https://github.com/user-attachments/assets/aa2033aa-aa45-4d5e-a64c-4a181dfe4c88" />
+
 **Current build: 0.2.** Start a scale-development workflow with `semantica_run()`. Use `semantica_full_pipeline()` when you need additional configuration or participant-response validation.
 
 > **Evidence boundary.** Sample-free semantic, PFA, ESEM, HTMT-like, and DFI outputs are pre-data proxy diagnostics derived from item representations. They do not establish reliability, construct validity, measurement invariance, DIF, criterion validity, or the factor structure that will occur in participant responses. When participant data are supplied, participant-based results are reported separately and should take precedence for response-data claims.
