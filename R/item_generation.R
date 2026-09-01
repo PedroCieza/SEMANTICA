@@ -1061,6 +1061,59 @@ print.semantica_session <- function(x, ...) {
 }
 
 #' @keywords internal
+.semantica_parse_wait_s <- function(x) {
+  if (is.null(x) || length(x) == 0L || is.na(x[[1L]])) return(NA_real_)
+  x <- trimws(as.character(x[[1L]]))
+  if (!nzchar(x)) return(NA_real_)
+
+  numeric_wait <- suppressWarnings(as.numeric(x))
+  if (is.finite(numeric_wait)) return(max(0, numeric_wait))
+
+  date_wait <- suppressWarnings(as.POSIXct(x, format = "%a, %d %b %Y %H:%M:%S", tz = "GMT"))
+  if (!is.na(date_wait)) {
+    return(max(0, as.numeric(difftime(date_wait, Sys.time(), units = "secs"))))
+  }
+  date_wait <- suppressWarnings(as.POSIXct(x, format = "%a, %d %b %Y %H:%M:%S %Z", tz = "GMT"))
+  if (!is.na(date_wait)) {
+    return(max(0, as.numeric(difftime(date_wait, Sys.time(), units = "secs"))))
+  }
+
+  matches <- gregexpr("[0-9]+(?:\\.[0-9]+)?\\s*(ms|s|m|h)", tolower(x), perl = TRUE)
+  parts <- regmatches(tolower(x), matches)[[1L]]
+  if (length(parts) == 0L || identical(parts, character(0L))) return(NA_real_)
+
+  total <- 0
+  for (part in parts) {
+    value <- suppressWarnings(as.numeric(sub("^([0-9]+(?:\\.[0-9]+)?).*", "\\1", part, perl = TRUE)))
+    unit <- sub("^[0-9]+(?:\\.[0-9]+)?\\s*", "", part, perl = TRUE)
+    if (!is.finite(value)) next
+    total <- total + switch(unit, ms = value / 1000, s = value, m = value * 60, h = value * 3600, 0)
+  }
+  if (is.finite(total) && total >= 0) total else NA_real_
+}
+
+#' @keywords internal
+.semantica_default_request_spacing_s <- function(session, rate_limit_margin = 0.85) {
+  margin <- suppressWarnings(as.numeric(rate_limit_margin[[1L]]))
+  if (!is.finite(margin) || margin <= 0 || margin > 1) margin <- 0.85
+  backend <- tolower(session$backend %||% "")
+  model <- tolower(session$chat_model %||% "")
+  chat_url <- tolower(session$chat_url %||% "")
+
+  if (backend %in% c("ollama", "llamacpp", "python_hf", "python_llamacpp") ||
+      grepl("localhost|127\\.0\\.0\\.1", chat_url)) {
+    return(0)
+  }
+
+  if (identical(backend, "groq") || grepl("groq\\.com", chat_url)) {
+    rpm <- if (grepl("qwen/qwen3-32b", model)) 60 else 30
+    return((60 / rpm) / margin)
+  }
+
+  0
+}
+
+#' @keywords internal
 .ping_backend <- function(session) {
   proto <- session$protocol
   if (proto == "python_hf") { reticulate::import("transformers"); return(TRUE) }

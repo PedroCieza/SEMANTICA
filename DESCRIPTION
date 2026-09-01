@@ -22,6 +22,10 @@ Authors@R:
             role = c("aut", "ctb")
         )
     )
+Author: Pedro Cieza-Liza [aut, cre, cph],
+    Reyniel Salas-Silva [aut],
+    Jose Gamarra-Moncayo [aut, ctb]
+Maintainer: Pedro Cieza-Liza <pedrocieza24@gmail.com>
 Description: Provides a workflow for pre-data semantic screening and
     psychometric scale development that combines large language model item
     generation, semantic embeddings, ant colony optimization, sample-free

@@ -509,9 +509,20 @@ semantica_polarity_diagnostics <- function(items, text_col = "item_text",
   } else as.character(items)
   language_raw <- tolower(trimws(as.character(language[[1L]])))
   language_aliases <- c(
-    english = "en", spanish = "es", espanol = "es", "espa\u00f1ol" = "es",
-    portuguese = "pt", portugues = "pt", "portugu\u00eas" = "pt",
-    french = "fr", francais = "fr", "fran\u00e7ais" = "fr"
+    english = "en", spanish = "es", espanol = "es",
+    portuguese = "pt", portugues = "pt",
+    french = "fr", francais = "fr"
+  )
+  language_aliases <- c(
+    language_aliases,
+    stats::setNames(
+      c("es", "pt", "fr"),
+      c(
+        paste0("espa", intToUtf8(0x00f1), "ol"),
+        paste0("portugu", intToUtf8(0x00ea), "s"),
+        paste0("fran", intToUtf8(0x00e7), "ais")
+      )
+    )
   )
   if (language_raw %in% names(language_aliases)) {
     language <- unname(language_aliases[[language_raw]])
@@ -524,8 +535,8 @@ semantica_polarity_diagnostics <- function(items, text_col = "item_text",
   }
   lexicons <- list(
     en = c("no", "not", "never", "none", "neither", "nor", "without", "hardly", "rarely", "cannot", "can't", "don't", "doesn't", "didn't", "won't", "wouldn't", "isn't", "aren't", "wasn't", "weren't", "shouldn't", "couldn't", "mustn't"),
-    es = c("no", "nunca", "jam\u00e1s", "jamas", "nadie", "ning\u00fan", "ningun", "ninguna", "sin", "tampoco"),
-    pt = c("n\u00e3o", "nao", "nunca", "jamais", "ningu\u00e9m", "ninguem", "nenhum", "nenhuma", "sem", "tampouco"),
+    es = c("no", "nunca", paste0("jam", intToUtf8(0x00e1), "s"), "jamas", "nadie", paste0("ning", intToUtf8(0x00fa), "n"), "ningun", "ninguna", "sin", "tampoco"),
+    pt = c(paste0("n", intToUtf8(0x00e3), "o"), "nao", "nunca", "jamais", paste0("ningu", intToUtf8(0x00e9), "m"), "ninguem", "nenhum", "nenhuma", "sem", "tampouco"),
     fr = c("ne", "pas", "jamais", "aucun", "aucune", "personne", "sans", "ni")
   )
   terms <- if (language == "auto") unique(unlist(lexicons, use.names = FALSE)) else lexicons[[language]]

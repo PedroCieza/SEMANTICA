@@ -56,6 +56,223 @@ if (!exists("%||%", mode = "function")) {
   utils::modifyList(default, x, keep.null = TRUE)
 }
 
+.semantica_option_list <- function(options, arg_name, allowed = NULL,
+                                   aliases = NULL, allow_unknown = FALSE) {
+  if (is.null(options)) return(list())
+  if (!is.list(options)) {
+    stop(sprintf("`%s` must be a named list.", arg_name), call. = FALSE)
+  }
+  if (length(options) == 0L) return(list())
+
+  option_names <- names(options)
+  if (is.null(option_names) || any(!nzchar(option_names))) {
+    stop(sprintf("All entries in `%s` must be named.", arg_name), call. = FALSE)
+  }
+
+  if (!is.null(aliases)) {
+    for (alias in names(aliases)) {
+      if (alias %in% names(options)) {
+        target <- aliases[[alias]]
+        if (!(target %in% names(options))) {
+          options[target] <- options[alias]
+        }
+        options[alias] <- NULL
+      }
+    }
+  }
+
+  if (!allow_unknown) {
+    unknown <- setdiff(names(options), allowed)
+    if (length(unknown) > 0L) {
+      stop(
+        sprintf(
+          "Unknown option(s) in `%s`: %s.",
+          arg_name,
+          paste(unknown, collapse = ", ")
+        ),
+        call. = FALSE
+      )
+    }
+  }
+
+  options
+}
+
+.semantica_merge_options <- function(...) {
+  merged <- list()
+  for (options in list(...)) {
+    if (length(options) == 0L) next
+    for (name in names(options)) {
+      merged[name] <- options[name]
+    }
+  }
+  merged
+}
+
+.semantica_full_pipeline_resolve_args <- function(
+    scale_name, scale_description, factors, backend,
+    candidate_items_per_factor, candidate_items_per_factor_supplied,
+    items_per_factor, generation_options, optimization_options, dfi_options,
+    pfa_options, validation_options, plot_options, verbose, legacy_args) {
+  generation_options <- .semantica_option_list(
+    generation_options,
+    "generation_options",
+    aliases = c(candidate_items_per_factor = "n_per_factor"),
+    allow_unknown = TRUE
+  )
+
+  optimization_options <- .semantica_option_list(
+    optimization_options,
+    "optimization_options",
+    allowed = c(
+      "i.per.f", "ants", "max.iter", "search_patience", "evaporation",
+      "esem_every", "run_esem_during_search", "max_total_iter",
+      "max_esem_fits", "esem_weight", "esem_failure_policy",
+      "esem_sample_size", "elite_k", "esem_eval_top_k", "fast_esem",
+      "fast_esem_iter_max", "full_esem_iter_max", "rotation",
+      "rotation_args", "data_type", "target_loadings", "target_factor_cors",
+      "loading_pattern", "redundancy_threshold", "dup_threshold",
+      "htmt_threshold", "htmt_objective_role", "cohesion_quantile",
+      "cohesion_retention", "within_similarity_target",
+      "within_similarity_band", "semantic_objective_mode",
+      "semantic_threshold_mode", "adaptive_redundancy_quantile",
+      "adaptive_duplicate_quantile", "construct_blueprint",
+      "nomological_weight", "content_alignment_mode", "polarity_action",
+      "within_target_method", "facet_coverage_weight",
+      "psychometric_guard_weight", "psychometric_guard_min_ave",
+      "psychometric_guard_min_loading",
+      "psychometric_guard_min_primary_ge_50", "sigmoid_center",
+      "sigmoid_steepness", "heuristic_beta", "elite_pareto_rerank",
+      "elite_multicriteria_rerank", "archive_stable_window",
+      "structural_archive_stable_window", "min_successful_pfa_checkpoints",
+      "min_successful_esem_checkpoints", "pheromone_update",
+      "fixed_evaporation", "debug_mode", "keep_solution_history",
+      "history_mode", "use_parallel", "n.cores", "reserve.cores",
+      "max.cores", "cfa_every", "cfa_weight", "cfa_sample_size"
+    )
+  )
+
+  dfi_options <- .semantica_option_list(
+    dfi_options,
+    "dfi_options",
+    allowed = c(
+      "dfi_reps", "dfi_level", "dfi_criterion", "dfi_mode",
+      "dfi_esem_reps", "dfi_search_reps", "final_dfi_recalibrate",
+      "final_dfi_reps", "dfi_roc_misspec_strength", "dfi_esem_strategy",
+      "dfi_adaptive_min_reps", "dfi_adaptive_batch_reps",
+      "dfi_adaptive_tol", "dfi_adaptive_stable_batches",
+      "dfi_fallback_policy", "final_dddfi", "final_dddfi_reps",
+      "final_dddfi_mad_target", "final_equivtest", "embed_reliability",
+      "residual_inflation", "dfi_warmup_iters", "reference_rmsea_close",
+      "reference_rmsea_poor", "reference_power", "reference_alpha",
+      "reference_max_n", "semantic_n_sensitivity", "semantic_n_grid",
+      "semantic_n_multipliers", "semantic_n_iter_max",
+      "semantic_esem_score_mode"
+    )
+  )
+
+  pfa_options <- .semantica_option_list(
+    pfa_options,
+    "pfa_options",
+    allowed = c(
+      "pfa_mode", "pfa_weight", "pfa_failure_policy",
+      "run_pfa_during_search", "pfa_every", "pfa_extraction",
+      "pfa_final_extraction", "pfa_rotation", "pfa_min_loading",
+      "pfa_min_margin", "pfa_unit_diagnostics"
+    )
+  )
+
+  validation_options <- .semantica_option_list(
+    validation_options,
+    "validation_options",
+    allowed = c(
+      "validation_n_diagnostic", "validation_n_reps", "validation_n_grid",
+      "validation_n_max", "validation_n_convergence",
+      "validation_n_max_heywood", "validation_n_min_recovery",
+      "validation_n_max_loading_error", "validation_n_min_dominance",
+      "validation_n_max_cross_error", "validation_n_max_factor_cor_error",
+      "validation_n_on_inadmissible", "validation_data", "validation_ordered"
+    )
+  )
+
+  plot_options <- .semantica_option_list(
+    plot_options,
+    "plot_options",
+    allowed = c(
+      "generate_plots", "interactive_mode", "save_plots", "plot_out_dir",
+      "plot_device", "plot_width", "plot_height", "plot_dpi",
+      "plot_before_path_model", "plot_before_path_refit_max_items",
+      "plot_network_max_items", "plot_mds_max_items",
+      "plot_path_proxy_max_items", "include_interactive_plot",
+      "plot_progress"
+    ),
+    aliases = c(
+      generate = "generate_plots",
+      save = "save_plots",
+      out_dir = "plot_out_dir",
+      device = "plot_device",
+      width = "plot_width",
+      height = "plot_height",
+      dpi = "plot_dpi",
+      before_path_model = "plot_before_path_model",
+      before_path_refit_max_items = "plot_before_path_refit_max_items",
+      network_max_items = "plot_network_max_items",
+      mds_max_items = "plot_mds_max_items",
+      path_proxy_max_items = "plot_path_proxy_max_items",
+      include_interactive = "include_interactive_plot",
+      progress = "plot_progress"
+    )
+  )
+
+  legacy_args <- .semantica_option_list(
+    legacy_args,
+    "...",
+    aliases = c(candidate_items_per_factor = "n_per_factor",
+                items_per_factor = "i.per.f"),
+    allow_unknown = TRUE
+  )
+
+  if (candidate_items_per_factor_supplied &&
+      "n_per_factor" %in% names(legacy_args)) {
+    stop(
+      "Use either `candidate_items_per_factor` or legacy `n_per_factor`, not both.",
+      call. = FALSE
+    )
+  }
+  if (!is.null(items_per_factor) && "i.per.f" %in% names(legacy_args)) {
+    stop(
+      "Use either `items_per_factor` or legacy `i.per.f`, not both.",
+      call. = FALSE
+    )
+  }
+
+  n_override <- candidate_items_per_factor_supplied ||
+    "n_per_factor" %in% names(generation_options) ||
+    "n_per_factor" %in% names(legacy_args)
+
+  core_args <- list(
+    backend = backend,
+    scale_name = scale_name,
+    scale_description = scale_description,
+    factors = factors,
+    n_per_factor = candidate_items_per_factor,
+    n_per_factor_override = n_override,
+    i.per.f = items_per_factor,
+    verbose = verbose
+  )
+
+  .semantica_merge_options(
+    core_args,
+    generation_options,
+    optimization_options,
+    dfi_options,
+    pfa_options,
+    validation_options,
+    plot_options,
+    legacy_args
+  )
+}
+
 #' Configure LLM providers for the configurable pipeline
 #'
 #' Groups provider, credential, server, and local-model deployment settings.
