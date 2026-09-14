@@ -6,8 +6,8 @@
 \usage{
 semantica_connect(
   backend = c(
-    "openai", "anthropic", "groq", "ollama", "llamacpp", "generic_openai",
-    "python_hf", "python_llamacpp"
+    "openai", "anthropic", "groq", "ollama", "unsloth", "llamacpp",
+    "generic_openai", "python_hf", "python_llamacpp"
   ),
   api_key = NULL,
   chat_model = NULL,

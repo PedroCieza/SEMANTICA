@@ -590,6 +590,10 @@ SEMANTICA_BACKENDS <- list(
                 embed_url = "http://localhost:11434/api/embed", default_chat_model = "llama3.2", default_embed_model = "nomic-embed-text",
                 embed_dim = NA_integer_, auth_header = NULL, auth_env = NULL, extra_headers = NULL,
                 has_embed = TRUE, supports_structured_output = TRUE),
+  unsloth = list(label = "Unsloth API (local)", protocol = "openai_compat", chat_url = "http://localhost:8888/v1/chat/completions",
+                 embed_url = NULL, default_chat_model = "local-model", default_embed_model = NULL,
+                 embed_dim = NA_integer_, auth_header = "Bearer", auth_env = "UNSLOTH_API_KEY", extra_headers = NULL,
+                 has_embed = FALSE, supports_structured_output = FALSE),
   llamacpp = list(label = "llama.cpp server", protocol = "openai_compat", chat_url = "http://localhost:8080/v1/chat/completions",
                   embed_url = "http://localhost:8080/v1/embeddings", default_chat_model = "local-model", default_embed_model = "local-model",
                   embed_dim = NA, auth_header = NULL, auth_env = NULL, extra_headers = NULL, has_embed = TRUE, supports_structured_output = FALSE),
@@ -767,8 +771,8 @@ semantica_backend_spec <- function(
 #'
 #' @usage semantica_connect(
 #'   backend = c(
-#'     "openai", "anthropic", "groq", "ollama", "llamacpp", "generic_openai",
-#'     "python_hf", "python_llamacpp"
+#'     "openai", "anthropic", "groq", "ollama", "unsloth", "llamacpp",
+#'     "generic_openai", "python_hf", "python_llamacpp"
 #'   ),
 #'   api_key = NULL,
 #'   chat_model = NULL,
@@ -816,7 +820,7 @@ semantica_backend_spec <- function(
 #'   verbose = FALSE
 #' )
 #' }
-semantica_connect <- function(backend = c("openai", "anthropic", "groq", "ollama", "llamacpp", "generic_openai", "python_hf", "python_llamacpp"),
+semantica_connect <- function(backend = c("openai", "anthropic", "groq", "ollama", "unsloth", "llamacpp", "generic_openai", "python_hf", "python_llamacpp"),
                               api_key = NULL, chat_model = NULL, embed_model = NULL, base_url = NULL, gguf_path = NULL,
                               hf_token = NULL,
                               embedding_device = "auto", chat_device = "auto",
@@ -1100,7 +1104,7 @@ print.semantica_session <- function(x, ...) {
   model <- tolower(session$chat_model %||% "")
   chat_url <- tolower(session$chat_url %||% "")
 
-  if (backend %in% c("ollama", "llamacpp", "python_hf", "python_llamacpp") ||
+  if (backend %in% c("ollama", "unsloth", "llamacpp", "python_hf", "python_llamacpp") ||
       grepl("localhost|127\\.0\\.0\\.1", chat_url)) {
     return(0)
   }
@@ -4024,7 +4028,7 @@ semantica_list_backends <- function() {
   print(rows, row.names = FALSE, right = FALSE)
   cat("\nNotes:\n")
   cat("  - 'auth' is the environment variable SEMANTICA checks when credentials are required.\n")
-  cat("  - Anthropic and Groq are generation-only in the built-in registry; pair them with an embedding backend.\n")
+  cat("  - Anthropic, Groq, and Unsloth are generation-only in the built-in registry; pair them with an embedding backend.\n")
   cat("  - Local/server backends require the corresponding local service or Python environment to be available.\n")
   cat("  - Run semantica_check_setup(...) before an expensive run; set probe = TRUE to verify reachable model registries.\n")
   cat("  - For custom OpenAI-compatible servers use backend = 'generic_openai' plus base_url.\n\n")

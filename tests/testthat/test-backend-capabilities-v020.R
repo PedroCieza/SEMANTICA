@@ -3,4 +3,8 @@ test_that("backend registry reflects current embedding capability contracts", {
   expect_null(SEMANTICA_BACKENDS$groq$embed_url)
   expect_true(grepl("/api/embed$", SEMANTICA_BACKENDS$ollama$embed_url))
   expect_true(isTRUE(SEMANTICA_BACKENDS$ollama$has_embed))
+  expect_identical(SEMANTICA_BACKENDS$unsloth$protocol, "openai_compat")
+  expect_identical(SEMANTICA_BACKENDS$unsloth$auth_env, "UNSLOTH_API_KEY")
+  expect_false(isTRUE(SEMANTICA_BACKENDS$unsloth$has_embed))
+  expect_null(SEMANTICA_BACKENDS$unsloth$embed_url)
 })

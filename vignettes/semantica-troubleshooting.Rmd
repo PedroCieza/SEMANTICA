@@ -23,13 +23,14 @@ semantica_run_plan(...)
 
 # Missing API key
 
-Store cloud credentials in `.Renviron` and restart R. Common variables are
-`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, and `HF_TOKEN`.
+Store provider credentials in `.Renviron` and restart R. Common variables are
+`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GROQ_API_KEY`, `UNSLOTH_API_KEY`, and
+`HF_TOKEN`.
 
 Do not place credentials in saved SEMANTICA configuration files or public
 scripts when an environment variable is sufficient.
 
-# Anthropic or Groq says embeddings are unavailable
+# Anthropic, Groq, or Unsloth says embeddings are unavailable
 
 This is expected for the built-in registry. Configure a separate embedding
 backend:
@@ -41,7 +42,17 @@ llm_cfg <- semantica_llm_config(
 )
 ```
 
-# Ollama/local server is unreachable
+For Unsloth generation, pair it with an embedding backend such as Ollama:
+
+```{r eval=FALSE}
+llm_cfg <- semantica_llm_config(
+  backend = "unsloth",
+  embed_backend = "ollama",
+  api_key = Sys.getenv("UNSLOTH_API_KEY")
+)
+```
+
+# Ollama/Unsloth/local server is unreachable
 
 Verify that the server process is running and that the model is installed.
 Then use:

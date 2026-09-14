@@ -83,6 +83,6 @@ VignetteBuilder: knitr
 Config/testthat/edition: 3
 SystemRequirements: Optional Conda/Python (>= 3.11) for local Hugging Face and
     llama-cpp-python backends; optional R torch runtime for accelerated cosine
-    matrices; optional local LLM servers for Ollama, llama.cpp, or
+    matrices; optional local LLM servers for Ollama, Unsloth, llama.cpp, or
     OpenAI-compatible endpoints.
 Config/roxygen2/version: 8.1.0

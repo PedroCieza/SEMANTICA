@@ -38,7 +38,7 @@ semantica_llm_config(
 }
 \arguments{
 \item{backend}{Generation backend. Accepted registered values are \code{"openai"},
-\code{"anthropic"}, \code{"groq"}, \code{"ollama"}, \code{"llamacpp"},
+\code{"anthropic"}, \code{"groq"}, \code{"ollama"}, \code{"unsloth"}, \code{"llamacpp"},
 \code{"generic_openai"}, \code{"python_hf"}, and \code{"python_llamacpp"}.}
 
 \item{embed_backend}{Embedding backend using the same registered names as

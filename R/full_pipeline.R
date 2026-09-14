@@ -280,7 +280,7 @@ if (!exists("%||%", mode = "function")) {
 #' can choose generation and embedding models directly.
 #'
 #' @param backend Generation backend. Accepted registered values are `"openai"`,
-#'   `"anthropic"`, `"groq"`, `"ollama"`, `"llamacpp"`,
+#'   `"anthropic"`, `"groq"`, `"ollama"`, `"unsloth"`, `"llamacpp"`,
 #'   `"generic_openai"`, `"python_hf"`, and `"python_llamacpp"`.
 #' @param embed_backend Embedding backend using the same registered names as
 #'   `backend`. `NULL` reuses `backend`; use a separate value when the chat

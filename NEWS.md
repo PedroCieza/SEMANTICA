@@ -1,5 +1,24 @@
 # SEMANTICA 0.2
 
+## Development documentation and Unsloth local-provider notes
+
+- Documents `unsloth` as a built-in local OpenAI-compatible generation backend
+  using `UNSLOTH_API_KEY`, with `http://localhost:8888/v1/chat/completions` as
+  the packaged default endpoint.
+- Keeps Unsloth generation-only in the built-in registry because the reviewed
+  Unsloth API documentation exposes chat/model endpoints but not a stable
+  embedding endpoint for SEMANTICA to advertise safely. Full workflows should
+  pair Unsloth with an embedding backend such as Ollama, OpenAI,
+  `generic_openai`, `python_hf`, or `python_llamacpp`.
+- Records the non-destructive follow-up plan from the package review: repair
+  the source-mode installed-help test, align version/release narrative, fix the
+  README pkgdown badge or workflow target, improve optional `torch` runtime
+  diagnostics, and avoid refactoring the large optimizer core without
+  characterization tests.
+- No ACO/PFA/ESEM equations, item-selection objective, embedding mathematics,
+  RNG policy, resource policy, serialization contract, or participant-response
+  validation calculation is changed by these documentation notes.
+
 ## GitHub release preparation and citation
 
 - Synchronizes GitHub-facing version and installation guidance with 0.2.

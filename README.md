@@ -225,6 +225,7 @@ Run `semantica_list_backends()` for the live registry packaged with your install
 | Anthropic | cloud | `ANTHROPIC_API_KEY` | yes | **no built-in embedding endpoint** |
 | Groq | cloud | `GROQ_API_KEY` | yes | **no built-in embedding endpoint** |
 | Ollama | local server | none | yes | yes |
+| Unsloth | local server | `UNSLOTH_API_KEY` | yes | **no documented built-in embedding endpoint** |
 | llama.cpp server | local server | usually none | yes | yes if server exposes endpoint |
 | Generic OpenAI-compatible | local/custom server | service dependent | yes | yes if endpoint exists |
 | Python Hugging Face | local Python/Conda | `HF_TOKEN` when model requires it | yes | yes |
@@ -242,6 +243,25 @@ semantica_check_setup(
   llm = llm_cfg,
   chat_model = "your-claude-model",
   embed_model = "text-embedding-3-small",
+  probe = TRUE
+)
+```
+
+For Unsloth, load a model in Unsloth first, create an API key, and pass the
+model ID reported by `GET /v1/models`. Use `base_url` if Unsloth prints a port
+other than `http://localhost:8888`.
+
+```r
+llm_cfg <- semantica_llm_config(
+  backend = "unsloth",
+  embed_backend = "ollama",
+  api_key = Sys.getenv("UNSLOTH_API_KEY")
+)
+
+semantica_check_setup(
+  llm = llm_cfg,
+  chat_model = "model-id-from-v1-models",
+  embed_model = "nomic-embed-text",
   probe = TRUE
 )
 ```
@@ -454,7 +474,7 @@ Common causes are:
 
 - missing API credentials;
 - a generation-only provider used without an embedding backend;
-- an unreachable Ollama/llama.cpp/local server;
+- an unreachable Ollama/Unsloth/llama.cpp/local server;
 - a requested model not installed or not exposed by the provider registry;
 - an existing item table without stable unique IDs/factor labels;
 - external embeddings whose row IDs do not exactly match item IDs;
@@ -538,4 +558,3 @@ citation("SEMANTICA")
 The GitHub repository also includes `CITATION.cff`, which enables GitHub's
 **Cite this repository** interface. Cite the specific software version used in
 your analysis.
-

@@ -49,8 +49,10 @@ semantica_check_setup(llm = "ollama", probe = TRUE)
 ```
 
 For cloud providers, credentials should normally be stored in `.Renviron`.
-Anthropic and Groq are generation-only in the built-in registry, so pair them
-with an embedding backend through `semantica_llm_config()`.
+Anthropic, Groq, and Unsloth are generation-only in the built-in registry, so
+pair them with an embedding backend through `semantica_llm_config()`. Unsloth
+uses `UNSLOTH_API_KEY`; pass the model ID reported by its local `/v1/models`
+endpoint and set `base_url` if it is not running on `http://localhost:8888`.
 
 # 3. Preview the run
 

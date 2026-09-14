@@ -77,9 +77,10 @@
 #' Run [semantica_list_backends()] for the packaged registry and
 #' [semantica_check_setup()] before an expensive run. OpenAI uses
 #' `OPENAI_API_KEY`, Anthropic uses `ANTHROPIC_API_KEY`, Groq uses
-#' `GROQ_API_KEY`, and Hugging Face may use `HF_TOKEN`. Anthropic and Groq are
-#' generation-only in the built-in registry and therefore need a separate
-#' embedding backend for a full SEMANTICA workflow.
+#' `GROQ_API_KEY`, Unsloth uses `UNSLOTH_API_KEY`, and Hugging Face may use
+#' `HF_TOKEN`. Anthropic, Groq, and Unsloth are generation-only in the built-in
+#' registry and therefore need a separate embedding backend for a full SEMANTICA
+#' workflow.
 #'
 #' @section Existing item pools:
 #' If you already have item text, use the standard input columns `item_id`,
