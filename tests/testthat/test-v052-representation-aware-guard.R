@@ -104,15 +104,20 @@ test_that("definition alignment records raw and centered guard evidence without 
     b2 = c(0.1, 0.9)
   )
   factors <- list(
-    A = list(description = "Construct A"),
-    B = list(description = "Construct B")
+    A = list(description = "Construct A", facets = list(A1 = list(description = "Facet A one"))),
+    B = list(description = "Construct B", facets = list(B1 = list(description = "Facet B one")))
   )
+  factor_ref_text <- NULL
 
   local_mocked_bindings(
     semantica_embed = function(x, ...) {
       refs <- as.character(x$ref_id)
       out <- if (all(grepl("^factor::", refs))) {
+        factor_ref_text <<- as.character(x$ref_text)
         rbind(`factor::A` = c(1, 0), `factor::B` = c(0, 1))
+      } else if (all(grepl("^facet::", refs))) {
+        if (grepl("^facet::A", refs[[1L]])) matrix(c(1, 0), nrow = 1L, dimnames = list(refs, NULL))
+        else matrix(c(0, 1), nrow = 1L, dimnames = list(refs, NULL))
       } else {
         stop("unexpected reference request")
       }
@@ -125,6 +130,8 @@ test_that("definition alignment records raw and centered guard evidence without 
     items, emb, factors, embed_session = list(), cache = FALSE
   )
   expect_true(z$available)
+  expect_true(grepl("Facet A one", factor_ref_text[[1L]], fixed = TRUE))
+  expect_true(grepl("Facet B one", factor_ref_text[[2L]], fixed = TRUE))
   expect_true(all(c(
     "semantica_factor_margin_centered",
     "semantica_factor_alignment_status_centered",

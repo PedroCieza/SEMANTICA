@@ -489,57 +489,6 @@ if (FALSE) {
   )
 }
 
-# -----------------------------------------------------------------------------
-# 7. Expert one-call cloud workflow with every control (intentionally not run)
-# -----------------------------------------------------------------------------
-
-if (FALSE) {
-  full <- semantica_full_pipeline_custom(
-    backend = "openai",
-    api_key = Sys.getenv("OPENAI_API_KEY"),
-    chat_model = NULL,
-    embed_model = "text-embedding-3-small",
-    embed_batch_size = 32L,
-    embedding_device = "auto",
-    chat_device = "auto",
-    device_map = NULL,
-    gpu_layers = "auto",
-    model_precision = "auto",
-    compute_device = "cpu",
-    gpu_fallback = "error",
-    gpu_precision = "double",
-    compute_memory_limit = NULL,
-    compute_cosine_sensitivity = TRUE,
-    release_local_models = FALSE,
-    retain_embeddings = FALSE,
-    scale_name = "Cognitive Agility",
-    scale_description = "Clear and adaptive cognitive self-regulation.",
-    factors = list(
-      Clarity = list(description = "Clear thinking.", n_items = 12L),
-      Flexibility = list(description = "Adaptive thinking.", n_items = 12L)
-    ),
-    n_per_factor = 12L,
-    n_per_factor_override = FALSE,
-    i.per.f = c(Clarity = 4L, Flexibility = 4L),
-    use_parallel = TRUE,
-    n.cores = "auto",
-    reserve.cores = 1L,
-    max.cores = 4L,
-    seed = 20260820L,
-    generate_plots = FALSE,
-    verbose = TRUE
-  )
-
-  full$resource_plan
-  full$performance
-  full$evaluation_telemetry
-  full$reproducibility
-  full$semantic_pair_perturbation_stability
-  full$optimization$esem_alignment
-  full$optimization$esem_admissibility
-  full$generation$session
-}
-
 # Deliberate current boundaries:
 # - automatic GPU crossover selection is not enabled;
 # - lavaan and DFI fits remain CPU work;

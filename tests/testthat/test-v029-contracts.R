@@ -112,6 +112,25 @@ test_that("unknown backends require an explicit extension contract", {
   expect_identical(explicit$protocol, "openai_compat")
 })
 
+test_that("Anthropic chat body forwards requested temperature", {
+  session <- list(chat_model = "claude-test")
+  messages <- list(list(role = "user", content = "Generate one item."))
+
+  body <- SEMANTICA:::.semantica_anthropic_chat_body(
+    session,
+    messages = messages,
+    max_tokens = 128L,
+    temperature = 0.25,
+    system_prompt = "System prompt."
+  )
+
+  expect_identical(body$model, "claude-test")
+  expect_identical(body$messages, messages)
+  expect_identical(body$max_tokens, 128L)
+  expect_equal(body$temperature, 0.25)
+  expect_identical(body$system, "System prompt.")
+})
+
 test_that("optional diagnostic failures are explicit but remain nonfatal", {
   failed <- SEMANTICA:::.semantica_optional_diagnostic(
     function() stop("mock optional failure"),

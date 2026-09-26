@@ -2,32 +2,58 @@ performance_baseline <- dget(testthat::test_path(
   "fixtures", "performance-baseline.R"
 ))
 
-test_that("ACO resource controls preserve structural invariants under the 0.3 optimizer", {
-  skip_if_not_installed("lavaan")
-
-  items <- paste0("item_", seq_len(8L))
-  factor <- rep(c("F1", "F2"), each = 4L)
-  embedding <- rbind(
-    c(1.00, 0.08, 0.02), c(0.98, 0.14, 0.03),
-    c(0.96, 0.16, 0.04), c(0.94, 0.19, 0.05),
-    c(0.08, 1.00, 0.04), c(0.12, 0.98, 0.05),
-    c(0.15, 0.96, 0.03), c(0.18, 0.94, 0.06)
-  )
+.resource_control_fixture <- function() {
+  per_factor <- 5L
+  factor <- rep(c("F1", "F2"), each = per_factor)
+  items <- paste0("item_", seq_along(factor))
+  n_items <- length(items)
+  embedding <- matrix(0, nrow = n_items, ncol = 2L + n_items)
+  primary <- 0.78
+  unique_weight <- sqrt(1 - primary^2)
+  for (i in seq_len(n_items)) {
+    embedding[i, match(factor[[i]], c("F1", "F2"))] <- primary
+    embedding[i, 2L + i] <- unique_weight
+  }
   embedding <- embedding / sqrt(rowSums(embedding^2))
   cos_mat <- tcrossprod(embedding)
   dimnames(cos_mat) <- list(items, items)
   item_df <- data.frame(item = items, type = factor, factor = factor)
+  list(items = items, factor = factor, embedding = embedding,
+       cosine = cos_mat, df = item_df)
+}
 
-  expect_equal(
-    cos_mat,
-    performance_baseline$inputs$cosine,
-    tolerance = performance_baseline$manifest$numeric_tolerance
+test_that("legacy near-duplicate performance fixture is rejected by the new pre-ACO contract", {
+  cos_mat <- performance_baseline$inputs$cosine
+  factor <- performance_baseline$inputs$factor
+  items <- performance_baseline$inputs$item_ids
+  gate <- SEMANTICA:::.semantica_preaco_pool_gate(
+    cosine_sim_matrix = cos_mat,
+    df = data.frame(item = items, type = factor, factor = factor),
+    i.per.f = c(F1 = 3L, F2 = 3L),
+    min_slack = 0L,
+    content_alignment_mode = "off",
+    polarity_action = "off"
   )
+  expect_false(gate$feasible)
+  expect_true(all(gate$table$independent_duplicate_units < gate$table$selected_n))
+})
+
+test_that("ACO resource controls preserve structural invariants on a feasible pool", {
+  skip_if_not_installed("lavaan")
+  fx <- .resource_control_fixture()
+
+  gate <- SEMANTICA:::.semantica_preaco_pool_gate(
+    fx$cosine, fx$df, c(F1 = 3L, F2 = 3L),
+    min_slack = 2L,
+    content_alignment_mode = "off",
+    polarity_action = "off"
+  )
+  expect_true(gate$feasible)
 
   set.seed(101)
   out <- ACO_with_ESEM(
-    cosine_sim_matrix = cos_mat,
-    df = item_df,
+    cosine_sim_matrix = fx$cosine,
+    df = fx$df,
     i.per.f = c(F1 = 3L, F2 = 3L),
     ants = 2L,
     max.iter = 50L,
@@ -39,9 +65,6 @@ test_that("ACO resource controls preserve structural invariants under the 0.3 op
     final_equivtest = FALSE,
     semantic_n_sensitivity = FALSE,
     validation_n_diagnostic = FALSE,
-    # This test compares against the frozen pre-0.2.7 objective baseline.
-    # Pin the historical target estimator so the test isolates resource
-    # controls rather than the intentional 0.2.7 method-default change.
     within_target_method = "legacy_q40",
     archive_stable_window = 100L,
     keep_solution_history = TRUE,
@@ -59,21 +82,15 @@ test_that("ACO resource controls preserve structural invariants under the 0.3 op
   expect_lte(length(out$elite_archive), 10L)
   expect_identical(out$objective_schema$version, "SEMANTICA-objective-v4")
   expect_false(isTRUE(out$objective_schema$cross_schema_raw_score_comparison))
-  expect_equal(
-    unname(out$duplicate_cluster_id),
-    performance_baseline$semantic$duplicate_cluster_id
-  )
-  expect_equal(
-    out$heuristic_cutoffs,
-    performance_baseline$semantic$heuristic_cutoffs
-  )
-  expect_equal(
-    out$evaluation_telemetry$esem_fits_started,
-    performance_baseline$semantic$esem_search_jobs
-  )
-  expect_true(all(
-    performance_baseline$semantic$required_result_fields %in% names(out)
-  ))
+  expect_true(all(is.na(out$duplicate_cluster_id)))
+  expect_equal(out$heuristic_cutoffs, list(cfi = 0.96, tli = 0.94, rmsea = 0.09, srmr = 0.08))
+  expect_equal(out$evaluation_telemetry$esem_fits_started, 0L)
+  expect_true(all(c(
+    "best_items", "best_objective", "duplicate_clusters",
+    "elite_archive", "termination_reason", "total_iterations",
+    "evaluation_telemetry", "performance", "resource_plan",
+    "reproducibility", "esem_alignment", "esem_admissibility"
+  ) %in% names(out)))
 })
 
 test_that("parallel worker requests respect the visible allocation without a fixed cap", {
@@ -84,24 +101,12 @@ test_that("parallel worker requests respect the visible allocation without a fix
 
 test_that("PFA objective can run on a tunable search interval", {
   skip_if_not_installed("lavaan")
-
-  items <- paste0("item_", seq_len(8L))
-  factor <- rep(c("F1", "F2"), each = 4L)
-  embedding <- rbind(
-    c(1.00, 0.08, 0.02), c(0.98, 0.14, 0.03),
-    c(0.96, 0.16, 0.04), c(0.94, 0.19, 0.05),
-    c(0.08, 1.00, 0.04), c(0.12, 0.98, 0.05),
-    c(0.15, 0.96, 0.03), c(0.18, 0.94, 0.06)
-  )
-  embedding <- embedding / sqrt(rowSums(embedding^2))
-  cos_mat <- tcrossprod(embedding)
-  dimnames(cos_mat) <- list(items, items)
-  item_df <- data.frame(item = items, type = factor, factor = factor)
+  fx <- .resource_control_fixture()
 
   set.seed(202)
   out <- ACO_with_ESEM(
-    cosine_sim_matrix = cos_mat,
-    df = item_df,
+    cosine_sim_matrix = fx$cosine,
+    df = fx$df,
     i.per.f = c(F1 = 3L, F2 = 3L),
     ants = 2L,
     max.iter = 50L,
@@ -116,9 +121,6 @@ test_that("PFA objective can run on a tunable search interval", {
     final_equivtest = FALSE,
     semantic_n_sensitivity = FALSE,
     validation_n_diagnostic = FALSE,
-    # This test compares against the frozen pre-0.2.7 objective baseline.
-    # Pin the historical target estimator so the test isolates resource
-    # controls rather than the intentional 0.2.7 method-default change.
     within_target_method = "legacy_q40",
     archive_stable_window = 100L,
     history_mode = "summary",

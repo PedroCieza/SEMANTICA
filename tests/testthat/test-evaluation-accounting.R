@@ -45,3 +45,43 @@ test_that("evaluation broker records converged and admissible jobs separately", 
   expect_equal(snap$esem_fits_failed, 1L)
   expect_equal(snap$esem_solver_attempts_observed, 3L)
 })
+
+test_that("evaluation broker records full-solver retry telemetry separately", {
+  broker <- .semantica_new_evaluation_broker(2L)
+  payloads <- list(
+    list(
+      score = NA_real_,
+      key = "failed",
+      cache_entry = list(
+        fit_result = list(
+          converged = FALSE,
+          admissible = FALSE,
+          admissibility = list(reasons = "not_converged")
+        )
+      ),
+      error = "not_converged"
+    ),
+    list(
+      score = 0.5,
+      key = "recovered",
+      cache_entry = list(
+        fit_result = list(
+          converged = TRUE,
+          admissible = TRUE,
+          admissibility = list(reasons = character(0L))
+        )
+      ),
+      error = NA_character_
+    )
+  )
+
+  .semantica_record_esem_retry_payloads(
+    broker, payloads, keys = c("failed", "recovered")
+  )
+  snap <- .semantica_evaluation_snapshot(broker)
+
+  expect_equal(snap$esem_full_retries_started, 2L)
+  expect_equal(snap$esem_full_retries_admissible, 1L)
+  expect_equal(snap$esem_full_retries_failed, 1L)
+  expect_true(any(snap$esem_events$stage == "search_full_retry"))
+})

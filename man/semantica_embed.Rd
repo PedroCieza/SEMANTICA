@@ -15,6 +15,7 @@ semantica_embed(
   cache = TRUE,
   cache_dir = NULL,
   cache_namespace = NULL,
+  embedding_dimension_action = c("warn", "error"),
   verbose = TRUE
 )
 }
@@ -38,6 +39,9 @@ semantica_embed(
 \item{cache_dir}{Cache directory; \code{NULL} uses an OS-appropriate SEMANTICA cache.}
 
 \item{cache_namespace}{Optional analyst-defined namespace included in cache keys.}
+
+\item{embedding_dimension_action}{Whether a mismatch with the declared/model
+embedding dimension warns (default) or stops before analysis.}
 
 \item{verbose}{Print progress.}
 }

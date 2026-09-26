@@ -36,3 +36,6 @@ SEMANTICA_*_results/
 SEMANTICA_*_output/
 SEMANTICA_[0-9]*.[0-9]*.[0-9]*_*_test/
 SEMANTICA_frozen_*_test/
+semantica_bug_confirmation/
+semantica_runs/
+semantica_embedding_cache/

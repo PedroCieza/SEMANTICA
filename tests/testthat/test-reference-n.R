@@ -62,3 +62,22 @@ test_that("RMSEA reference N still uses the power solution when reachable", {
   expect_gte(achieved_power, info$power)
   expect_equal(info$method, "MacCallum-Browne-Sugawara RMSEA power")
 })
+
+test_that("high-dimensional ESEM reference N applies covariance-stability floor", {
+  info <- SEMANTICA:::estimate_esem_reference_sample_size(
+    items_per_factor = rep(8L, 6L),
+    n_factors = 6L,
+    rmsea_null = 0.05,
+    rmsea_alt = 0.06,
+    power = 0.80,
+    alpha = 0.05
+  )
+
+  expect_equal(info$p, 48L)
+  expect_true(info$stability_floor_applied)
+  expect_equal(info$power_only_n_obs, 152L)
+  expect_equal(info$stability_floor_n, 240L)
+  expect_equal(info$n_obs, 240L)
+  expect_match(info$method, "covariance-stability floor")
+  expect_gte(info$achieved_power, info$power)
+})

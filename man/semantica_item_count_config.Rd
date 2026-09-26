@@ -23,7 +23,7 @@ nested inside factor/facet specifications and is allocated across facets.
 If \code{FALSE}, nested counts are preserved.}
 }
 \value{
-A configuration list for \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}.
+A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.
 }
 \description{
 Defines candidate-pool and final-form sizes for the advanced high-level

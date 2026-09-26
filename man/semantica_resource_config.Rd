@@ -7,7 +7,8 @@
 semantica_resource_config(
   cpu_cores = "auto",
   reserve_cpu_cores = 1L,
-  max_cpu_cores = NULL
+  max_cpu_cores = NULL,
+  memory_aware = TRUE
 )
 }
 \arguments{
@@ -21,9 +22,13 @@ serial execution.}
 \item{reserve_cpu_cores}{CPU cores to leave unused when \code{cpu_cores = "auto"}. The main/coordinator R process is budgeted separately.}
 
 \item{max_cpu_cores}{Optional hard ceiling on CPU workers.}
+
+\item{memory_aware}{Whether automatic PSOCK worker planning should cap
+workers using the measured memory budget. Explicit numeric worker requests
+remain user-authoritative.}
 }
 \value{
-A configuration list for \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}.
+A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.
 }
 \description{
 Controls the existing worker-allocation policy used by the advanced pipeline.

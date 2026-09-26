@@ -12,7 +12,13 @@ semantica_generation_config(
   max_retries = 3L,
   global_forbidden_max = 40L,
   temperature = 0.8,
-  structured_output = c("auto", "numbered", "json")
+  structured_output = c("auto", "numbered", "json"),
+  pool_topup = TRUE,
+  pool_topup_min_slack = 2L,
+  pool_topup_max_rounds = 2L,
+  pool_topup_overgenerate = NULL,
+  pool_topup_relaxation_ladder = TRUE,
+  pool_topup_structural_gate = TRUE
 )
 }
 \arguments{
@@ -36,9 +42,30 @@ configured provider. Lower values generally reduce wording variability;
 provider-specific limits still apply.}
 
 \item{structured_output}{Output contract: \code{"auto"}, \code{"numbered"}, or schema-oriented \code{"json"}.}
+
+\item{pool_topup}{Logical; after definition-alignment diagnostics, allow a
+bounded factor-specific generation top-up when the realized pool lacks
+enough usable/aligned slack for the requested selected-item counts.}
+
+\item{pool_topup_min_slack}{Minimum usable same-factor candidates to retain
+beyond the selected target before ACO starts.}
+
+\item{pool_topup_max_rounds}{Maximum number of bounded top-up rounds. Use \code{0}
+to keep diagnostics but disable extra generation.}
+
+\item{pool_topup_overgenerate}{Optional overgeneration multiplier for top-up
+calls. \code{NULL} inherits \code{overgenerate}.}
+
+\item{pool_topup_relaxation_ladder}{Logical; after a strict top-up round,
+allow an explicitly logged factor-specific wording/forbidden-conflict
+relaxation only for factors that remain infeasible, while retaining
+construct-alignment and polarity guards.}
+
+\item{pool_topup_structural_gate}{Logical; require pre-ACO semantic slack
+and network-redundancy feasibility, not just raw/aligned item counts.}
 }
 \value{
-A configuration list for \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}.
+A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.
 }
 \description{
 Defines language, response format, wording style, overgeneration, and output

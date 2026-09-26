@@ -115,6 +115,53 @@ test_that("post-hoc participant validation reuses stored structure and refreshes
   expect_identical(out$optimization$response_validation$result$admissible, TRUE)
 })
 
+test_that("post-hoc validation resolves ordered response-data estimator from ordered input", {
+  x <- structure(list(
+    optimization = list(
+      best_items = c("i1", "i2", "i3", "i4"),
+      factor_assignment = c(i1 = "A", i2 = "A", i3 = "B", i4 = "B"),
+      esem_syntax = "stored syntax",
+      active_cutoffs = list(cfi = .90),
+      model_info = list(
+        rotation = "geomin",
+        rotation_args = list(geomin.epsilon = .5),
+        estimator = "ML",
+        data_type = "continuous",
+        full_esem_iter_max = 2000L,
+        htmt_threshold = .85,
+        semantic_esem_score_mode = "current"
+      )
+    ),
+    reproducibility = list(resolved_config = list(scale = list(factors = list(A = "A", B = "B"))))
+  ), class = c("semantica_full_pipeline_result", "list"))
+  responses <- data.frame(i1 = 1:5, i2 = 2:6, i3 = 3:7, i4 = 4:8)
+  captured_fit <- NULL
+  captured_cor <- NULL
+  local_mocked_bindings(
+    prepare_esem_rotation_args = function(...) list(),
+    run_esem_on_response_data = function(syntax, data, selected_items, estimator,
+                                         rotation, rotation_args, ordered,
+                                         iter_max, fallback) {
+      captured_fit <<- list(estimator = estimator, ordered = ordered)
+      structure(list(), class = "mock_fit")
+    },
+    compute_response_cor = function(data, selected_items, fit = NULL, ordered = NULL) {
+      captured_cor <<- list(fit = fit, ordered = ordered)
+      diag(4)
+    },
+    extract_and_score_esem = function(...) list(converged = TRUE, admissible = TRUE),
+    .package = "SEMANTICA"
+  )
+
+  out <- semantica_validate(x, responses, ordered = TRUE, verbose = FALSE)
+
+  expect_identical(captured_fit$estimator, "WLSMV")
+  expect_identical(captured_fit$ordered, x$optimization$best_items)
+  expect_identical(captured_cor$ordered, x$optimization$best_items)
+  expect_identical(out$optimization$response_validation$estimator, "WLSMV")
+  expect_identical(out$optimization$response_validation$ordered, x$optimization$best_items)
+})
+
 test_that("multi-seed presentation class leaves the object list-compatible", {
   x <- structure(list(n_successful = 2L, requested_seeds = c(1L, 2L), n_unique_solutions = 1L, mean_pairwise_jaccard = .8, consensus_items = c("i1", "i2")), class = c("semantica_multi_seed_result", "list"))
   expect_true(is.list(x))

@@ -33,7 +33,7 @@ semantica_items <- function(result, details = FALSE) {
       result$generation$item_metadata %||% NULL
     if (!is.data.frame(pool_meta) || !length(best)) {
       stop(
-        "Selected item metadata are unavailable in this result. Use a result returned by semantica_run()/semantica_full_pipeline(), or inspect the component result directly.",
+        "Selected item metadata are unavailable in this result. Use a result returned by semantica_run()/semantica_run_custom(), or inspect the component result directly.",
         call. = FALSE
       )
     }
@@ -198,9 +198,8 @@ semantica_overview <- function(result, print_items = TRUE) {
 # not mutate the canonical result object or recompute diagnostics.
 #
 # semantica_run() uses a compact six-part facade so the object itself is
-# navigable in RStudio.  The complete canonical full-pipeline result is retained
-# unchanged in $advanced.  semantica_full_pipeline() continues to return that
-# canonical object directly.
+# navigable in RStudio. The complete canonical full-pipeline result is retained
+# unchanged in $advanced for both public high-level interfaces.
 .semantica_is_run_facade <- function(result) {
   inherits(result, "semantica_run_result") &&
     is.list(result) &&
@@ -338,11 +337,12 @@ semantica_overview <- function(result, print_items = TRUE) {
 }
 
 .semantica_result_interface <- function(result) {
+  if (.semantica_is_run_facade(result)) return("regular")
   run_cfg <- if (is.list(result$run_config)) result$run_config else list()
   rep <- if (is.list(result$reproducibility)) result$reproducibility else list()
   run_rep <- if (is.list(rep$run_interface)) rep$run_interface else list()
   iface <- run_cfg$interface %||% run_rep$interface %||% NA_character_
-  if (identical(iface, "semantica_run")) "regular" else "advanced"
+  if (iface %in% c("semantica_run", "semantica_run_custom")) "regular" else "advanced"
 }
 
 .semantica_result_component_groups <- function(result) {
@@ -495,23 +495,22 @@ semantica_overview <- function(result, print_items = TRUE) {
 #' Present a completed SEMANTICA result without expanding the full raw list
 #'
 #' `semantica_view()` is a read-only presentation layer for completed SEMANTICA
-#' results. Direct `semantica_full_pipeline()` output remains unchanged. For
-#' `semantica_run()`, the canonical full result is retained unchanged under the
-#' facade's `advanced` field, while the top level is intentionally compact.
+#' results. Both high-level interfaces retain the canonical full result under
+#' the facade's `advanced` field while keeping the top level intentionally
+#' compact.
 #'
-#' With `view = "auto"`, results created by [semantica_run()] use the compact
-#' scale-development view, while direct [semantica_full_pipeline()] results use
-#' the advanced component map. `view = "advanced"` groups all retained
+#' With `view = "auto"`, both high-level interfaces use the compact
+#' scale-development view. `view = "advanced"` groups all retained
 #' top-level fields into a small set of task-oriented sections. Supplying
 #' `section` returns the original stored components in that section, without
 #' recomputing or simplifying their values. `view = "raw"` returns the
-#' canonical full result: it is identical to a direct full-pipeline input and to
-#' `result$advanced` for a compact `semantica_run()` result.
+#' canonical full result: it is identical to `result$advanced` for either
+#' high-level interface.
 #'
-#' For `semantica_run()` results, the Environment pane shows a compact six-part
-#' facade (`scale`, `items`, `diagnostics`, `plots`, `provenance`, `advanced`). The
-#' complete canonical result is retained unchanged under `advanced`. Direct
-#' `semantica_full_pipeline()` results remain the full advanced object.
+#' The Environment pane shows a compact six-part facade (`scale`, `items`,
+#' `diagnostics`, `plots`, `provenance`, `advanced`) for both high-level
+#' interfaces. The complete canonical result is retained unchanged under
+#' `advanced`.
 #'
 #' @param result A `semantica_full_pipeline_result` or compatible SEMANTICA
 #'   high-level result.
@@ -686,10 +685,11 @@ semantica_run_plan <- function(
     language = "English",
     response_format = "5-point Likert",
     item_style = "first-person declarative sentence",
-    temperature = 0.8,
+    temperature = 0.4,
     structured_output = c("auto", "numbered", "json"),
     prompts = NULL,
-    seed = 1234L,
+    seed = "auto",
+    restarts = "auto",
     progress = c("normal", "detailed", "quiet")) {
 
   if (!is.character(scale_name) || length(scale_name) != 1L || is.na(scale_name) || !nzchar(trimws(scale_name))) stop("'scale_name' must be one non-empty character string.", call. = FALSE)
@@ -699,7 +699,6 @@ semantica_run_plan <- function(
   temperature <- .semantica_assert_nonnegative_scalar(temperature, "temperature")
   structured_output <- match.arg(structured_output)
   progress <- match.arg(progress)
-  seed <- .semantica_assert_nonnegative_integer(seed, "seed")
   for (nm in c("language", "response_format", "item_style")) {
     value <- get(nm, inherits = FALSE)
     if (!is.character(value) || length(value) != 1L || is.na(value) || !nzchar(trimws(value))) {
@@ -724,8 +723,16 @@ semantica_run_plan <- function(
   if (length(aco) > 1L && is.character(aco)) aco <- aco[[1L]]
   aco_cfg <- .semantica_run_resolve_aco(aco)
   if (identical(dimensionality, "unidimensional")) aco_cfg <- .semantica_run_adapt_unidimensional_aco(aco_cfg)
+  aco_cfg <- .semantica_run_adapt_aco_budget(
+    aco_cfg, pool_items, selected_items, length(factors)
+  )
+  seed_cfg <- .semantica_run_resolve_seed(seed)
+  restart_cfg <- .semantica_run_restart_seeds(seed_cfg$seed, restarts, aco_cfg$mode)
   llm_resolved <- .semantica_run_resolve_llm(llm, chat_model, embed_model)
   llm_cfg <- llm_resolved$config
+  backend_contract <- .semantica_run_backend_contract(
+    llm_cfg, llm_resolved, structured_output
+  )
   generation_plan <- .expand_generation_plan(factors, n_per_factor = pool_items, n_per_factor_override = TRUE)
   rows <- lapply(generation_plan, function(x) data.frame(
     factor = x$dimension,
@@ -752,9 +759,14 @@ semantica_run_plan <- function(
     selected_counts = selected_counts,
     selected_total = sum(selected_counts),
     generation = list(language = language, response_format = response_format, item_style = item_style,
-                      overgenerate = overgenerate, temperature = temperature, structured_output = structured_output),
+                      overgenerate = overgenerate, temperature = temperature, structured_output = structured_output,
+                      pool_topup_min_slack = .semantica_run_pool_slack(selected_items)),
     aco = list(mode = aco_cfg$mode, description = aco_cfg$description, ants = aco_cfg$ants,
-               search_patience = aco_cfg$search_patience, max_total_iter = aco_cfg$max_total_iter),
+               search_patience = aco_cfg$search_patience, max_total_iter = aco_cfg$max_total_iter,
+               search_space_log10 = aco_cfg$search_space_log10, budget_adaptation = aco_cfg$budget_adaptation),
+    reproducibility = list(seed = seed_cfg$seed, seed_source = seed_cfg$source,
+                           restart_seeds = restart_cfg$seeds, restart_source = restart_cfg$source),
+    backend_contract = backend_contract,
     backends = list(
       generation = list(name = generation_backend, label = gen_spec$label %||% generation_backend,
                         auth_env = gen_spec$auth_env %||% NULL, model = llm_resolved$chat_model %||% gen_spec$default_chat_model %||% NULL),
@@ -775,7 +787,8 @@ semantica_run_plan <- function(
       llm = .semantica_sanitize_config_provenance(llm_cfg),
       chat_model = llm_resolved$chat_model,
       embed_model = llm_resolved$embed_model,
-      seed = seed,
+      seed = seed_cfg$seed,
+      restarts = length(restart_cfg$seeds),
       workers = workers,
       language = language,
       response_format = response_format,
@@ -805,6 +818,7 @@ print.semantica_run_plan <- function(x, ...) {
   cat(sprintf("Embedding backend   : %s | model %s\n", x$backends$embedding$name, x$backends$embedding$model %||% "provider default / user supplied"))
   if (!isTRUE(x$backends$embedding$embedding_capable)) cat("Embedding readiness : NOT READY -- selected embedding backend is not embedding-capable.\n")
   cat(sprintf("ACO preset          : %s -- %s\n", x$aco$mode, x$aco$description))
+  cat(sprintf("Optimizer restarts  : %d (seed %d)\n", length(x$reproducibility$restart_seeds), x$reproducibility$seed))
   cat(sprintf("Workers requested   : %s\n", paste(x$workers_requested, collapse = ",")))
   if (nrow(x$allocation) > length(x$factors)) {
     cat("\nFacet allocation\n")
@@ -864,7 +878,7 @@ semantica_check_setup <- function(llm = "openai", chat_model = NULL, embed_model
   if (is.null(embed_spec) && is.null(cfg$embed_backend_spec)) issues <- c(issues, sprintf("Embedding backend '%s' is not registered.", embed_backend))
   if (!is.null(embed_spec) && !isTRUE(embed_spec$has_embed)) {
     issues <- c(issues, sprintf("Backend '%s' does not provide embeddings in SEMANTICA.", embed_backend))
-    actions <- c(actions, "Set embed_backend to an embedding-capable backend such as openai, ollama, llamacpp, generic_openai, python_hf, or python_llamacpp.")
+    actions <- c(actions, "Set embed_backend to an embedding-capable backend such as openai, gemini, nvidia_nim, ollama, llamacpp, generic_openai, python_hf, or python_llamacpp.")
   }
 
   credential_state <- function(spec, explicit) {
@@ -898,6 +912,8 @@ semantica_check_setup <- function(llm = "openai", chat_model = NULL, embed_model
       device_map = cfg$device_map, gpu_layers = cfg$gpu_layers,
       model_precision = cfg$model_precision,
       retry_max_tries = cfg$retry_max_tries, retry_on_failure = cfg$retry_on_failure,
+      allow_provider_key_forwarding = cfg$allow_provider_key_forwarding %||% FALSE,
+      allow_insecure_auth = cfg$allow_insecure_auth %||% FALSE,
       preflight = FALSE, verbose = FALSE
     )
     chat_session <- tryCatch(do.call(semantica_connect, c(list(
@@ -920,6 +936,8 @@ semantica_check_setup <- function(llm = "openai", chat_model = NULL, embed_model
       device_map = NULL, gpu_layers = cfg$gpu_layers,
       model_precision = cfg$model_precision,
       retry_max_tries = cfg$retry_max_tries, retry_on_failure = cfg$retry_on_failure,
+      allow_provider_key_forwarding = cfg$allow_provider_key_forwarding %||% FALSE,
+      allow_insecure_auth = cfg$allow_insecure_auth %||% FALSE,
       preflight = FALSE, verbose = FALSE
     )
     embed_session <- tryCatch(do.call(semantica_connect, c(list(
@@ -1009,7 +1027,7 @@ semantica_cache_info <- function(result = NULL, cache_dir = NULL) {
   diag <- if (is.list(result)) result$generation$embedding_diagnostics %||% result$embedding_diagnostics %||% list() else list()
   path <- cache_dir %||% diag$cache_dir %||% .semantica_default_cache_dir()
   path <- path.expand(path)
-  files <- if (dir.exists(path)) list.files(path, pattern = "\\.rds$", recursive = TRUE, full.names = TRUE) else character(0L)
+  files <- .semantica_embedding_cache_entry_paths(path)
   size <- if (length(files)) sum(file.info(files)$size, na.rm = TRUE) else 0
   list(
     cache_dir = normalizePath(path, winslash = "/", mustWork = FALSE),
@@ -1026,10 +1044,10 @@ semantica_cache_info <- function(result = NULL, cache_dir = NULL) {
 
 #' Clear SEMANTICA's persistent embedding cache
 #'
-#' Deletes only hashed `.rds` embedding-cache entries under SEMANTICA's
-#' configured cache directory. Other files in a user-supplied directory are
-#' left untouched. The explicit `confirm = TRUE` requirement prevents accidental
-#' deletion.
+#' Deletes only entries whose shard directory and filename match SEMANTICA's
+#' content-addressed embedding-cache format. Other files and directories in a
+#' user-supplied directory are left untouched. The explicit `confirm = TRUE`
+#' requirement prevents accidental deletion.
 #'
 #' @param cache_dir Optional cache directory; `NULL` uses SEMANTICA's default.
 #' @param confirm Must be `TRUE` to delete cache contents.
@@ -1040,15 +1058,13 @@ semantica_clear_cache <- function(cache_dir = NULL, confirm = FALSE) {
   path <- normalizePath(path.expand(cache_dir %||% .semantica_default_cache_dir()), winslash = "/", mustWork = FALSE)
   if (!isTRUE(confirm)) stop("Cache deletion was not performed. Re-run with confirm = TRUE after checking semantica_cache_info().", call. = FALSE)
   if (dir.exists(path)) {
-    # SEMANTICA's cache writer stores hashed .rds entries. Delete only those
-    # entries, never arbitrary neighboring files in a user-supplied directory.
-    targets <- list.files(path, pattern = "\\.rds$", recursive = TRUE, full.names = TRUE)
+    # Delete only entries whose path matches the writer's shard/key contract.
+    targets <- .semantica_embedding_cache_entry_paths(path)
+    shard_dirs <- unique(dirname(targets))
     if (length(targets)) unlink(targets, force = TRUE)
-    subdirs <- setdiff(list.dirs(path, recursive = TRUE, full.names = TRUE), path)
-    if (length(subdirs)) {
-      subdirs <- subdirs[order(nchar(subdirs), decreasing = TRUE)]
-      for (d in subdirs) {
-        if (dir.exists(d) && length(list.files(d, all.files = TRUE, no.. = TRUE)) == 0L) unlink(d, recursive = FALSE, force = TRUE)
+    for (d in shard_dirs) {
+      if (dir.exists(d) && length(list.files(d, all.files = TRUE, no.. = TRUE)) == 0L) {
+        unlink(d, recursive = FALSE, force = TRUE)
       }
     }
   }
@@ -1436,7 +1452,7 @@ semantica_diagnostics <- function(result, section = "all") {
 #' @export
 semantica_validate <- function(result, responses, ordered = NULL, verbose = TRUE) {
   verbose <- .semantica_assert_flag(verbose, "verbose")
-  if (!inherits(result, "semantica_full_pipeline_result")) stop("'result' must be a completed semantica_run()/semantica_full_pipeline() result.", call. = FALSE)
+  if (!inherits(result, "semantica_full_pipeline_result")) stop("'result' must be a completed semantica_run()/semantica_run_custom() result.", call. = FALSE)
   was_run_facade <- .semantica_is_run_facade(result)
   result <- .semantica_raw_result(result)
   if (!(is.data.frame(responses) || is.matrix(responses))) stop("'responses' must be a data frame or matrix.", call. = FALSE)
@@ -1456,12 +1472,17 @@ semantica_validate <- function(result, responses, ordered = NULL, verbose = TRUE
   rotation <- model_info$rotation %||% "geomin"
   rotation_args <- prepare_esem_rotation_args(rotation, model_info$rotation_args %||% list(geomin.epsilon = 0.50), best_items, factor_assignment, factors)
   syntax <- opt$esem_syntax %||% build_esem_syntax_safe(best_items, factor_assignment, factors)
-  response_estimator <- if ((model_info$data_type %||% "continuous") %in% c("categorical", "likert")) "WLSMV" else model_info$estimator %||% "ML"
-  fit <- run_esem_on_response_data(syntax, responses, best_items, estimator = response_estimator, rotation = rotation, rotation_args = rotation_args, ordered = ordered, iter_max = model_info$full_esem_iter_max %||% 2000L, fallback = TRUE)
-  response_cor <- compute_response_cor(responses, best_items)
+  ordered_items <- .semantica_normalize_ordered_items(ordered, best_items, responses)
+  response_estimator <- .semantica_response_estimator(
+    model_info$estimator %||% "ML",
+    data_type = model_info$data_type %||% "continuous",
+    ordered_items = ordered_items
+  )
+  fit <- run_esem_on_response_data(syntax, responses, best_items, estimator = response_estimator, rotation = rotation, rotation_args = rotation_args, ordered = ordered_items, iter_max = model_info$full_esem_iter_max %||% 2000L, fallback = TRUE)
+  response_cor <- compute_response_cor(responses, best_items, fit = fit, ordered = ordered_items)
   if (is.null(opt$active_cutoffs)) stop("The stored fit-cutoff configuration is unavailable; post-hoc validation cannot reproduce the established response-validation path safely.", call. = FALSE)
   response_result <- extract_and_score_esem(fit, response_cor, factor_assignment, factors, opt$active_cutoffs, model_info$htmt_threshold %||% 0.85, verbose_decomp = FALSE, score_mode = model_info$semantic_esem_score_mode %||% "current")
-  validation <- list(fit = fit, result = response_result, estimator = response_estimator, ordered = ordered, n_obs = nrow(responses), note = "Response-data validation is based on observed item responses and should take priority over semantic-proxy ESEM for final scale validation.")
+  validation <- list(fit = fit, result = response_result, estimator = response_estimator, ordered = ordered_items, n_obs = nrow(responses), note = "Response-data validation is based on observed item responses and should take priority over semantic-proxy ESEM for final scale validation.")
   out <- result
   out$optimization$response_validation <- validation
   out$participant_validation_performed <- TRUE
@@ -1483,6 +1504,9 @@ semantica_validate <- function(result, responses, ordered = NULL, verbose = TRUE
         if ("selection_conditioned" %in% names(profile$source_families)) profile$source_families$selection_conditioned[idx] <- TRUE
       }
     }
+    if (is.list(profile$validity_dimensions$structural)) {
+      profile$validity_dimensions$structural$participant_response_validation_available <- TRUE
+    }
     profile$interpretation <- paste(
       "Independent participant-response evidence was supplied in addition to",
       "the embedding-semantic family; keep their inferential roles separate."
@@ -1492,7 +1516,7 @@ semantica_validate <- function(result, responses, ordered = NULL, verbose = TRUE
   out$evidence_profile <- refresh_evidence_profile(out$evidence_profile %||% out$optimization$evidence_profile %||% NULL)
   out$optimization$evidence_profile <- refresh_evidence_profile(out$optimization$evidence_profile %||% out$evidence_profile %||% NULL)
 
-  out$reproducibility$posthoc_participant_validation <- list(schema = "semantica-posthoc-validation-1", n_obs = nrow(responses), ordered = ordered, estimator = response_estimator, selected_item_ids = best_items)
+  out$reproducibility$posthoc_participant_validation <- list(schema = "semantica-posthoc-validation-1", n_obs = nrow(responses), ordered = ordered_items, estimator = response_estimator, selected_item_ids = best_items)
   if (isTRUE(verbose)) message("SEMANTICA participant validation attached to the existing selected scale; generation and ACO were not rerun.")
   if (isTRUE(was_run_facade)) .semantica_wrap_run_result(out) else out
 }

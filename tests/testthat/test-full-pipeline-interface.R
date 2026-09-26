@@ -1,7 +1,7 @@
 test_that("full pipeline option groups resolve to legacy arguments", {
   factors <- list(Clarity = list(description = "Clear thinking."))
 
-  args <- SEMANTICA:::.semantica_full_pipeline_resolve_args(
+  args <- SEMANTICA:::.semantica_run_custom_resolve_args(
     scale_name = "Cognitive Agility",
     scale_description = "Clear and adaptive thinking.",
     factors = factors,
@@ -53,7 +53,7 @@ test_that("full pipeline option groups resolve to legacy arguments", {
 test_that("legacy full pipeline arguments remain accepted by name", {
   factors <- list(Flexibility = list(description = "Adaptive thinking."))
 
-  args <- SEMANTICA:::.semantica_full_pipeline_resolve_args(
+  args <- SEMANTICA:::.semantica_run_custom_resolve_args(
     scale_name = "Cognitive Agility",
     scale_description = "Clear and adaptive thinking.",
     factors = factors,
@@ -90,7 +90,7 @@ test_that("legacy full pipeline arguments remain accepted by name", {
 test_that("omitted candidate count preserves nested factor counts", {
   factors <- list(Clarity = list(description = "Clear thinking.", n_items = 8L))
 
-  args <- SEMANTICA:::.semantica_full_pipeline_resolve_args(
+  args <- SEMANTICA:::.semantica_run_custom_resolve_args(
     scale_name = "Cognitive Agility",
     scale_description = "Clear and adaptive thinking.",
     factors = factors,
@@ -115,7 +115,7 @@ test_that("omitted candidate count preserves nested factor counts", {
 
 test_that("non-generation option groups reject unknown names", {
   expect_error(
-    SEMANTICA:::.semantica_full_pipeline_resolve_args(
+    SEMANTICA:::.semantica_run_custom_resolve_args(
       scale_name = "Cognitive Agility",
       scale_description = "Clear and adaptive thinking.",
       factors = list(Clarity = list(description = "Clear thinking.")),

@@ -17,6 +17,18 @@ test_that("semantica_standardize_item_metadata returns canonical columns", {
   expect_equal(out$Facet, c("Attention", "Attention"))
 })
 
+test_that("embedding row binding preserves native matrix data and removes row names", {
+  rows <- list(c(x = 1, y = 2), c(x = 3, y = 4))
+
+  out <- SEMANTICA:::.semantica_bind_embedding_rows(rows)
+
+  expect_identical(
+    out,
+    matrix(c(1, 2, 3, 4), nrow = 2L, byrow = TRUE,
+           dimnames = list(NULL, c("x", "y")))
+  )
+})
+
 test_that("semantica_wrap creates optimizer inputs from manual embeddings", {
   items_tbl <- data.frame(
     item_id = paste0("item_", 1:6),
@@ -114,6 +126,39 @@ test_that("semantica_embed fills its result incrementally in requested batches",
   expect_equal(batch_sizes, c(2L, 2L, 1L))
   expect_equal(unname(out$embeddings[, "text_length"]), nchar(items$item_text))
   expect_equal(rownames(out$embeddings), items$item_id)
+})
+
+test_that("custom backend embedding dimensions are checked against the declared contract", {
+  local_mocked_bindings(
+    .call_embed = function(session, texts) {
+      cbind(a = seq_along(texts), b = rep(1, length(texts)))
+    },
+    .package = "SEMANTICA"
+  )
+  items <- data.frame(
+    item_id = c("id_1", "id_2"),
+    item_text = c("alpha", "beta")
+  )
+  session <- list(
+    protocol = "openai_compat",
+    embed_url = "http://localhost:9999/v1/embeddings",
+    embed_model = "custom-embed",
+    embed_dim = 3L
+  )
+
+  expect_warning(
+    out <- semantica_embed(
+      items, session,
+      batch_size = 2L,
+      normalize = FALSE,
+      cache = FALSE,
+      verbose = FALSE
+    ),
+    "backend_spec"
+  )
+  expect_equal(out$embedding_diagnostics$expected_dim, 3L)
+  expect_equal(out$embedding_diagnostics$expected_dim_source, "backend_spec")
+  expect_equal(out$embed_dim, 2L)
 })
 
 test_that("embedding cache preserves component names and avoids recomputation", {

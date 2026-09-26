@@ -49,10 +49,9 @@ test_that("local-service compatibility checks are explicitly optional", {
   skip("Local Ollama/llama.cpp service availability is environment-specific.")
 })
 
-test_that("simplified pipeline forwards separate embedding base URL to custom pipeline", {
-  body_txt <- paste(deparse(body(semantica_full_pipeline)), collapse="\n")
+test_that("configurable pipeline forwards separate embedding base URL to its execution layer", {
+  body_txt <- paste(deparse(body(semantica_run_custom)), collapse="\n")
   hits <- gregexpr("embed_base_url = llm\\$embed_base_url", body_txt, perl = TRUE)[[1L]]
   expect_identical(sum(hits > 0L), 1L)
-  custom_formals <- names(formals(semantica_full_pipeline_custom))
-  expect_true("embed_base_url" %in% custom_formals)
+  expect_true("embed_base_url" %in% names(formals(semantica_llm_config)))
 })

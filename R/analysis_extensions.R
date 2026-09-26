@@ -59,8 +59,17 @@
     embedding_instruction = session$embedding_instruction %||% NA_character_,
     embedding_prefix_resolved = policy$prefix %||% NA_character_,
     embedding_capability_fingerprint = policy$capability_fingerprint %||% NA_character_,
+    expected_embed_dim = {
+      dim_info <- if (exists(".expected_embedding_dim_for_session", mode = "function")) {
+        .expected_embedding_dim_for_session(session)
+      } else {
+        list(dim = session$embed_dim %||% NA_integer_)
+      }
+      dim_value <- suppressWarnings(as.integer(dim_info$dim[1L]))
+      if (length(dim_value) == 1L && is.finite(dim_value) && dim_value > 0L) dim_value else NA_integer_
+    },
     namespace = cache_namespace %||% "default",
-    cache_schema = 7L
+    cache_schema = 8L
   )
   .semantica_object_md5(payload)
 }
@@ -74,6 +83,28 @@
 
 .semantica_cache_path <- function(key, cache_dir) {
   file.path(cache_dir, substr(key, 1L, 2L), paste0(key, ".rds"))
+}
+
+.semantica_embedding_cache_entry_paths <- function(cache_dir) {
+  root <- normalizePath(path.expand(cache_dir), winslash = "/", mustWork = FALSE)
+  if (!dir.exists(root)) return(character(0L))
+
+  files <- list.files(root, pattern = "\\.rds$", recursive = TRUE, full.names = TRUE)
+  if (!length(files)) return(character(0L))
+
+  normalized_files <- normalizePath(files, winslash = "/", mustWork = FALSE)
+  prefix <- paste0(sub("/+$", "", root), "/")
+  relative_paths <- substring(normalized_files, nchar(prefix) + 1L)
+  path_parts <- strsplit(relative_paths, "/", fixed = TRUE)
+  is_cache_entry <- vapply(path_parts, function(parts) {
+    if (length(parts) != 2L || !grepl("^[0-9A-Fa-f]{32}\\.rds$", parts[[2L]])) {
+      return(FALSE)
+    }
+    key <- sub("\\.rds$", "", parts[[2L]], ignore.case = TRUE)
+    identical(tolower(parts[[1L]]), tolower(substr(key, 1L, 2L)))
+  }, logical(1L))
+
+  files[is_cache_entry]
 }
 
 .semantica_embedding_cache_get <- function(key, cache_dir) {
@@ -375,8 +406,8 @@ semantica_assess_construct_coverage <- function(
 
   # Metadata coverage answers only whether declared facet labels are present.
   # If semantic facet diagnostics are available, semantic coverage accepts
-  # aligned or ambiguous items and excludes only *clear* pool-relative facet
-  # mismatches. This avoids treating tiny top-rank differences as proof that a
+  # all non-clear-mismatch facet states and excludes only *clear* pool-relative
+  # facet mismatches. This avoids treating tiny top-rank differences as proof that a
   # facet is absent. Older result objects fall back to the binary aligned flag.
   semantic_clear_column <- "semantica_facet_clear_mismatch" %in% names(x)
   semantic_aligned_column <- "semantica_facet_aligned" %in% names(x)
@@ -906,6 +937,20 @@ semantica_exact_semantic_reference <- function(
   )
 }
 
+.semantica_predict_isotonic <- function(model, x) {
+  x <- as.numeric(x)
+  knots <- data.frame(
+    x = as.numeric(model$x),
+    y = as.numeric(model$y)
+  )
+  knots <- knots[is.finite(knots$x) & is.finite(knots$y), , drop = FALSE]
+  if (!nrow(knots)) return(rep(NA_real_, length(x)))
+  knots <- stats::aggregate(y ~ x, data = knots, FUN = mean)
+  knots <- knots[order(knots$x), , drop = FALSE]
+  if (nrow(knots) == 1L) return(rep(knots$y[[1L]], length(x)))
+  stats::approx(knots$x, knots$y, xout = x, ties = mean, rule = 2)$y
+}
+
 #' Fit an empirical semantic-to-response calibration
 #'
 #' This empirical-calibration function estimates the mapping between semantic item
@@ -949,7 +994,7 @@ semantica_fit_empirical_calibration <- function(
     model <- stats::lm(empirical ~ semantic, data = pairs)
   }
   fitted_vals <- if (method == "isotonic") {
-    stats::approx(model$x, model$y, xout = pairs$semantic, ties = mean, rule = 2)$y
+    .semantica_predict_isotonic(model, pairs$semantic)
   } else if (method == "fisher_linear") {
     tanh(stats::predict(model, newdata = data.frame(sx = atanh(pmin(pmax(pairs$semantic, -0.999), 0.999)))))
   } else stats::predict(model, newdata = pairs)
@@ -991,7 +1036,7 @@ semantica_fit_empirical_calibration <- function(
 predict.semantica_empirical_calibration <- function(object, newdata, ...) {
   x <- as.numeric(newdata)
   if (object$method == "isotonic") {
-    return(pmin(pmax(stats::approx(object$model$x, object$model$y, xout = x, ties = mean, rule = 2)$y, -0.999), 0.999))
+    return(pmin(pmax(.semantica_predict_isotonic(object$model, x), -0.999), 0.999))
   }
   if (object$method == "fisher_linear") {
     z <- atanh(pmin(pmax(x, -0.999), 0.999))
@@ -1286,20 +1331,31 @@ semantica_construct_graph <- function(blueprint, items_tbl = NULL,
                                       factor_col = "factor", facet_col = "Facet",
                                       id_col = "item_id", item_text_col = "item_text") {
   if (!inherits(blueprint, "semantica_construct_blueprint")) stop("Invalid blueprint.")
-  edges <- data.frame(from = character(), to = character(), relation = character(), stringsAsFactors = FALSE)
-  nodes <- data.frame(name = character(), node_type = character(), label = character(), stringsAsFactors = FALSE)
+  edge_rows <- list()
+  node_rows <- list()
+  seen_nodes <- new.env(parent = emptyenv())
   add_node <- function(name, type, label = name) {
-    if (!name %in% nodes$name) nodes <<- rbind(nodes, data.frame(name = name, node_type = type, label = label, stringsAsFactors = FALSE))
+    if (!exists(name, envir = seen_nodes, inherits = FALSE)) {
+      assign(name, TRUE, envir = seen_nodes)
+      node_rows[[length(node_rows) + 1L]] <<- data.frame(
+        name = name, node_type = type, label = label, stringsAsFactors = FALSE
+      )
+    }
+  }
+  add_edge <- function(from, to, relation) {
+    edge_rows[[length(edge_rows) + 1L]] <<- data.frame(
+      from = from, to = to, relation = relation, stringsAsFactors = FALSE
+    )
   }
   for (f in blueprint$factor_names) {
     fn <- paste0("factor::", f); add_node(fn, "factor", f)
     for (facet in blueprint$required_facets[[f]] %||% character(0L)) {
       facn <- paste0("facet::", f, "::", facet); add_node(facn, "facet", facet)
-      edges <- rbind(edges, data.frame(from = fn, to = facn, relation = "requires_facet", stringsAsFactors = FALSE))
+      add_edge(fn, facn, "requires_facet")
     }
     for (ex in blueprint$exclusions[[f]] %||% character(0L)) {
       exn <- paste0("exclusion::", f, "::", ex); add_node(exn, "exclusion", ex)
-      edges <- rbind(edges, data.frame(from = fn, to = exn, relation = "exclude_or_discriminate", stringsAsFactors = FALSE))
+      add_edge(fn, exn, "exclude_or_discriminate")
     }
   }
   if (!is.null(items_tbl)) {
@@ -1317,8 +1373,14 @@ semantica_construct_graph <- function(blueprint, items_tbl = NULL,
         add_node(parent, "facet", facet)
       } else parent <- paste0("factor::", f)
       add_node(parent, if (grepl("^facet::", parent)) "facet" else "factor", if (grepl("^facet::", parent)) facet else f)
-      edges <- rbind(edges, data.frame(from = parent, to = inn, relation = "represented_by_item", stringsAsFactors = FALSE))
+      add_edge(parent, inn, "represented_by_item")
     }
+  }
+  edges <- if (length(edge_rows)) do.call(rbind, edge_rows) else {
+    data.frame(from = character(), to = character(), relation = character(), stringsAsFactors = FALSE)
+  }
+  nodes <- if (length(node_rows)) do.call(rbind, node_rows) else {
+    data.frame(name = character(), node_type = character(), label = character(), stringsAsFactors = FALSE)
   }
   igraph::graph_from_data_frame(edges, directed = TRUE, vertices = nodes)
 }
@@ -1952,6 +2014,22 @@ semantica_esem_telemetry <- function(result) {
   )
 }
 
+.semantica_bootstrap_semantic_resampling <- function(within, between, reps) {
+  boot_A <- rep(NA_real_, reps)
+  boot_gap <- rep(NA_real_, reps)
+  boot_within <- rep(NA_real_, reps)
+  for (b in seq_len(reps)) {
+    wb <- if (length(within)) sample(within, length(within), replace = TRUE) else numeric(0L)
+    bb <- if (length(between)) sample(between, length(between), replace = TRUE) else numeric(0L)
+    boot_within[[b]] <- if (length(wb)) stats::median(wb) else NA_real_
+    if (length(wb) && length(bb)) {
+      boot_A[[b]] <- .semantica_stochastic_superiority_vectors(wb, bb)
+      boot_gap[[b]] <- stats::median(wb) - stats::median(bb)
+    }
+  }
+  list(A = boot_A, gap = boot_gap, within = boot_within)
+}
+
 #' Resampling sensitivity for sample-free semantic separation
 #'
 #' Replaces the legacy random half-pair zeroing heuristic with two transparent
@@ -1965,7 +2043,8 @@ semantica_esem_telemetry <- function(result) {
 #' @param similarity_matrix Named square semantic similarity matrix.
 #' @param factor_assignment Named vector mapping item IDs to intended factors.
 #' @param reps Number of stratified pair bootstrap replicates.
-#' @param seed Optional integer seed. The caller's RNG state is restored.
+#' @param seed Optional integer seed. The caller's RNG state is restored. If
+#'   `NULL`, the active RNG state is used locally and then restored.
 #' @return A list containing observed statistics, bootstrap sensitivity
 #'   intervals, item-jackknife ranges, and explicit evidence/provenance notes.
 #' @export
@@ -1975,7 +2054,7 @@ semantica_semantic_resampling_stability <- function(
   if (!is.finite(reps) || reps < 1L) stop("'reps' must be a positive integer.", call. = FALSE)
   if (!is.null(seed)) {
     seed <- suppressWarnings(as.integer(seed[1L]))
-    if (!is.finite(seed) || seed < 0L) stop("'seed' must be NULL or a non-negative integer.", call. = FALSE)
+    if (!is.finite(seed) || seed < 1L) stop("'seed' must be NULL or a positive integer.", call. = FALSE)
   }
   pv <- .semantica_semantic_pair_vectors(similarity_matrix, factor_assignment)
   within <- pv$within; between <- pv$between
@@ -1990,22 +2069,16 @@ semantica_semantic_resampling_stability <- function(
     n_between_pairs = length(between)
   )
 
-  boot_fun <- function() {
-    boot_A <- rep(NA_real_, reps)
-    boot_gap <- rep(NA_real_, reps)
-    boot_within <- rep(NA_real_, reps)
-    for (b in seq_len(reps)) {
-      wb <- if (length(within)) sample(within, length(within), replace = TRUE) else numeric(0L)
-      bb <- if (length(between)) sample(between, length(between), replace = TRUE) else numeric(0L)
-      boot_within[[b]] <- if (length(wb)) stats::median(wb) else NA_real_
-      if (length(wb) && length(bb)) {
-        boot_A[[b]] <- .semantica_stochastic_superiority_vectors(wb, bb)
-        boot_gap[[b]] <- stats::median(wb) - stats::median(bb)
-      }
-    }
-    list(A = boot_A, gap = boot_gap, within = boot_within)
+  boot <- if (is.null(seed)) {
+    .semantica_preserve_caller_rng(
+      .semantica_bootstrap_semantic_resampling(within, between, reps)
+    )
+  } else {
+    .semantica_with_task_seed(
+      seed,
+      .semantica_bootstrap_semantic_resampling(within, between, reps)
+    )
   }
-  boot <- if (is.null(seed)) boot_fun() else .semantica_with_task_seed(seed, boot_fun())
   interval <- function(x) {
     x <- x[is.finite(x)]
     if (!length(x)) return(c(lower = NA_real_, median = NA_real_, upper = NA_real_))

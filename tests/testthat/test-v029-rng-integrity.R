@@ -89,3 +89,35 @@ test_that("ESEM path plotting is RNG-neutral and deterministic", {
   invisible(plot_esem_path_diagrams(result, cosine, before_model = "proxy"))
   expect_false(exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE))
 })
+
+test_that("semantic resampling restores caller RNG in seeded and unseeded modes", {
+  caller <- .rng_snapshot()
+  on.exit(.restore_rng_snapshot(caller), add = TRUE)
+
+  ids <- paste0("i", 1:6)
+  fa <- stats::setNames(rep(c("A", "B"), each = 3L), ids)
+  m <- matrix(0.20, 6L, 6L, dimnames = list(ids, ids))
+  diag(m) <- 1
+  m[fa == "A", fa == "A"] <- 0.80
+  m[fa == "B", fa == "B"] <- 0.75
+  diag(m) <- 1
+
+  set.seed(123)
+  before <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  invisible(semantica_semantic_resampling_stability(m, fa, reps = 10L, seed = 42L))
+  expect_identical(get(".Random.seed", envir = .GlobalEnv, inherits = FALSE), before)
+
+  set.seed(123)
+  before <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  invisible(semantica_semantic_resampling_stability(m, fa, reps = 10L, seed = NULL))
+  expect_identical(get(".Random.seed", envir = .GlobalEnv, inherits = FALSE), before)
+
+  rm(".Random.seed", envir = .GlobalEnv)
+  invisible(semantica_semantic_resampling_stability(m, fa, reps = 10L, seed = NULL))
+  expect_false(exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE))
+
+  expect_error(
+    semantica_semantic_resampling_stability(m, fa, reps = 10L, seed = 0L),
+    "positive integer"
+  )
+})

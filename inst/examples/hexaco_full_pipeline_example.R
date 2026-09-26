@@ -700,7 +700,7 @@ print(run_plan)
 # generation may still vary because remote models can change or be stochastic.
 set.seed(2026)
 
-hexaco_reduction <- semantica_full_pipeline(
+hexaco_reduction <- semantica_run_custom(
   # ---------------------------------------------------------------------------
   # Construct and item pool
   # ---------------------------------------------------------------------------

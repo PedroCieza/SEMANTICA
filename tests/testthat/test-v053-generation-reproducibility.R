@@ -159,11 +159,9 @@ test_that("semantic reduction summary makes relative separation explicit", {
 test_that("new generation controls preserve legacy positional API order", {
   gen_formals <- names(formals(SEMANTICA::semantica_generate_items))
   pipe_formals <- names(formals(SEMANTICA::semantica_pipeline))
-  full_formals <- names(formals(SEMANTICA::semantica_full_pipeline_custom))
 
   expect_identical(tail(gen_formals, 2L), c("verbose", "seed"))
   expect_gt(match("generation_seed", pipe_formals), match("...", pipe_formals))
-  expect_gt(match("generation_seed", full_formals), match("...", full_formals))
 })
 
 test_that("generation seed validation rejects ambiguous vectors and non-integers", {

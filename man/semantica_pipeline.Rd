@@ -46,16 +46,36 @@ semantica_pipeline(
   embedding_cache = TRUE,
   embedding_cache_dir = NULL,
   embedding_cache_namespace = NULL,
+  embedding_dimension_action = c("warn", "error"),
   embedding_spec = NULL,
   verbose = TRUE,
   embedding_task = "auto",
   embedding_instruction = NULL,
   content_alignment = TRUE,
   content_exclusions = NULL,
+  pool_topup = TRUE,
+  pool_topup_i_per_f = NULL,
+  pool_topup_min_slack = 2L,
+  pool_topup_max_rounds = 2L,
+  pool_topup_overgenerate = NULL,
+  pool_topup_duplicate_threshold = 0.92,
+  pool_topup_relaxation_ladder = TRUE,
+  pool_topup_structural_gate = TRUE,
+  pool_topup_cohesion_retention = 0.75,
+  pool_topup_within_similarity_target = NULL,
+  pool_topup_within_similarity_band = 0.08,
+  pool_topup_semantic_objective_mode = c("relative_conservative", "legacy_target_burden"),
+  pool_topup_redundancy_threshold = 0.85,
+  pool_topup_dup_threshold = 0.9,
+  pool_topup_content_alignment_mode = c("diagnostic", "guard", "off"),
+  pool_topup_polarity_action = c("diagnostic", "guard", "off"),
+  pool_topup_polarity_language = "auto",
   ...,
   backend_spec = NULL,
   embed_backend_spec = NULL,
-  generation_seed = NULL
+  generation_seed = NULL,
+  allow_provider_key_forwarding = FALSE,
+  allow_insecure_auth = FALSE
 )
 }
 \arguments{
@@ -144,6 +164,9 @@ built when later facet/unit embedding diagnostics are not needed.}
 
 \item{embedding_cache, embedding_cache_dir, embedding_cache_namespace}{Persistent embedding-cache controls.}
 
+\item{embedding_dimension_action}{Whether a mismatch with the declared/model
+embedding dimension warns (default) or stops before representation analysis.}
+
 \item{embedding_spec}{Optional embedding capability contract created by
 \code{\link[=semantica_embedding_spec]{semantica_embedding_spec()}}. It controls provider/task text preparation
 only; it does not change psychometric thresholds or objective weights.}
@@ -161,6 +184,53 @@ alignment when usable definitions and embeddings are available.}
 that should not define each construct. The high-level full pipeline derives
 this automatically from a construct blueprint or factor \code{forbidden} fields.}
 
+\item{pool_topup}{Logical; after embedding-derived definition alignment,
+make a bounded factor-specific top-up generation pass when the realized
+candidate pool has too little usable/aligned slack for the requested
+selection targets. This adds candidates; it never changes item scores or
+alignment labels.}
+
+\item{pool_topup_i_per_f}{Optional selected-item target per factor used to
+assess pool slack. The high-level full pipeline supplies this from \code{i.per.f}.}
+
+\item{pool_topup_min_slack}{Minimum usable same-factor candidates to keep
+beyond the selected target before ACO starts.}
+
+\item{pool_topup_max_rounds}{Maximum bounded top-up rounds. \code{0} disables
+top-up attempts while retaining diagnostics.}
+
+\item{pool_topup_overgenerate}{Optional overgeneration multiplier for top-up
+calls. \code{NULL} inherits the generation call's \code{overgenerate} setting.}
+
+\item{pool_topup_duplicate_threshold}{Lexical near-duplicate threshold used
+only to reject newly generated top-up items that repeat the existing pool.}
+
+\item{pool_topup_relaxation_ladder}{Logical; if the strict top-up round is
+still infeasible, permit one explicit wording/forbidden-conflict relaxation
+round while retaining factor-definition alignment and polarity guards.
+Every relaxation is recorded in generation provenance.}
+
+\item{pool_topup_structural_gate}{Logical; include the same pre-ACO semantic
+eligibility/slack and network redundancy invariants used by the optimizer
+when deciding whether more factor-specific candidates are required.}
+
+\item{pool_topup_cohesion_retention, pool_topup_within_similarity_target, pool_topup_within_similarity_band}{Semantic-eligibility controls used by the structural top-up gate; the
+high-level full pipeline forwards the same values used by ACO.}
+
+\item{pool_topup_semantic_objective_mode}{Semantic eligibility mode mirrored
+from ACO for pre-search feasibility accounting.}
+
+\item{pool_topup_redundancy_threshold, pool_topup_dup_threshold}{Redundancy
+thresholds mirrored from ACO. \code{pool_topup_dup_threshold} feeds the
+factor-local weighted-topological-overlap redundancy graph.}
+
+\item{pool_topup_content_alignment_mode, pool_topup_polarity_action}{Internal
+policies mirroring the downstream selection guard modes for top-up
+feasibility accounting.}
+
+\item{pool_topup_polarity_language}{Language hint for conservative polarity
+diagnostics when top-up feasibility uses a polarity guard.}
+
 \item{...}{Further args to \code{semantica_generate_items()}.}
 
 \item{backend_spec, embed_backend_spec}{Optional explicit custom backend
@@ -173,6 +243,13 @@ the run master seed. Seed control is backend-specific and is recorded in
 generation provenance. A controlled seed fixes SEMANTICA's seed schedule;
 exact LLM text replay is not guaranteed, so exact downstream replay uses
 the saved item pool and its fingerprint.}
+
+\item{allow_provider_key_forwarding}{Logical; allow registered public-provider
+credentials to follow a \code{base_url}/\code{embed_base_url} override to a different
+origin. Defaults to \code{FALSE}.}
+
+\item{allow_insecure_auth}{Logical; allow credentials over non-loopback HTTP.
+Defaults to \code{FALSE}; loopback HTTP remains supported for local servers.}
 }
 \value{
 A \code{semantica_pipeline_result} ready for \code{ACO_with_ESEM()}, including

@@ -130,7 +130,7 @@ test_that("semantica_run returns the compact facade without changing full-pipeli
   ), class = c("semantica_full_pipeline_result", "list"))
 
   local_mocked_bindings(
-    semantica_full_pipeline = function(...) raw,
+    semantica_run_custom = function(...) raw,
     .package = "SEMANTICA"
   )
 

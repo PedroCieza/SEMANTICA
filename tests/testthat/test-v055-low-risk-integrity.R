@@ -136,3 +136,51 @@ test_that("recommended validation-N helper restores an existing caller RNG state
   after <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
   expect_identical(after, before)
 })
+
+test_that("recommended validation-N adaptive mode stops unreachable candidates", {
+  items <- c("i1", "i2")
+  factors <- c("A", "B")
+  pop_cor <- diag(2L)
+  dimnames(pop_cor) <- list(items, items)
+  pop_phi <- diag(2L)
+  dimnames(pop_phi) <- list(factors, factors)
+  pop <- list(
+    cor = pop_cor,
+    lambda = matrix(
+      c(0.70, 0.10,
+        0.10, 0.70),
+      nrow = 2L,
+      byrow = TRUE,
+      dimnames = list(items, factors)
+    ),
+    phi = pop_phi
+  )
+
+  local_mocked_bindings(
+    build_pfa_population_correlation = function(...) pop,
+    run_esem_on_matrix = function(...) NULL,
+    .package = "SEMANTICA"
+  )
+
+  out <- SEMANTICA:::estimate_recommended_validation_n(
+    pfa_diagnostics = list(),
+    factor_assignment = c(i1 = "A", i2 = "B"),
+    factors = factors,
+    syntax = "mock syntax",
+    n_grid = 20L,
+    reps = 10L,
+    max_n = 20L,
+    seed = 20260828L,
+    verbose = FALSE,
+    progress = FALSE,
+    adaptive = TRUE,
+    adaptive_min_reps = 5L,
+    adaptive_batch_reps = 5L
+  )
+
+  expect_true(out$available)
+  expect_equal(out$completed_reps, 5L)
+  expect_equal(out$grid_results$completed_reps, 5L)
+  expect_equal(out$grid_results$adaptive_stop_reason, "convergence_target_unreachable")
+  expect_true(out$telemetry$adaptive$stopped_early)
+})

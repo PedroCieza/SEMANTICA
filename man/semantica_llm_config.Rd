@@ -23,6 +23,7 @@ semantica_llm_config(
   embedding_cache = TRUE,
   embedding_cache_dir = NULL,
   embedding_cache_namespace = NULL,
+  embedding_dimension_action = c("warn", "error"),
   retry_max_tries = 4L,
   retry_on_failure = TRUE,
   preflight = TRUE,
@@ -33,12 +34,15 @@ semantica_llm_config(
   embedding_instruction = NULL,
   embedding_spec = NULL,
   backend_spec = NULL,
-  embed_backend_spec = NULL
+  embed_backend_spec = NULL,
+  allow_provider_key_forwarding = FALSE,
+  allow_insecure_auth = FALSE
 )
 }
 \arguments{
 \item{backend}{Generation backend. Accepted registered values are \code{"openai"},
-\code{"anthropic"}, \code{"groq"}, \code{"ollama"}, \code{"unsloth"}, \code{"llamacpp"},
+\code{"anthropic"}, \code{"groq"}, \code{"gemini"}, \code{"nvidia_nim"}, \code{"huggingface"},
+\code{"ollama"}, \code{"unsloth"}, \code{"llamacpp"},
 \code{"generic_openai"}, \code{"python_hf"}, and \code{"python_llamacpp"}.}
 
 \item{embed_backend}{Embedding backend using the same registered names as
@@ -66,6 +70,9 @@ OpenAI-compatible providers not registered in \code{SEMANTICA_BACKENDS}.}
 
 \item{embedding_cache_namespace}{Optional analyst-defined namespace included in cache keys.}
 
+\item{embedding_dimension_action}{Whether a declared embedding-dimension
+mismatch warns (default) or stops before representation analysis.}
+
 \item{retry_max_tries}{Maximum number of attempts for retryable HTTP requests.}
 
 \item{retry_on_failure}{Logical; retry transient HTTP/provider failures when supported.}
@@ -90,12 +97,19 @@ SEMANTICA knows that the configured embedding family requires one.}
 documented task-instruction behavior is known.}
 
 \item{backend_spec, embed_backend_spec}{Optional explicit custom backend contracts created by \code{\link[=semantica_backend_spec]{semantica_backend_spec()}}.}
+
+\item{allow_provider_key_forwarding}{Logical; allow a registered cloud-provider
+credential to follow a server override to a different
+origin. Defaults to \code{FALSE}.}
+
+\item{allow_insecure_auth}{Logical; allow credentials over non-loopback
+plain HTTP. Defaults to \code{FALSE}; loopback HTTP remains supported.}
 }
 \value{
-A configuration list for \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}.
+A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.
 }
 \description{
 Groups provider, credential, server, and local-model deployment settings.
-Model names remain explicit arguments of \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}} so users
+Model names remain explicit arguments of \code{\link[=semantica_run_custom]{semantica_run_custom()}} so users
 can choose generation and embedding models directly.
 }

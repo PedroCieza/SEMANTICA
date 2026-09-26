@@ -20,6 +20,17 @@ test_that("yield-adaptive replenishment scales to the remaining generation defic
   )
   expect_identical(no_yield$request_n, 40L)
   expect_true(is.na(no_yield$observed_yield))
+
+  # A completed backend response that retained nothing is an observed zero yield,
+  # not missing information. This distinction drives clearer replenishment diagnostics.
+  zero_yield <- SEMANTICA:::.semantica_generation_replenishment_plan(
+    deficit = 8L,
+    successful_requested = 14L,
+    successful_new_retained = 0L,
+    initial_request = 14L
+  )
+  expect_identical(zero_yield$request_n, 8L)
+  expect_equal(zero_yield$observed_yield, 0)
 })
 
 test_that("partial generation is preserved and retries do not regenerate the full target", {

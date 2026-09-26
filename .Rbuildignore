@@ -26,6 +26,7 @@
 ^_pkgdown\.yml$
 ^SEMANTICA_.*\.tar\.gz$
 ^SEMANTICA\.Rcheck$
+^\.\.Rcheck$
 ^RECOVERY_NOTES\.txt$
 ^.*\.Rproj$
 # Generated SEMANTICA stress/benchmark artifacts are development outputs, not package source.
@@ -44,3 +45,9 @@
 ^SEMANTICA_frozen_.*_test$
 # Bounded-audit directories are generated development artifacts.
 ^SEMANTICA_bounded_audit_.*$
+
+# Runtime outputs created when SEMANTICA examples/scripts are run from a checkout.
+^semantica_runs$
+^semantica_embedding_cache$
+^semantica_bug_confirmation$
+^TECHNICAL_AUDIT\.md$

@@ -644,6 +644,17 @@ extract_aligned_esem_solution <- function(
       if (!is.null(inspected$error)) paste0(": ", inspected$error) else ""
     ))
   }
+  name_map <- attr(esem_fit, "semantica_lavaan_name_map", exact = TRUE)
+  if (!is.null(name_map)) {
+    inspected$value$lambda <- .semantica_restore_lavaan_observed_names(
+      inspected$value$lambda, name_map
+    )
+    if (!is.null(inspected$value$theta)) {
+      inspected$value$theta <- .semantica_restore_lavaan_observed_names(
+        inspected$value$theta, name_map
+      )
+    }
+  }
   alignment <- align_esem_to_intended_structure(
     lambda = inspected$value$lambda,
     psi = inspected$value$psi,

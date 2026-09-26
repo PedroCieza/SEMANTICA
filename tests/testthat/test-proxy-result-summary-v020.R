@@ -7,11 +7,17 @@ test_that("full-pipeline summary makes semantic-only evidence status explicit", 
     construct_coverage=list(overall_required_facet_coverage=.75),
     polarity_diagnostics=data.frame(direction=c("not_flagged","potentially_reversed_or_negated")),
     participant_validation_performed=FALSE,
+    validation_status="not_eligible_for_participant_validation",
+    eligible_for_participant_validation=FALSE,
+    selected_content_alignment_warning="Selected items include 1 clear definition mismatch.",
     interpretation_notice="proxy only"
   ), class=c("semantica_full_pipeline_result","list"))
   s <- summary(x)
   expect_s3_class(s, "summary.semantica_full_pipeline_result")
   expect_equal(s$participant_validation, "NOT PERFORMED")
+  expect_identical(s$validation_status, "not_eligible_for_participant_validation")
+  expect_false(s$eligible_for_participant_validation)
   txt <- capture.output(print(s))
   expect_true(any(grepl("NOT PERFORMED", txt, fixed=TRUE)))
+  expect_true(any(grepl("Content alignment warning", txt, fixed=TRUE)))
 })

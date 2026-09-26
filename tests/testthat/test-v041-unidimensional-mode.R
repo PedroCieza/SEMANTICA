@@ -1,7 +1,7 @@
 test_that("casual interface detects and adapts a unidimensional model", {
   captured <- NULL
   local_mocked_bindings(
-    semantica_full_pipeline = function(...) {
+    semantica_run_custom = function(...) {
       captured <<- list(...)
       structure(list(reproducibility = list()), class = c("semantica_full_pipeline_result", "list"))
     },
@@ -26,7 +26,7 @@ test_that("casual interface detects and adapts a unidimensional model", {
   expect_identical(captured$esem$rotation_args, list())
   expect_identical(captured$esem$proxy_reference_n, "auto")
   expect_identical(captured$esem$score_mode, "structure_weighted")
-  expect_identical(captured$esem$cadence_mode, "fixed")
+  expect_identical(captured$esem$cadence_mode, "adaptive")
   expect_true(captured$run_esem_during_search)
   expect_identical(captured$esem_every, 10L)
   expect_identical(captured$ants, 60L)
@@ -57,7 +57,7 @@ test_that("casual one-factor mode rejects a saturated three-item final form", {
 test_that("multidimensional casual defaults remain three items per factor", {
   captured <- NULL
   local_mocked_bindings(
-    semantica_full_pipeline = function(...) {
+    semantica_run_custom = function(...) {
       captured <<- list(...)
       structure(list(reproducibility = list()), class = c("semantica_full_pipeline_result", "list"))
     },

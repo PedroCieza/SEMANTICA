@@ -8,7 +8,7 @@ semantica_export(
 )
 }
 \arguments{
-\item{pipeline_result}{A high-level result from \code{semantica_run()} or \code{semantica_full_pipeline()}, or a component result from \code{semantica_pipeline()} or \code{semantica_wrap()}.}
+\item{pipeline_result}{A high-level result from \code{semantica_run()} or \code{semantica_run_custom()}, or a component result from \code{semantica_pipeline()} or \code{semantica_wrap()}.}
 \item{prefix}{Character string prepended to output filenames; it may include a directory path.}
 \item{include_candidates}{Logical; for report exports, also write the generated candidate table when available.}
 \item{format}{Export contract. \code{"auto"} chooses report output for a high-level result and optimizer interchange for a component result. Explicit \code{"report"} and \code{"optimizer"} values require the matching result type.}

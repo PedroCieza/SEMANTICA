@@ -15,6 +15,7 @@ semantica_pfa_config(
   rotation = c("promax", "target_oblique", "oblimin", "varimax", "none"),
   min_loading = NULL,
   min_margin = NULL,
+  max_abs_loading = Inf,
   unit_diagnostics = TRUE
 )
 }
@@ -38,11 +39,14 @@ semantica_pfa_config(
 
 \item{min_loading, min_margin}{Simple-structure thresholds.}
 
+\item{max_abs_loading}{Maximum acceptable absolute PFA loading before a
+boundary-loading penalty is applied; \code{Inf} preserves historical behavior.}
+
 \item{unit_diagnostics}{Compute facet/unit-level PFA when metadata and
 embeddings are available.}
 }
 \value{
-A configuration list for \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}.
+A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.
 }
 \description{
 Advanced controls for how embedding-derived PFA is used as a search objective

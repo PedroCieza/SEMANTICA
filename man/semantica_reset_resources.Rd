@@ -9,7 +9,7 @@ semantica_reset_resources(force = FALSE)
 \arguments{
 \item{force}{If \code{FALSE} (default), clusters that cannot be stopped cleanly
 remain registered. If \code{TRUE}, SEMANTICA may use \code{parallelly::killNode()} on
-its own still-live RichSOCK workers after graceful shutdown fails.}
+each of its own still-live RichSOCK workers after graceful shutdown fails.}
 }
 \value{
 Invisibly, a list containing stopped, reaped, and failed pool tokens.

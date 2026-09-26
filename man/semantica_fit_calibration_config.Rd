@@ -33,7 +33,13 @@ semantica_fit_calibration_config(
 \arguments{
 \item{mode}{Calibration mode. \code{"off"} and \code{"fast"} both map to
 \code{dfi_mode = "heuristic_semantic"}; \code{"strict"} maps to
-\code{dfi_mode = "esem_parametric_dfi"}.}
+\code{dfi_mode = "esem_parametric_dfi"}. In high-dimensional \code{"auto"} runs with
+a bounded ESEM-DFI budget, SEMANTICA may skip the semantic-ROC prepass.
+Bootstrap ESEM is attempted on up to three distinct high-scoring warm-up
+subsets before model-matched ESEM calibration is considered unavailable;
+strict-CFA fallback simulation remains diagnostic rather than calibrating
+ESEM-guided search. Request
+\code{"semantic_roc_dfi"} to force ROC calibration.}
 
 \item{reps, level, criterion}{Search-time DFI simulation controls.}
 
@@ -51,7 +57,9 @@ stability rule is reached or the available budget is exhausted.}
 
 \item{fallback_policy}{DFI fallback policy: \code{"conservative"} permits the
 documented safer fallback sequence when a requested calibration cannot be
-estimated; \code{"requested_only"} does not substitute another DFI method.}
+estimated; \code{"requested_only"} does not substitute another DFI method for
+explicit non-\code{"auto"} modes. In \code{"auto"} mode, SEMANTICA may still walk its
+documented internal calibration ladder.}
 
 \item{data_type}{Data-type label used by DFI/ESEM logic. The established
 workflow recognizes \code{"continuous"}, \code{"likert"}, \code{"categorical"}, and
@@ -63,7 +71,7 @@ assumptions and otherwise fall back transparently.}
 \item{warmup_iters}{Warm-up iterations before DFI calibration.}
 }
 \value{
-A configuration list for \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}.
+A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.
 }
 \description{
 Advanced controls for SEMANTICA's established fit-calibration and DFI paths.

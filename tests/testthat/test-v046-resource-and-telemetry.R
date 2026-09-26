@@ -20,6 +20,36 @@ test_that("automatic PSOCK workers are capped by measured memory", {
   expect_true(plan$memory_aware)
 })
 
+test_that("high-level resource args can disable memory-aware auto capping", {
+  cfg <- semantica_resource_config(memory_aware = FALSE)
+  args <- SEMANTICA:::.semantica_resource_args(cfg)
+
+  expect_false(args$memory_aware)
+})
+
+test_that("automatic PSOCK planning can ignore memory cap when requested", {
+  gib <- 1024^3
+  local_mocked_bindings(
+    .semantica_available_cores = function(omit = 0L) 16L,
+    .semantica_available_physical_cores = function() 8L,
+    .semantica_memory_snapshot = function() list(
+      available_bytes = 2 * gib,
+      total_bytes = 16 * gib,
+      process_rss_bytes = 1 * gib,
+      source = "unit-test"
+    ),
+    .package = "SEMANTICA"
+  )
+
+  capped <- semantica_resource_plan(n.cores = "auto", memory_aware = TRUE)
+  uncapped <- semantica_resource_plan(n.cores = "auto", memory_aware = FALSE)
+
+  expect_identical(capped$effective_workers, 1L)
+  expect_identical(uncapped$effective_workers, 6L)
+  expect_false(uncapped$memory_aware)
+  expect_true(is.na(uncapped$memory_worker_cap))
+})
+
 test_that("explicit worker counts remain user-authoritative with memory-aware planning", {
   gib <- 1024^3
   local_mocked_bindings(
@@ -87,7 +117,7 @@ test_that("high-memory auto planning cannot consume every detected physical core
 test_that("casual wrapper exposes worker control without changing analytical presets", {
   captured <- NULL
   local_mocked_bindings(
-    semantica_full_pipeline = function(...) {
+    semantica_run_custom = function(...) {
       captured <<- list(...)
       structure(
         list(reproducibility = list(effective_workers = 3L)),

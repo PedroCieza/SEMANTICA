@@ -2,7 +2,7 @@
 # SEMANTICA simple full-pipeline example
 # ==============================================================================
 #
-# This script shows the smallest practical use of semantica_full_pipeline().
+# This script shows the smallest practical use of semantica_run_custom().
 # It uses the package defaults wherever possible.
 #
 # In this version, the example remains "simple" because the analysis is run
@@ -47,7 +47,7 @@
 # - verbose: set FALSE for a quieter console.
 #
 # This example uses the exported function name in the package:
-# semantica_full_pipeline().
+# semantica_run_custom().
 
 library(SEMANTICA)
 
@@ -148,7 +148,7 @@ i_per_dimension <- c(
 
 set.seed(123)
 
-result <- semantica_full_pipeline(
+result <- semantica_run_custom(
   # Information about your desired scale
   scale_name = "TFEQ-R-18-AI",
   scale_description = paste(

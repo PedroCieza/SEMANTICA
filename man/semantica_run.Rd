@@ -14,13 +14,14 @@ semantica_run(
   llm = "openai",
   chat_model = NULL,
   embed_model = NULL,
-  seed = NULL,
+  seed = "auto",
+  restarts = "auto",
   verbose = TRUE,
   workers = "auto",
   language = "English",
   response_format = "5-point Likert",
   item_style = "first-person declarative sentence",
-  temperature = 0.8,
+  temperature = 0.4,
   structured_output = c("auto", "numbered", "json"),
   progress = c("normal", "detailed", "quiet")
 )
@@ -36,19 +37,20 @@ semantica_run(
 \item{aco}{\code{"fast"}, \code{"standard"}, \code{"full"}, a \code{semantica_aco_config}, or small override list.}
 \item{llm}{Backend string, \code{semantica_llm_config}, or named LLM list.}
 \item{chat_model,embed_model}{Optional explicit model names.}
-\item{seed}{Optional master seed for SEMANTICA stochastic analysis and supported generation seed contracts.}
+\item{seed}{Non-negative integer seed, or \code{"auto"} (default) to generate and record one. \code{NULL} is treated as \code{"auto"}.}
+\item{restarts}{\code{"auto"} (default) uses 1/3/5 frozen-pool optimizer starts for fast/standard/full, respectively; a positive integer requests that many starts.}
 \item{verbose}{Logical compatibility switch. \code{FALSE} forces quiet progress.}
 \item{workers}{\code{"auto"}, \code{"serial"}, or a positive worker request.}
 \item{language}{Requested item-generation language.}
 \item{response_format}{Requested response-scale format included in generation instructions.}
 \item{item_style}{Requested item-wording style.}
-\item{temperature}{Non-negative provider sampling temperature passed through the established generation config.}
+\item{temperature}{Non-negative provider sampling temperature; the easy interface defaults to 0.4 to prioritize instruction consistency.}
 \item{structured_output}{\code{"auto"}, \code{"numbered"}, or \code{"json"}.}
 \item{progress}{\code{"normal"} for concise user progress, \code{"detailed"} for component telemetry, or \code{"quiet"}.}
 }
 \description{
 Main entry point for scale development. It uses the same analysis pipeline as
-\code{semantica_full_pipeline()} with a smaller set of commonly used arguments.
+\code{semantica_run_custom()} with a smaller set of commonly used arguments.
 }
 \details{
 Use \code{semantica_run_plan()} first when item/facet counts or approximate API
@@ -57,11 +59,17 @@ work are not obvious. \code{pool_items} is per factor, while
 
 The ACO presets change search effort/evidence cadence without selecting a
 different optimizer. \code{"full"} refers to the ACO preset, not to
-\code{semantica_full_pipeline()}.
+\code{semantica_run_custom()}.
+
+The declared form space scales non-overridden standard/full ACO budgets within
+documented ceilings. The candidate pool is generated once; optimizer restarts
+reuse that frozen pool and are selected by objective only when their evidence
+regimes match. Agreement is descriptive optimizer sensitivity, not a validity
+claim.
 
 The default workflow uses the conservative content-alignment guard and the
 relative-conservative semantic objective. These settings can be configured
-through \code{semantica_full_pipeline()}.
+through \code{semantica_run_custom()}.
 
 When one factor is supplied, the established unidimensional branch is used. A
 one-factor run requires at least four selected items so the one-factor
@@ -69,7 +77,7 @@ covariance proxy is overidentified rather than the saturated three-indicator
 case.
 }
 \value{A compact \code{semantica_run_result} facade with six top-level groups: \code{scale}, \code{items}, \code{diagnostics}, \code{plots}, \code{provenance}, and \code{advanced}. The \code{plots} field retains the five core report graphics, while \code{advanced} contains the complete canonical \code{semantica_full_pipeline_result}, including \code{run_config}, unchanged. Historical direct field access such as \code{result$optimization} remains available through compatibility accessors.}
-\seealso{\code{\link{semantica_run_plan}}, \code{\link{semantica_check_setup}}, \code{\link{semantica_view}}, \code{\link{semantica_items}}, \code{\link{semantica_full_pipeline}}}
+\seealso{\code{\link{semantica_run_plan}}, \code{\link{semantica_check_setup}}, \code{\link{semantica_view}}, \code{\link{semantica_items}}, \code{\link{semantica_run_custom}}}
 \examples{
 \dontrun{
 result <- semantica_run(

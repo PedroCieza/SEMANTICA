@@ -20,7 +20,7 @@ utils::globalVariables(c(
   "group", "score_label", "before_after", "sim_type", "metric_group",
   "phase", "phase_x", "score_norm", "score_plot", "score_txt", "item_status",
   "centroid_type", "pool_x", "pool_y", "selected_x", "selected_y",
-  "ring_x", "ring_y", "edge_width", "edge_alpha", "semantic_overlap"
+  "ring_x", "ring_y", "edge_width", "edge_alpha", "semantic_overlap", "Regime"
 ))
 
 # =================================================================
@@ -353,34 +353,63 @@ plot_fitness_evolution <- function(result) {
     sem_score = vapply(hist, function(x) if (is.null(x$sem_score) || is.na(x$sem_score)) NA_real_ else x$sem_score, numeric(1L)),
     esem_score= vapply(hist, function(x) if (is.null(x$esem_score) || is.na(x$esem_score)) NA_real_ else x$esem_score, numeric(1L)),
     total     = vapply(hist, function(x) if (is.null(x$total) || is.na(x$total)) NA_real_ else x$total, numeric(1L)),
+    stage     = vapply(hist, function(x) x$stage %||% "proposal", character(1L)),
     stringsAsFactors = FALSE
   )
-  df_hist$best_so_far <- cummax(ifelse(is.na(df_hist$total), -Inf, df_hist$total))
-  df_hist$best_so_far[is.infinite(df_hist$best_so_far)] <- NA_real_
-  best_idx <- which.max(df_hist$total)
+  df_hist$regime <- sub("_iteration$", "", df_hist$stage)
+  df_hist$regime <- sub("^proposal$", "proposal_or_legacy", df_hist$regime)
+  df_hist$regime <- factor(
+    df_hist$regime,
+    levels = unique(c("semantic", "pfa_guided", "esem_guided", "proposal_or_legacy", as.character(df_hist$regime)))
+  )
+  df_hist$Regime <- df_hist$regime
+  df_hist$best_so_far <- ave(
+    ifelse(is.na(df_hist$total), -Inf, df_hist$total),
+    df_hist$regime,
+    FUN = function(x) {
+      out <- cummax(x)
+      out[is.infinite(out)] <- NA_real_
+      out
+    }
+  )
+  best_idx <- if (any(is.finite(df_hist$total))) {
+    which.max(ifelse(is.finite(df_hist$total), df_hist$total, -Inf))
+  } else {
+    integer(0L)
+  }
 
   df_long <- rbind(
-    data.frame(eval = df_hist$eval, value = df_hist$sem_score, Metric = "Semantic Score", stringsAsFactors = FALSE),
-    data.frame(eval = df_hist$eval, value = df_hist$total, Metric = "Total Score", stringsAsFactors = FALSE)
+    data.frame(eval = df_hist$eval, value = df_hist$sem_score, Metric = "Semantic Score", Regime = df_hist$regime, stringsAsFactors = FALSE),
+    data.frame(eval = df_hist$eval, value = df_hist$total, Metric = "Total Score", Regime = df_hist$regime, stringsAsFactors = FALSE)
   )
   esem_rows <- df_hist[!is.na(df_hist$esem_score), ]
   if (nrow(esem_rows) > 0L) {
-    df_long <- rbind(df_long, data.frame(eval = esem_rows$eval, value = esem_rows$esem_score, Metric = "ESEM Score", stringsAsFactors = FALSE))
+    df_long <- rbind(df_long, data.frame(eval = esem_rows$eval, value = esem_rows$esem_score, Metric = "ESEM Score", Regime = esem_rows$regime, stringsAsFactors = FALSE))
   }
   df_long <- df_long[!is.na(df_long$value), ]
   metric_cols <- c("Semantic Score" = "#4DAC26", "ESEM Score" = "#D6604D", "Total Score" = "#2166AC")
+  smooth_df <- df_long
+  if (nrow(smooth_df) > 0L) {
+    smooth_group <- interaction(smooth_df$Regime, smooth_df$Metric, drop = TRUE)
+    smooth_n <- ave(smooth_df$eval, smooth_group, FUN = function(x) length(unique(x)))
+    smooth_df <- smooth_df[smooth_n >= 6L, , drop = FALSE]
+  }
 
-  ggplot2::ggplot(df_long, ggplot2::aes(x = eval, y = value, colour = Metric)) +
-    ggplot2::geom_line(alpha = 0.25, linewidth = 0.4) +
-    ggplot2::geom_smooth(method = "loess", se = FALSE, span = 0.20, linewidth = 1.1) +
-    ggplot2::geom_line(data = df_hist[!is.na(df_hist$best_so_far), ], ggplot2::aes(x = eval, y = best_so_far), colour = "#2166AC", linetype = "dashed", linewidth = 0.8, inherit.aes = FALSE) +
-    ggplot2::geom_point(data = df_hist[best_idx, ], ggplot2::aes(x = eval, y = total), colour = "#E83030", size = 3.5, shape = 18, inherit.aes = FALSE) +
-    ggplot2::annotate("text", x = df_hist$eval[best_idx], y = df_hist$total[best_idx] + 0.02, label = sprintf("Best\n%.4f", df_hist$total[best_idx]), size = 2.8, colour = "#E83030", hjust = 0.5) +
+  p <- ggplot2::ggplot(df_long, ggplot2::aes(x = eval, y = value, colour = Metric)) +
+    ggplot2::geom_point(alpha = 0.45, size = 0.9)
+  if (nrow(smooth_df) > 0L) {
+    p <- p +
+      ggplot2::geom_smooth(data = smooth_df, method = "loess", se = FALSE, span = 0.20, linewidth = 1.1)
+  }
+  p +
+    ggplot2::geom_step(data = df_hist[!is.na(df_hist$best_so_far), ], ggplot2::aes(x = eval, y = best_so_far, group = Regime), colour = "#2166AC", linetype = "dashed", linewidth = 0.8, direction = "hv", inherit.aes = FALSE) +
+    ggplot2::geom_point(data = df_hist[best_idx, , drop = FALSE], ggplot2::aes(x = eval, y = total), colour = "#E83030", size = 3.5, shape = 18, inherit.aes = FALSE) +
     ggplot2::scale_colour_manual(values = metric_cols, name = NULL) +
     ggplot2::scale_y_continuous(labels = scales::number_format(accuracy = 0.001)) +
+    ggplot2::facet_wrap(~Regime, scales = "free_y") +
     .sem_theme() +
     ggplot2::theme(legend.position = "bottom") +
-    ggplot2::labs(title = "Fitness Evolution During ACO Search", subtitle = "Smoothed trends; dashed = running best; red diamond = best observed objective", x = "Solution Evaluation Number", y = "Score", caption = "SEMANTICA | ACO search history")
+    ggplot2::labs(title = "Fitness Evolution During ACO Search", subtitle = "Raw evaluations are points; smooth lines show trends; dashed step = running best within regime; red diamond = best observed objective", x = "Solution Evaluation Number", y = "Score", caption = "SEMANTICA | ACO search history")
 }
 
 # =================================================================
@@ -1669,11 +1698,13 @@ plot_semantic_n_sensitivity <- function(result) {
   summary <- sns$summary
   subtitle <- if (!is.null(summary) && is.finite(summary$successful_fits) &&
                   is.finite(summary$requested_fits)) {
-    sprintf("Selected semantic-proxy ESEM refits: %d/%d successful | structure stable: %s",
+    sprintf("Selected semantic-proxy ESEM anchors: %d/%d successful | refits: %d%s | structure stable: %s",
             summary$successful_fits, summary$requested_fits,
+            summary$refitted_anchors %||% summary$requested_fits,
+            if (isTRUE(summary$reused_reference_fit)) " + reference reuse" else "",
             ifelse(isTRUE(summary$structurally_stable), "yes", "no"))
   } else {
-    "Selected semantic-proxy ESEM refits across nearby RMSEA-power N anchors"
+    "Selected semantic-proxy ESEM scores across nearby RMSEA-power N anchors"
   }
 
   ggplot2::ggplot(plot_df, ggplot2::aes(x = n_obs, y = metric_value)) +
@@ -1937,10 +1968,22 @@ plot_summary_of_results <- function(result, cosine_sim_matrix = NULL) {
   }
   sem_rows$sim_type <- factor(sem_rows$sim_type, levels = c("Within-factor", "Between-factor"))
   sem_rows$before_after <- factor(sem_rows$before_after, levels = c("Before", "After"))
-  reduction_label <- if (is.finite(.viz_safe_num(sem_red$percent_reduction))) {
-    sprintf("within-factor reduction %.1f%%", sem_red$percent_reduction)
-  } else if (is.finite(.viz_safe_num(sem_red$absolute_reduction))) {
-    sprintf("within-factor change %.3f", sem_red$absolute_reduction)
+  within_pct_change <- .viz_safe_num(sem_red$percent_change)
+  if (!is.finite(within_pct_change) && is.finite(.viz_safe_num(sem_red$percent_reduction))) {
+    within_pct_change <- -.viz_safe_num(sem_red$percent_reduction)
+  }
+  within_abs_change <- .viz_safe_num(sem_red$within_factor_change)
+  if (!is.finite(within_abs_change) && is.finite(.viz_safe_num(sem_red$absolute_reduction))) {
+    within_abs_change <- -.viz_safe_num(sem_red$absolute_reduction)
+  }
+  reduction_label <- if (is.finite(within_pct_change)) {
+    sprintf(
+      "within-factor similarity %s %.1f%%",
+      if (within_pct_change >= 0) "increased" else "decreased",
+      abs(within_pct_change)
+    )
+  } else if (is.finite(within_abs_change)) {
+    sprintf("within-factor change %+.3f", within_abs_change)
   } else {
     "selected-scale semantic separation"
   }
@@ -1969,9 +2012,10 @@ plot_summary_of_results <- function(result, cosine_sim_matrix = NULL) {
   warnings_obj <- result$summary$warnings %||% character(0L)
   warning_count <- if (length(warnings_obj) == 0L || identical(warnings_obj, "none")) 0L else length(warnings_obj)
   pfa_txt <- if (isTRUE(pfa$available)) sprintf("PFA %.2f", .viz_safe01(pfa$score, 0)) else "PFA unavailable"
+  quality_status <- result$quality_status %||% result$proxy_quality$status %||% "unknown"
   subtitle <- sprintf(
-    "%d selected items across %d factors | optimization utility %s | proposal utility %s | %s | warnings %d",
-    n_items, n_factors,
+    "%d selected items across %d factors | legacy proxy status %s | optimization utility %s | proposal utility %s | %s | warnings %d",
+    n_items, n_factors, quality_status,
     .viz_display_num(pick_num(result$final_guided_objective_score, result$best_objective), 3),
     .viz_display_num(pick_num(result$proposal_objective_score, result$search_objective_score), 3),
     pfa_txt,
@@ -2228,12 +2272,24 @@ the_coolest_plot_ever <- function(result, cosine_sim_matrix = NULL,
   }
 
   sem_red <- result$semantic_similarity_reduction %||% list()
-  within_txt <- if (is.finite(.viz_safe_num(sem_red$percent_reduction))) {
-    sprintf("%.1f%% within-factor redundancy reduction", .viz_safe_num(sem_red$percent_reduction))
-  } else if (is.finite(.viz_safe_num(sem_red$absolute_reduction))) {
-    sprintf("%.3f within-factor similarity change", .viz_safe_num(sem_red$absolute_reduction))
+  within_pct_change <- .viz_safe_num(sem_red$percent_change)
+  if (!is.finite(within_pct_change) && is.finite(.viz_safe_num(sem_red$percent_reduction))) {
+    within_pct_change <- -.viz_safe_num(sem_red$percent_reduction)
+  }
+  within_abs_change <- .viz_safe_num(sem_red$within_factor_change)
+  if (!is.finite(within_abs_change) && is.finite(.viz_safe_num(sem_red$absolute_reduction))) {
+    within_abs_change <- -.viz_safe_num(sem_red$absolute_reduction)
+  }
+  within_txt <- if (is.finite(within_pct_change)) {
+    sprintf(
+      "within-factor similarity %s %.1f%%",
+      if (within_pct_change >= 0) "increased" else "decreased",
+      abs(within_pct_change)
+    )
+  } else if (is.finite(within_abs_change)) {
+    sprintf("%+.3f within-factor similarity change", within_abs_change)
   } else {
-    "semantic redundancy reduction unavailable"
+    "semantic similarity change unavailable"
   }
   final_objective_txt <- .viz_display_num(pick_num(result$final_guided_objective_score, result$best_objective), 3)
   proposal_objective_txt <- .viz_display_num(pick_num(result$proposal_objective_score, result$search_objective_score), 3)
@@ -2501,7 +2557,7 @@ semantica_plot_all <- function(result, cosine_sim_matrix = NULL, df = NULL, mult
   want <- function(name) name %in% which
 
   # High-level QoL adapter: extract the already-computed optimizer inputs from
-  # semantica_run()/semantica_full_pipeline() results. No analysis is rerun.
+  # semantica_run()/semantica_run_custom() results. No analysis is rerun.
   if (inherits(result, "semantica_full_pipeline_result")) {
     full_result <- result
     cosine_sim_matrix <- cosine_sim_matrix %||% full_result$generation$cosine_sim_matrix %||% NULL
@@ -2509,12 +2565,13 @@ semantica_plot_all <- function(result, cosine_sim_matrix = NULL, df = NULL, mult
     result <- full_result$optimization %||% full_result
   }
   if (is.null(cosine_sim_matrix)) {
-    stop("'cosine_sim_matrix' is required unless 'result' is a high-level semantica_run()/semantica_full_pipeline() result.", call. = FALSE)
+    stop("'cosine_sim_matrix' is required unless 'result' is a high-level semantica_run()/semantica_run_custom() result.", call. = FALSE)
   }
 
   out <- list()
   plot_failures <- character(0L)
   saved_paths <- character(0L)
+  plot_timings <- numeric(0L)
   if (isTRUE(progress)) cat("\n[SEMANTICA viz] Generating plots...\n")
 
   run_plot <- function(name, fun) {
@@ -2525,8 +2582,10 @@ semantica_plot_all <- function(result, cosine_sim_matrix = NULL, df = NULL, mult
       if (isTRUE(progress)) message("  ", name, " failed: ", e$message)
       NULL
     })
+    elapsed <- proc.time()[["elapsed"]] - started
+    plot_timings[[name]] <<- elapsed
     if (isTRUE(progress)) {
-      message(sprintf("  %s: done (%.2fs)", name, proc.time()[["elapsed"]] - started))
+      message(sprintf("  %s: done (%.2fs)", name, elapsed))
     }
     value
   }
@@ -2615,8 +2674,39 @@ semantica_plot_all <- function(result, cosine_sim_matrix = NULL, df = NULL, mult
     }
   }
   attr(out, "semantica_plot_failures") <- plot_failures
+  attr(out, "semantica_plot_timing_seconds") <- plot_timings
   manifest <- data.frame(plot = names(out), generated = !vapply(out, is.null, logical(1L)), stringsAsFactors = FALSE)
   manifest$saved_path <- NA_character_
+  manifest$elapsed_seconds <- NA_real_
+  if (length(plot_timings)) {
+    plot_key <- c(
+      "Plot 1" = "p01_pheromone",
+      "Plot 2" = "p02_fitness",
+      "Plot 3" = "p03_networks",
+      "Plot 4" = "p04_loadings_matrix",
+      "Plot 5" = "p05_loading_profiles",
+      "Plot 6" = "p06_dfi_gauges",
+      "Plot 7" = "p07_score_radar",
+      "Plot 8" = "p08_discrimination",
+      "Plot 9" = "p09_interactive",
+      "Plot 10" = "p10a_path_before",
+      "Plot 11" = "p11_selection_freq",
+      "Plot 12" = "p12_specificity",
+      "Plot 13" = "p13_pfa",
+      "Plot 14" = "p14_semantic_n",
+      "Summary plot" = "plot_summary_of_results"
+    )
+    for (plot_name in names(plot_timings)) {
+      manifest_key <- unname(plot_key[plot_name])
+      if (length(manifest_key) == 0L || is.na(manifest_key)) manifest_key <- NA_character_
+      idx <- match(manifest_key, manifest$plot)
+      if (!is.na(idx)) manifest$elapsed_seconds[[idx]] <- plot_timings[[plot_name]]
+      if (identical(plot_name, "Plot 10")) {
+        idx_b <- match("p10b_path_after", manifest$plot)
+        if (!is.na(idx_b)) manifest$elapsed_seconds[[idx_b]] <- plot_timings[[plot_name]]
+      }
+    }
+  }
   if (length(saved_paths)) {
     for (nm in names(saved_paths)) {
       idx <- match(nm, manifest$plot)

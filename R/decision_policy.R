@@ -7,8 +7,8 @@
 
 .SEMANTICA_DECISION_POLICY <- list(
   schema_version = "semantica-decision-policy-v1",
-  objective_schema_version = "semantica-objective-schema-v6",
-  evidence_schema_version = "semantica-evidence-schema-v3",
+  objective_schema_version = "semantica-objective-schema-v7",
+  evidence_schema_version = "semantica-evidence-schema-v4",
   search_schema_version = "semantica-search-schema-v3",
   policy_origin = paste(
     "SEMANTICA decision-utility policy; literature-informed but not treated as",

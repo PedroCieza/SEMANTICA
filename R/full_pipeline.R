@@ -109,7 +109,7 @@ if (!exists("%||%", mode = "function")) {
   merged
 }
 
-.semantica_full_pipeline_resolve_args <- function(
+.semantica_run_custom_resolve_args <- function(
     scale_name, scale_description, factors, backend,
     candidate_items_per_factor, candidate_items_per_factor_supplied,
     items_per_factor, generation_options, optimization_options, dfi_options,
@@ -139,9 +139,24 @@ if (!exists("%||%", mode = "function")) {
       "adaptive_duplicate_quantile", "construct_blueprint",
       "nomological_weight", "content_alignment_mode", "polarity_action",
       "within_target_method", "facet_coverage_weight",
-      "psychometric_guard_weight", "psychometric_guard_min_ave",
+      "facet_constraint_mode", "facet_min_per_facet", "facet_max_imbalance",
+      "psychometric_guard_weight", "psychometric_guard_action",
+      "psychometric_guard_min_ave",
       "psychometric_guard_min_loading",
-      "psychometric_guard_min_primary_ge_50", "sigmoid_center",
+      "psychometric_guard_min_primary_ge_50",
+      "psychometric_guard_min_simple_structure",
+      "psychometric_guard_min_dominance",
+      "psychometric_guard_max_cross_loading",
+      "psychometric_guard_include_htmt",
+      "psychometric_guard_ave_warning_action",
+      "final_structure_repair", "final_structure_repair_max_swaps",
+      "final_structure_repair_candidates_per_factor",
+      "final_structure_repair_min_delta",
+      "final_structure_repair_max_seconds",
+      "final_structure_repair_max_evals",
+      "final_structure_repair_prefilter_top_k",
+      "final_structure_repair_auto_skip_infeasible",
+      "sigmoid_center",
       "sigmoid_steepness", "heuristic_beta", "elite_pareto_rerank",
       "elite_multicriteria_rerank", "archive_stable_window",
       "structural_archive_stable_window", "min_successful_pfa_checkpoints",
@@ -178,7 +193,21 @@ if (!exists("%||%", mode = "function")) {
       "pfa_mode", "pfa_weight", "pfa_failure_policy",
       "run_pfa_during_search", "pfa_every", "pfa_extraction",
       "pfa_final_extraction", "pfa_rotation", "pfa_min_loading",
-      "pfa_min_margin", "pfa_unit_diagnostics"
+      "pfa_min_margin", "pfa_max_abs_loading", "pfa_unit_diagnostics"
+    ),
+    aliases = c(
+      mode = "pfa_mode",
+      weight = "pfa_weight",
+      failure_policy = "pfa_failure_policy",
+      during_search = "run_pfa_during_search",
+      every = "pfa_every",
+      extraction = "pfa_extraction",
+      final_extraction = "pfa_final_extraction",
+      rotation = "pfa_rotation",
+      min_loading = "pfa_min_loading",
+      min_margin = "pfa_min_margin",
+      max_abs_loading = "pfa_max_abs_loading",
+      unit_diagnostics = "pfa_unit_diagnostics"
     )
   )
 
@@ -276,11 +305,12 @@ if (!exists("%||%", mode = "function")) {
 #' Configure LLM providers for the configurable pipeline
 #'
 #' Groups provider, credential, server, and local-model deployment settings.
-#' Model names remain explicit arguments of [semantica_full_pipeline()] so users
+#' Model names remain explicit arguments of [semantica_run_custom()] so users
 #' can choose generation and embedding models directly.
 #'
 #' @param backend Generation backend. Accepted registered values are `"openai"`,
-#'   `"anthropic"`, `"groq"`, `"ollama"`, `"unsloth"`, `"llamacpp"`,
+#'   `"anthropic"`, `"groq"`, `"gemini"`, `"nvidia_nim"`, `"huggingface"`,
+#'   `"ollama"`, `"unsloth"`, `"llamacpp"`,
 #'   `"generic_openai"`, `"python_hf"`, and `"python_llamacpp"`.
 #' @param embed_backend Embedding backend using the same registered names as
 #'   `backend`. `NULL` reuses `backend`; use a separate value when the chat
@@ -290,6 +320,11 @@ if (!exists("%||%", mode = "function")) {
 #' @param base_url Optional provider/server URL for generation, including
 #'   OpenAI-compatible providers not registered in `SEMANTICA_BACKENDS`.
 #' @param embed_base_url Optional provider/server URL for embeddings.
+#' @param allow_provider_key_forwarding Logical; allow a registered cloud-provider
+#'   credential to follow a server override to a different
+#'   origin. Defaults to `FALSE`.
+#' @param allow_insecure_auth Logical; allow credentials over non-loopback
+#'   plain HTTP. Defaults to `FALSE`; loopback HTTP remains supported.
 #' @param gguf_path Optional GGUF path for local llama.cpp workflows.
 #' @param embedding_device,chat_device,device_map,gpu_layers,model_precision
 #'   Local-model deployment controls.
@@ -297,6 +332,8 @@ if (!exists("%||%", mode = "function")) {
 #' @param embedding_cache Logical; use persistent content-addressed embedding caching.
 #' @param embedding_cache_dir Optional directory for persistent embedding cache files.
 #' @param embedding_cache_namespace Optional analyst-defined namespace included in cache keys.
+#' @param embedding_dimension_action Whether a declared embedding-dimension
+#'   mismatch warns (default) or stops before representation analysis.
 #' @param retry_max_tries Maximum number of attempts for retryable HTTP requests.
 #' @param retry_on_failure Logical; retry transient HTTP/provider failures when supported.
 #' @param preflight Logical; validate configured provider/model capabilities before network work.
@@ -313,7 +350,7 @@ if (!exists("%||%", mode = "function")) {
 #'   optional separate embedding sessions.
 #' @param release_local_models Release cached local Python models after use.
 #' @param backend_spec,embed_backend_spec Optional explicit custom backend contracts created by [semantica_backend_spec()].
-#' @return A configuration list for [semantica_full_pipeline()].
+#' @return A configuration list for [semantica_run_custom()].
 #' @export
 semantica_llm_config <- function(
   backend = "openai",
@@ -334,6 +371,7 @@ semantica_llm_config <- function(
   embedding_cache = TRUE,
   embedding_cache_dir = NULL,
   embedding_cache_namespace = NULL,
+  embedding_dimension_action = c("warn", "error"),
   retry_max_tries = 4L,
   retry_on_failure = TRUE,
   preflight = TRUE,
@@ -344,16 +382,23 @@ semantica_llm_config <- function(
   embedding_instruction = NULL,
   embedding_spec = NULL,
   backend_spec = NULL,
-  embed_backend_spec = NULL
+  embed_backend_spec = NULL,
+  allow_provider_key_forwarding = FALSE,
+  allow_insecure_auth = FALSE
 ) {
   embed_batch_size <- .semantica_assert_positive_integer(embed_batch_size, "embed_batch_size")
   embedding_cache <- .semantica_assert_flag(embedding_cache, "embedding_cache")
+  embedding_dimension_action <- match.arg(embedding_dimension_action)
   retry_max_tries <- .semantica_assert_positive_integer(retry_max_tries, "retry_max_tries")
   retry_on_failure <- .semantica_assert_flag(retry_on_failure, "retry_on_failure")
   preflight <- .semantica_assert_flag(preflight, "preflight")
   timeout_s <- .semantica_assert_positive_scalar(timeout_s, "timeout_s")
   embed_timeout_s <- .semantica_assert_optional_positive_scalar(embed_timeout_s, "embed_timeout_s")
   release_local_models <- .semantica_assert_flag(release_local_models, "release_local_models")
+  allow_provider_key_forwarding <- .semantica_assert_flag(
+    allow_provider_key_forwarding, "allow_provider_key_forwarding"
+  )
+  allow_insecure_auth <- .semantica_assert_flag(allow_insecure_auth, "allow_insecure_auth")
   .semantica_config_object(list(
     backend = backend,
     embed_backend = embed_backend,
@@ -373,6 +418,7 @@ semantica_llm_config <- function(
     embedding_cache = embedding_cache,
     embedding_cache_dir = embedding_cache_dir,
     embedding_cache_namespace = embedding_cache_namespace,
+    embedding_dimension_action = embedding_dimension_action,
     retry_max_tries = retry_max_tries,
     retry_on_failure = retry_on_failure,
     preflight = preflight,
@@ -381,6 +427,8 @@ semantica_llm_config <- function(
     embedding_spec = embedding_spec,
     backend_spec = backend_spec,
     embed_backend_spec = embed_backend_spec,
+    allow_provider_key_forwarding = allow_provider_key_forwarding,
+    allow_insecure_auth = allow_insecure_auth,
     timeout_s = timeout_s,
     embed_timeout_s = embed_timeout_s,
     release_local_models = release_local_models
@@ -401,7 +449,7 @@ semantica_llm_config <- function(
 #' @param override_pool_counts Logical. If `TRUE`, `pool` replaces item counts
 #'   nested inside factor/facet specifications and is allocated across facets.
 #'   If `FALSE`, nested counts are preserved.
-#' @return A configuration list for [semantica_full_pipeline()].
+#' @return A configuration list for [semantica_run_custom()].
 #' @export
 semantica_item_count_config <- function(
   pool = 15L,
@@ -437,7 +485,22 @@ semantica_item_count_config <- function(
 #'   configured provider. Lower values generally reduce wording variability;
 #'   provider-specific limits still apply.
 #' @param structured_output Output contract: `"auto"`, `"numbered"`, or schema-oriented `"json"`.
-#' @return A configuration list for [semantica_full_pipeline()].
+#' @param pool_topup Logical; after definition-alignment diagnostics, allow a
+#'   bounded factor-specific generation top-up when the realized pool lacks
+#'   enough usable/aligned slack for the requested selected-item counts.
+#' @param pool_topup_min_slack Minimum usable same-factor candidates to retain
+#'   beyond the selected target before ACO starts.
+#' @param pool_topup_max_rounds Maximum number of bounded top-up rounds. Use `0`
+#'   to keep diagnostics but disable extra generation.
+#' @param pool_topup_overgenerate Optional overgeneration multiplier for top-up
+#'   calls. `NULL` inherits `overgenerate`.
+#' @param pool_topup_relaxation_ladder Logical; after a strict top-up round,
+#'   allow an explicitly logged factor-specific wording/forbidden-conflict
+#'   relaxation only for factors that remain infeasible, while retaining
+#'   construct-alignment and polarity guards.
+#' @param pool_topup_structural_gate Logical; require pre-ACO semantic slack
+#'   and network-redundancy feasibility, not just raw/aligned item counts.
+#' @return A configuration list for [semantica_run_custom()].
 #' @export
 semantica_generation_config <- function(
   response_format = "5-point Likert",
@@ -447,13 +510,27 @@ semantica_generation_config <- function(
   max_retries = 3L,
   global_forbidden_max = 40L,
   temperature = 0.8,
-  structured_output = c("auto", "numbered", "json")
+  structured_output = c("auto", "numbered", "json"),
+  pool_topup = TRUE,
+  pool_topup_min_slack = 2L,
+  pool_topup_max_rounds = 2L,
+  pool_topup_overgenerate = NULL,
+  pool_topup_relaxation_ladder = TRUE,
+  pool_topup_structural_gate = TRUE
 ) {
   structured_output <- match.arg(structured_output)
   overgenerate <- .semantica_assert_positive_scalar(overgenerate, "overgenerate")
   max_retries <- .semantica_assert_nonnegative_integer(max_retries, "max_retries")
   global_forbidden_max <- .semantica_assert_nonnegative_integer(global_forbidden_max, "global_forbidden_max")
   temperature <- .semantica_assert_nonnegative_scalar(temperature, "temperature")
+  pool_topup <- .semantica_assert_flag(pool_topup, "pool_topup")
+  pool_topup_min_slack <- .semantica_assert_nonnegative_integer(pool_topup_min_slack, "pool_topup_min_slack")
+  pool_topup_max_rounds <- .semantica_assert_nonnegative_integer(pool_topup_max_rounds, "pool_topup_max_rounds")
+  pool_topup_relaxation_ladder <- .semantica_assert_flag(pool_topup_relaxation_ladder, "pool_topup_relaxation_ladder")
+  pool_topup_structural_gate <- .semantica_assert_flag(pool_topup_structural_gate, "pool_topup_structural_gate")
+  if (!is.null(pool_topup_overgenerate)) {
+    pool_topup_overgenerate <- .semantica_assert_positive_scalar(pool_topup_overgenerate, "pool_topup_overgenerate")
+  }
   .semantica_config_object(list(
     response_format = response_format,
     item_style = item_style,
@@ -462,7 +539,13 @@ semantica_generation_config <- function(
     max_retries = max_retries,
     global_forbidden_max = global_forbidden_max,
     temperature = temperature,
-    structured_output = structured_output
+    structured_output = structured_output,
+    pool_topup = pool_topup,
+    pool_topup_min_slack = pool_topup_min_slack,
+    pool_topup_max_rounds = pool_topup_max_rounds,
+    pool_topup_overgenerate = pool_topup_overgenerate,
+    pool_topup_relaxation_ladder = pool_topup_relaxation_ladder,
+    pool_topup_structural_gate = pool_topup_structural_gate
   ), "semantica_generation_config")
 }
 
@@ -479,12 +562,16 @@ semantica_generation_config <- function(
 #'   serial execution.
 #' @param reserve_cpu_cores CPU cores to leave unused when `cpu_cores = "auto"`. The main/coordinator R process is budgeted separately.
 #' @param max_cpu_cores Optional hard ceiling on CPU workers.
-#' @return A configuration list for [semantica_full_pipeline()].
+#' @param memory_aware Whether automatic PSOCK worker planning should cap
+#'   workers using the measured memory budget. Explicit numeric worker requests
+#'   remain user-authoritative.
+#' @return A configuration list for [semantica_run_custom()].
 #' @export
 semantica_resource_config <- function(
   cpu_cores = "auto",
   reserve_cpu_cores = 1L,
-  max_cpu_cores = NULL
+  max_cpu_cores = NULL,
+  memory_aware = TRUE
 ) {
   if (is.character(cpu_cores) && length(cpu_cores) == 1L && !is.na(cpu_cores) &&
       tolower(trimws(cpu_cores)) %in% c("auto", "serial", "none", "off")) {
@@ -495,10 +582,12 @@ semantica_resource_config <- function(
   }
   reserve_cpu_cores <- .semantica_assert_nonnegative_integer(reserve_cpu_cores, "reserve_cpu_cores")
   max_cpu_cores <- .semantica_assert_optional_positive_integer(max_cpu_cores, "max_cpu_cores")
+  memory_aware <- .semantica_assert_flag(memory_aware, "memory_aware")
   .semantica_config_object(list(
     cpu_cores = cpu_cores,
     reserve_cpu_cores = reserve_cpu_cores,
-    max_cpu_cores = max_cpu_cores
+    max_cpu_cores = max_cpu_cores,
+    memory_aware = memory_aware
   ), "semantica_resource_config")
 }
 
@@ -522,9 +611,9 @@ semantica_resource_config <- function(
 #'   `"single"`; MPS requires single precision when explicitly requested.
 #' @param compute_memory_limit Optional working-memory ceiling.
 #' @param retain_embeddings Retain dense embeddings in the returned object.
-#'   `NULL` lets [semantica_full_pipeline()] infer this from requested
+#'   `NULL` lets [semantica_run_custom()] infer this from requested
 #'   diagnostics.
-#' @return A configuration list for [semantica_full_pipeline()].
+#' @return A configuration list for [semantica_run_custom()].
 #' @export
 semantica_compute_config <- function(
   cosine_adjustment = c("none", "mean_center"),
@@ -559,7 +648,7 @@ semantica_compute_config <- function(
 #' Configure ESEM options for the configurable pipeline
 #'
 #' Collects advanced proxy-ESEM scheduling and scoring options for
-#' [semantica_full_pipeline()]. Normal scale-construction workflows should prefer
+#' [semantica_run_custom()]. Normal scale-construction workflows should prefer
 #' [semantica_run()] and its coherent ACO presets.
 #'
 #' @param proxy_reference_n Semantic-proxy ESEM/DFI reference N, or `"auto"`.
@@ -576,14 +665,18 @@ semantica_compute_config <- function(
 #'   the declared `esem_every` interval exactly.
 #' @param esem_every,run_esem_during_search,esem_weight,fast_esem,fast_esem_iter_max,full_esem_iter_max,esem_eval_top_k
 #'   Optional convenience overrides for ESEM search controls. The canonical
-#'   configurable interface keeps these as top-level [semantica_full_pipeline()]
+#'   configurable interface keeps these as top-level [semantica_run_custom()]
 #'   arguments; top-level values take precedence when both are supplied.
 #' @param esem_failure_policy Optional ESEM failure policy: `"stop"` or
 #'   `"semantic_fallback"`. Under fallback, an all-failed checkpoint is scored
 #'   semantically/PFA for that checkpoint, but later ESEM checkpoints are still
 #'   attempted. Final archived candidates are also refit before non-ESEM
 #'   fallback selection is allowed.
-#' @return A configuration list for [semantica_full_pipeline()].
+#' @param uncalibrated_esem_policy Handling when automatic DFI calibration
+#'   disables ESEM scoring while final guardrails are hard constraints:
+#'   `"fail_early"` (default), `"guard_screen"`, or explicit
+#'   `"semantic_fallback"`.
+#' @return A configuration list for [semantica_run_custom()].
 #' @export
 semantica_esem_config <- function(
   proxy_reference_n = "auto",
@@ -594,6 +687,7 @@ semantica_esem_config <- function(
   run_esem_during_search = NULL,
   esem_weight = NULL,
   esem_failure_policy = NULL,
+  uncalibrated_esem_policy = NULL,
   fast_esem = NULL,
   fast_esem_iter_max = NULL,
   full_esem_iter_max = NULL,
@@ -615,6 +709,12 @@ semantica_esem_config <- function(
       c("stop", "semantic_fallback")
     )
   }
+  if (!is.null(uncalibrated_esem_policy)) {
+    uncalibrated_esem_policy <- match.arg(
+      uncalibrated_esem_policy,
+      c("fail_early", "guard_screen", "semantic_fallback")
+    )
+  }
   .semantica_config_object(list(
     proxy_reference_n = proxy_reference_n,
     rotation = rotation,
@@ -625,6 +725,7 @@ semantica_esem_config <- function(
     run_esem_during_search = run_esem_during_search,
     esem_weight = esem_weight,
     esem_failure_policy = esem_failure_policy,
+    uncalibrated_esem_policy = uncalibrated_esem_policy,
     fast_esem = fast_esem,
     fast_esem_iter_max = fast_esem_iter_max,
     full_esem_iter_max = full_esem_iter_max,
@@ -653,11 +754,53 @@ semantica_esem_config <- function(
 #'   `"relative_conservative"` (default) combines threshold-free stochastic
 #'   superiority with a robust within-between median-gap component.
 #'   `"legacy_target_burden"` retains the 0.4.x score for reproducibility.
-#' @param facet_coverage_weight Soft weight for facet coverage.
-#' @param psychometric_guard_weight Soft penalty strength for weak proxy
+#' @param facet_coverage_weight Soft weight for facet coverage among candidates
+#'   that satisfy any active facet constraint.
+#' @param facet_constraint_mode Content-blueprint constraint for declared facets.
+#'   `"auto"` resolves by quality profile (`lenient = "soft"`,
+#'   `standard = "presence"`, `strict = "balanced"`). `"presence"` requires at
+#'   least `facet_min_per_facet` selected item(s) from every declared facet when
+#'   feasible; `"balanced"` additionally limits within-factor count imbalance.
+#' @param facet_min_per_facet Minimum selected items required per declared facet
+#'   when a hard facet constraint is active.
+#' @param facet_max_imbalance Maximum difference between the most- and
+#'   least-represented facets within a factor under `"balanced"`.
+#' @param psychometric_guard_weight Soft search penalty strength for weak proxy
 #'   structure.
+#' @param psychometric_guard_action Whether structural guardrails are only a
+#'   search penalty or also a final admissibility constraint. `"auto"` preserves
+#'   legacy penalty-only behavior unless structural thresholds are explicitly
+#'   supplied (or the strict profile is used), in which case final candidates
+#'   must pass the declared guardrails.
 #' @param psychometric_guard_min_ave,psychometric_guard_min_loading,psychometric_guard_min_primary_ge_50
 #'   Minimum proxy-structure guardrails.
+#' @param psychometric_guard_min_simple_structure,psychometric_guard_min_dominance,psychometric_guard_max_cross_loading
+#'   Optional ESEM structure guardrails. `NULL` leaves the legacy guard
+#'   unchanged; finite values penalize low simple structure, low intended-factor
+#'   dominance, or excessive cross-loading.
+#' @param psychometric_guard_include_htmt Logical or `NULL`; `NULL` lets the
+#'   lower-level ACO objective include HTMT only when
+#'   `htmt_objective_role = "penalty"`.
+#' @param psychometric_guard_ave_warning_action Whether AVE-computation
+#'   warnings remain a soft penalty (default) or become an explicit final
+#'   admissibility constraint.
+#' @param final_structure_repair Enable a bounded same-factor repair pass after
+#'   archive reranking. Accepted swaps must improve the declared objective.
+#' @param final_structure_repair_max_swaps,final_structure_repair_candidates_per_factor,final_structure_repair_min_delta
+#'   Limits for the optional final repair pass.
+#' @param final_structure_repair_max_seconds,final_structure_repair_max_evals
+#'   Exact-fit launch-time and evaluation budgets for final repair. A finite
+#'   seconds budget is checked before each expensive fit; an in-flight fit is
+#'   allowed to finish. Defaults are 60 seconds and 20 exact evaluations; `Inf`
+#'   explicitly removes a budget.
+#' @param final_structure_repair_prefilter_top_k Optional cheap surrogate
+#'   prefilter size per repair step. The default is 10; `Inf` keeps all candidate swaps.
+#' @param final_structure_repair_auto_skip_infeasible Automatically skip final
+#'   repair when the selected factor pools have no semantic-eligible slack or
+#'   infeasible duplicate constraints.
+#' @param final_selection_mode Final archive decision rule. `"pareto"`
+#'   (default) selects from the non-dominated ESEM finalist set using explicit
+#'   structural priorities; `"scalar"` preserves legacy scalar ranking.
 #' @param threshold_mode `"fixed"` preserves declared thresholds; `"adaptive_pool"` enables an explicitly experimental pool-relative heuristic.
 #' @param adaptive_redundancy_quantile,adaptive_duplicate_quantile Quantiles used by the experimental pool-relative threshold calibration.
 #' @param construct_blueprint Optional object from [semantica_construct_blueprint()].
@@ -675,7 +818,7 @@ semantica_esem_config <- function(
 #'   within-factor similarity below the configured redundancy threshold in the
 #'   current pool/model; `"legacy_q40"` reproduces the older 0.25--0.55-clamped
 #'   40th-percentile heuristic for compatibility studies.
-#' @return A configuration list for [semantica_full_pipeline()].
+#' @return A configuration list for [semantica_run_custom()].
 #' @export
 semantica_quality_config <- function(
   profile = c("standard", "lenient", "strict"),
@@ -688,10 +831,28 @@ semantica_quality_config <- function(
   within_similarity_band = NULL,
   semantic_objective_mode = c("relative_conservative", "legacy_target_burden"),
   facet_coverage_weight = NULL,
+  facet_constraint_mode = c("auto", "soft", "presence", "balanced"),
+  facet_min_per_facet = 1L,
+  facet_max_imbalance = 1L,
   psychometric_guard_weight = NULL,
+  psychometric_guard_action = c("auto", "penalty", "final_constraint"),
   psychometric_guard_min_ave = NULL,
   psychometric_guard_min_loading = NULL,
   psychometric_guard_min_primary_ge_50 = NULL,
+  psychometric_guard_min_simple_structure = NULL,
+  psychometric_guard_min_dominance = NULL,
+  psychometric_guard_max_cross_loading = NULL,
+  psychometric_guard_include_htmt = NULL,
+  psychometric_guard_ave_warning_action = c("penalty", "final_constraint"),
+  final_structure_repair = FALSE,
+  final_structure_repair_max_swaps = 6L,
+  final_structure_repair_candidates_per_factor = 6L,
+  final_structure_repair_min_delta = 1e-6,
+  final_structure_repair_max_seconds = 60,
+  final_structure_repair_max_evals = 20L,
+  final_structure_repair_prefilter_top_k = 10L,
+  final_structure_repair_auto_skip_infeasible = TRUE,
+  final_selection_mode = c("pareto", "scalar"),
   threshold_mode = c("fixed", "adaptive_pool"),
   adaptive_redundancy_quantile = 0.95,
   adaptive_duplicate_quantile = 0.99,
@@ -709,9 +870,102 @@ semantica_quality_config <- function(
   polarity_action <- match.arg(polarity_action)
   within_target_method <- match.arg(within_target_method)
   semantic_objective_mode <- match.arg(semantic_objective_mode)
+  final_selection_mode <- match.arg(final_selection_mode)
+  facet_constraint_mode <- match.arg(facet_constraint_mode)
+  psychometric_guard_action <- match.arg(psychometric_guard_action)
+  psychometric_guard_ave_warning_action <- match.arg(psychometric_guard_ave_warning_action)
+  explicit_psychometric_thresholds <- any(!vapply(
+    list(
+      psychometric_guard_min_ave,
+      psychometric_guard_min_loading,
+      psychometric_guard_min_primary_ge_50,
+      psychometric_guard_min_simple_structure,
+      psychometric_guard_min_dominance,
+      psychometric_guard_max_cross_loading
+    ),
+    is.null,
+    logical(1L)
+  ))
+  if (identical(facet_constraint_mode, "auto")) {
+    facet_constraint_mode <- switch(
+      profile,
+      lenient = "soft",
+      standard = "presence",
+      strict = "balanced"
+    )
+  }
+  if (identical(psychometric_guard_action, "auto")) {
+    psychometric_guard_action <- if (identical(profile, "strict") ||
+                                      explicit_psychometric_thresholds) {
+      "final_constraint"
+    } else {
+      "penalty"
+    }
+  }
+  facet_min_per_facet <- .semantica_assert_positive_integer(
+    facet_min_per_facet, "facet_min_per_facet"
+  )
+  facet_max_imbalance <- suppressWarnings(as.integer(facet_max_imbalance[1L]))
+  if (length(facet_max_imbalance) != 1L || !is.finite(facet_max_imbalance) ||
+      facet_max_imbalance < 0L) {
+    stop("'facet_max_imbalance' must be a non-negative integer.", call. = FALSE)
+  }
   adaptive_redundancy_quantile <- .semantica_assert_probability(adaptive_redundancy_quantile, "adaptive_redundancy_quantile")
   adaptive_duplicate_quantile <- .semantica_assert_probability(adaptive_duplicate_quantile, "adaptive_duplicate_quantile")
   polarity_screen <- .semantica_assert_flag(polarity_screen, "polarity_screen")
+  optional_probability <- function(value, arg) {
+    if (is.null(value)) return(NULL)
+    value <- suppressWarnings(as.numeric(value[1L]))
+    if (length(value) != 1L || is.na(value) || !is.finite(value) || value < 0 || value > 1) {
+      stop(sprintf("'%s' must be NULL or a single number between 0 and 1.", arg), call. = FALSE)
+    }
+    value
+  }
+  psychometric_guard_min_simple_structure <- optional_probability(
+    psychometric_guard_min_simple_structure, "psychometric_guard_min_simple_structure"
+  )
+  psychometric_guard_min_dominance <- optional_probability(
+    psychometric_guard_min_dominance, "psychometric_guard_min_dominance"
+  )
+  psychometric_guard_max_cross_loading <- optional_probability(
+    psychometric_guard_max_cross_loading, "psychometric_guard_max_cross_loading"
+  )
+  psychometric_guard_include_htmt <- if (is.null(psychometric_guard_include_htmt)) {
+    NULL
+  } else {
+    .semantica_assert_flag(psychometric_guard_include_htmt, "psychometric_guard_include_htmt")
+  }
+  final_structure_repair <- .semantica_assert_flag(final_structure_repair, "final_structure_repair")
+  final_structure_repair_max_swaps <- .semantica_assert_positive_integer(
+    final_structure_repair_max_swaps, "final_structure_repair_max_swaps"
+  )
+  final_structure_repair_candidates_per_factor <- .semantica_assert_positive_integer(
+    final_structure_repair_candidates_per_factor, "final_structure_repair_candidates_per_factor"
+  )
+  final_structure_repair_min_delta <- .semantica_assert_positive_scalar(
+    final_structure_repair_min_delta, "final_structure_repair_min_delta"
+  )
+  optional_positive_or_inf <- function(value, arg) {
+    value <- suppressWarnings(as.numeric(value[1L]))
+    if (length(value) != 1L || is.na(value) || value <= 0 ||
+        (!is.finite(value) && !is.infinite(value))) {
+      stop(sprintf("'%s' must be a positive number or Inf.", arg), call. = FALSE)
+    }
+    value
+  }
+  final_structure_repair_max_seconds <- optional_positive_or_inf(
+    final_structure_repair_max_seconds, "final_structure_repair_max_seconds"
+  )
+  final_structure_repair_max_evals <- optional_positive_or_inf(
+    final_structure_repair_max_evals, "final_structure_repair_max_evals"
+  )
+  final_structure_repair_prefilter_top_k <- optional_positive_or_inf(
+    final_structure_repair_prefilter_top_k, "final_structure_repair_prefilter_top_k"
+  )
+  final_structure_repair_auto_skip_infeasible <- .semantica_assert_flag(
+    final_structure_repair_auto_skip_infeasible,
+    "final_structure_repair_auto_skip_infeasible"
+  )
   defaults <- .semantica_decision_policy()$quality_profiles[[profile]]
   if (is.null(defaults)) {
     stop(sprintf("No centralized decision-policy profile is registered for '%s'.", profile), call. = FALSE)
@@ -723,10 +977,19 @@ semantica_quality_config <- function(
     cohesion_retention = cohesion_retention,
     within_similarity_band = within_similarity_band,
     facet_coverage_weight = facet_coverage_weight,
+    facet_constraint_mode = facet_constraint_mode,
+    facet_min_per_facet = facet_min_per_facet,
+    facet_max_imbalance = facet_max_imbalance,
     psychometric_guard_weight = psychometric_guard_weight,
+    psychometric_guard_action = psychometric_guard_action,
     psychometric_guard_min_ave = psychometric_guard_min_ave,
     psychometric_guard_min_loading = psychometric_guard_min_loading,
-    psychometric_guard_min_primary_ge_50 = psychometric_guard_min_primary_ge_50
+    psychometric_guard_min_primary_ge_50 = psychometric_guard_min_primary_ge_50,
+    psychometric_guard_min_simple_structure = psychometric_guard_min_simple_structure,
+    psychometric_guard_min_dominance = psychometric_guard_min_dominance,
+    psychometric_guard_max_cross_loading = psychometric_guard_max_cross_loading,
+    psychometric_guard_include_htmt = psychometric_guard_include_htmt,
+    psychometric_guard_ave_warning_action = psychometric_guard_ave_warning_action
   )
   overrides <- overrides[!vapply(overrides, is.null, logical(1L))]
   out <- utils::modifyList(defaults, overrides, keep.null = TRUE)
@@ -747,6 +1010,20 @@ semantica_quality_config <- function(
   out$content_alignment_mode <- content_alignment_mode
   out$polarity_action <- polarity_action
   out$within_target_method <- within_target_method
+  out$facet_constraint_mode <- facet_constraint_mode
+  out$facet_min_per_facet <- facet_min_per_facet
+  out$facet_max_imbalance <- facet_max_imbalance
+  out$psychometric_guard_action <- psychometric_guard_action
+  out$psychometric_guard_ave_warning_action <- psychometric_guard_ave_warning_action
+  out$final_structure_repair <- final_structure_repair
+  out$final_structure_repair_max_swaps <- final_structure_repair_max_swaps
+  out$final_structure_repair_candidates_per_factor <- final_structure_repair_candidates_per_factor
+  out$final_structure_repair_min_delta <- final_structure_repair_min_delta
+  out$final_structure_repair_max_seconds <- final_structure_repair_max_seconds
+  out$final_structure_repair_max_evals <- final_structure_repair_max_evals
+  out$final_structure_repair_prefilter_top_k <- final_structure_repair_prefilter_top_k
+  out$final_structure_repair_auto_skip_infeasible <- final_structure_repair_auto_skip_infeasible
+  out$final_selection_mode <- final_selection_mode
   cfg <- .semantica_config_object(
     out, "semantica_quality_config",
     schema_fields = names(formals(semantica_quality_config))
@@ -773,9 +1050,11 @@ semantica_quality_config <- function(
 #' @param rotation PFA rotation: `"promax"`, `"target_oblique"`, `"oblimin"`,
 #'   `"varimax"`, or `"none"`.
 #' @param min_loading,min_margin Simple-structure thresholds.
+#' @param max_abs_loading Maximum acceptable absolute PFA loading before a
+#'   boundary-loading penalty is applied; `Inf` preserves historical behavior.
 #' @param unit_diagnostics Compute facet/unit-level PFA when metadata and
 #'   embeddings are available.
-#' @return A configuration list for [semantica_full_pipeline()].
+#' @return A configuration list for [semantica_run_custom()].
 #' @export
 semantica_pfa_config <- function(
   mode = c("diagnostic", "objective", "off"),
@@ -788,6 +1067,7 @@ semantica_pfa_config <- function(
   rotation = c("promax", "target_oblique", "oblimin", "varimax", "none"),
   min_loading = NULL,
   min_margin = NULL,
+  max_abs_loading = Inf,
   unit_diagnostics = TRUE
 ) {
   mode <- match.arg(mode)
@@ -798,6 +1078,10 @@ semantica_pfa_config <- function(
   if (is.null(during_search)) during_search <- identical(mode, "objective")
   during_search <- .semantica_assert_flag(during_search, "during_search")
   every <- .semantica_assert_positive_integer(every, "every")
+  max_abs_loading <- suppressWarnings(as.numeric(max_abs_loading[1L]))
+  if (length(max_abs_loading) != 1L || is.na(max_abs_loading) || max_abs_loading <= 0) {
+    stop("'max_abs_loading' must be a positive number or Inf.", call. = FALSE)
+  }
   unit_diagnostics <- .semantica_assert_flag(unit_diagnostics, "unit_diagnostics")
   .semantica_config_object(list(
     mode = mode,
@@ -810,6 +1094,7 @@ semantica_pfa_config <- function(
     rotation = rotation,
     min_loading = min_loading,
     min_margin = min_margin,
+    max_abs_loading = max_abs_loading,
     unit_diagnostics = unit_diagnostics
   ), "semantica_pfa_config")
 }
@@ -822,7 +1107,13 @@ semantica_pfa_config <- function(
 #'
 #' @param mode Calibration mode. `"off"` and `"fast"` both map to
 #'   `dfi_mode = "heuristic_semantic"`; `"strict"` maps to
-#'   `dfi_mode = "esem_parametric_dfi"`.
+#'   `dfi_mode = "esem_parametric_dfi"`. In high-dimensional `"auto"` runs with
+#'   a bounded ESEM-DFI budget, SEMANTICA may skip the semantic-ROC prepass.
+#'   Bootstrap ESEM is attempted on up to three distinct high-scoring warm-up
+#'   subsets before model-matched ESEM calibration is considered unavailable;
+#'   strict-CFA fallback simulation remains diagnostic rather than calibrating
+#'   ESEM-guided search. Request
+#'   `"semantic_roc_dfi"` to force ROC calibration.
 #' @param reps,level,criterion Search-time DFI simulation controls.
 #' @param esem_reps,search_reps Optional ESEM-DFI replication budgets.
 #' @param final_recalibrate,final_reps Optional final DFI recalibration.
@@ -834,7 +1125,9 @@ semantica_pfa_config <- function(
 #'   Adaptive ESEM DFI controls.
 #' @param fallback_policy DFI fallback policy: `"conservative"` permits the
 #'   documented safer fallback sequence when a requested calibration cannot be
-#'   estimated; `"requested_only"` does not substitute another DFI method.
+#'   estimated; `"requested_only"` does not substitute another DFI method for
+#'   explicit non-`"auto"` modes. In `"auto"` mode, SEMANTICA may still walk its
+#'   documented internal calibration ladder.
 #' @param data_type Data-type label used by DFI/ESEM logic. The established
 #'   workflow recognizes `"continuous"`, `"likert"`, `"categorical"`, and
 #'   `"nonnormal"`; some DFI paths require `original_data` for non-continuous
@@ -842,7 +1135,7 @@ semantica_pfa_config <- function(
 #' @param target_loadings,target_factor_cors,loading_pattern,embed_reliability,residual_inflation
 #'   Population assumptions for fallback DFI.
 #' @param warmup_iters Warm-up iterations before DFI calibration.
-#' @return A configuration list for [semantica_full_pipeline()].
+#' @return A configuration list for [semantica_run_custom()].
 #' @export
 semantica_fit_calibration_config <- function(
   mode = c("auto", "semantic_roc_dfi", "semantic_approx_dfi",
@@ -935,7 +1228,7 @@ semantica_fit_calibration_config <- function(
 #'   planning is requested but the selected semantic-proxy ESEM is inadmissible.
 #'   `"skip"` (default) avoids a misleading Monte Carlo sample-size exercise;
 #'   `"run"` forces the legacy PFA-informed planning calculation.
-#' @return A configuration list for [semantica_full_pipeline()].
+#' @return A configuration list for [semantica_run_custom()].
 #' @export
 semantica_diagnostics_config <- function(
   final_fit = c("off", "dddfi", "extended"),
@@ -1023,7 +1316,7 @@ semantica_diagnostics_config <- function(
 #' @param path_proxy_max_items Maximum pool items represented in the fast BEFORE path proxy.
 #' @param include_interactive Logical; include interactive plotly diagnostics when requested.
 #' @param progress Print per-plot progress; `NULL` follows `verbose`.
-#' @return A configuration list for [semantica_full_pipeline()].
+#' @return A configuration list for [semantica_run_custom()].
 #' @export
 semantica_plot_config <- function(
   level = c("summary", "full", "none"),
@@ -1076,8 +1369,9 @@ semantica_plot_config <- function(
 
 .semantica_selected_counts <- function(selected, factors) {
   factor_names <- names(factors)
-  if (is.null(factor_names) || any(!nzchar(factor_names))) {
-    stop("'factors' must be a named list.", call. = FALSE)
+  if (is.null(factor_names) || anyNA(factor_names) || any(!nzchar(factor_names)) ||
+      anyDuplicated(factor_names)) {
+    stop("'factors' must be a named list with unique, non-empty factor names.", call. = FALSE)
   }
   selected <- suppressWarnings(as.integer(selected))
   if (length(selected) == 1L) {
@@ -1153,6 +1447,7 @@ semantica_plot_config <- function(
   reserve_cpu_cores <- resources$reserve_cpu_cores %||%
     resources$reserve.cores %||% 1L
   max_cpu_cores <- resources$max_cpu_cores %||% resources$max.cores
+  memory_aware <- resources$memory_aware %||% TRUE
   serial_alias <- is.character(cpu_cores) &&
     length(cpu_cores) == 1L &&
     tolower(cpu_cores) %in% c("serial", "none", "off")
@@ -1163,7 +1458,8 @@ semantica_plot_config <- function(
     n.cores = cpu_cores,
     use_parallel = use_parallel,
     reserve.cores = reserve_cpu_cores,
-    max.cores = max_cpu_cores
+    max.cores = max_cpu_cores,
+    memory_aware = memory_aware
   )
 }
 
@@ -1171,8 +1467,7 @@ semantica_plot_config <- function(
 #'
 #' User-facing one-call workflow for construct definition, LLM generation,
 #' semantic embedding, ACO-ESEM item selection, optional response-data
-#' validation, and compact diagnostics. The previous all-arguments interface is
-#' still available as [semantica_full_pipeline_custom()].
+#' validation, and compact diagnostics.
 #'
 #' @param scale_name Short scale name.
 #' @param scale_description Overall construct description.
@@ -1219,6 +1514,10 @@ semantica_plot_config <- function(
 #'   `"semantic_fallback"` falls back only for that checkpoint, continues trying
 #'   ESEM at later checkpoints, and allows final semantic/PFA fallback only after
 #'   every archived finalist has received a full-ESEM attempt.
+#' @param uncalibrated_esem_policy Handling when automatic DFI calibration
+#'   disables ESEM scoring while final guardrails are hard constraints:
+#'   `"fail_early"` (default), `"guard_screen"`, or explicit
+#'   `"semantic_fallback"`.
 #' @param fast_esem Logical; use the cheaper search-time ESEM solver path.
 #' @param fast_esem_iter_max,full_esem_iter_max Positive iteration ceilings for
 #'   search-time and full archive/final ESEM fits, respectively.
@@ -1240,9 +1539,19 @@ semantica_plot_config <- function(
 #'   for response-data validation. `NULL` leaves estimator-specific defaults.
 #' @param plots Plot config from [semantica_plot_config()], or `"none"`,
 #'   `"summary"`, `"full"`, `TRUE`, or `FALSE`.
+#' @param checkpoint_dir Optional directory for automatic stage checkpoints.
+#'   Interactive runs default to `"semantica_checkpoints"`; non-interactive runs
+#'   default to `NULL`. Checkpoint I/O failures warn but do not abort analysis.
+#' @param checkpoint_on_exit Logical; when checkpointing is enabled, save either
+#'   the sanitized full result or an incomplete-run marker on function exit.
 #' @param seed Optional master seed. It controls SEMANTICA's stochastic analysis
 #'   and is also inherited by LLM generation when the configured generation
 #'   backend exposes an implemented seed contract (currently Ollama).
+#' @param restart_seeds Optional nonnegative optimizer seeds. When supplied,
+#'   the generated pool and all optimizer settings are held fixed across starts;
+#'   the highest observed objective is selected only when the recorded evidence
+#'   regime is common across successful starts. Agreement remains a descriptive
+#'   optimizer-sensitivity diagnostic, not validation evidence.
 #' @param verbose Print progress messages.
 #' @section Side effects:
 #' May perform provider network I/O, persistent embedding-cache I/O, local
@@ -1258,9 +1567,10 @@ semantica_plot_config <- function(
 #' Remote provider aliases remain mutable unless an actual model revision is
 #' available and recorded.
 #'
-#' @return A `semantica_full_pipeline_result`.
+#' @return A compact `semantica_run_result`; `$advanced` retains the complete
+#'   canonical `semantica_full_pipeline_result`.
 #' @export
-semantica_full_pipeline <- function(
+semantica_run_custom <- function(
   scale_name,
   scale_description,
   factors,
@@ -1285,6 +1595,7 @@ semantica_full_pipeline <- function(
   run_esem_during_search = TRUE,
   esem_weight = 0.50,
   esem_failure_policy = c("stop", "semantic_fallback"),
+  uncalibrated_esem_policy = c("fail_early", "guard_screen", "semantic_fallback"),
   fast_esem = TRUE,
   fast_esem_iter_max = 500L,
   full_esem_iter_max = 2000L,
@@ -1298,7 +1609,10 @@ semantica_full_pipeline <- function(
   validation_data = NULL,
   validation_ordered = NULL,
   plots = semantica_plot_config(),
+  checkpoint_dir = if (interactive()) "semantica_checkpoints" else NULL,
+  checkpoint_on_exit = TRUE,
   seed = NULL,
+  restart_seeds = NULL,
   verbose = TRUE
 ) {
   top_max_iter <- !missing(max.iter)
@@ -1306,6 +1620,7 @@ semantica_full_pipeline <- function(
   top_run_esem <- !missing(run_esem_during_search)
   top_esem_weight <- !missing(esem_weight)
   top_esem_failure_policy <- !missing(esem_failure_policy)
+  top_uncalibrated_esem_policy <- !missing(uncalibrated_esem_policy)
   top_fast_esem <- !missing(fast_esem)
   top_fast_esem_iter_max <- !missing(fast_esem_iter_max)
   top_full_esem_iter_max <- !missing(full_esem_iter_max)
@@ -1365,6 +1680,9 @@ semantica_full_pipeline <- function(
   if (!top_esem_failure_policy && !is.null(esem$esem_failure_policy)) {
     esem_failure_policy <- esem$esem_failure_policy
   }
+  if (!top_uncalibrated_esem_policy && !is.null(esem$uncalibrated_esem_policy)) {
+    uncalibrated_esem_policy <- esem$uncalibrated_esem_policy
+  }
   if (!top_fast_esem && !is.null(esem$fast_esem)) {
     fast_esem <- esem$fast_esem
   }
@@ -1378,6 +1696,7 @@ semantica_full_pipeline <- function(
     esem_eval_top_k <- esem$esem_eval_top_k
   }
   esem_failure_policy <- match.arg(esem_failure_policy)
+  uncalibrated_esem_policy <- match.arg(uncalibrated_esem_policy)
   selected_counts <- .semantica_selected_counts(item_counts$selected, factors)
   retain_embeddings <- compute$retain_embeddings
   if (is.null(retain_embeddings)) retain_embeddings <- isTRUE(pfa$unit_diagnostics)
@@ -1385,7 +1704,7 @@ semantica_full_pipeline <- function(
   if (is.null(plot_progress)) plot_progress <- verbose
   resource_args <- .semantica_resource_args(resources)
 
-  out <- semantica_full_pipeline_custom(
+  out <- .semantica_execute_pipeline(
     backend = llm$backend,
     embed_backend = llm$embed_backend,
     backend_spec = llm$backend_spec,
@@ -1398,6 +1717,7 @@ semantica_full_pipeline <- function(
     embedding_cache = llm$embedding_cache,
     embedding_cache_dir = llm$embedding_cache_dir,
     embedding_cache_namespace = llm$embedding_cache_namespace,
+    embedding_dimension_action = llm$embedding_dimension_action,
     retry_max_tries = llm$retry_max_tries,
     retry_on_failure = llm$retry_on_failure,
     preflight = llm$preflight,
@@ -1415,6 +1735,8 @@ semantica_full_pipeline <- function(
     model_precision = llm$model_precision,
     base_url = llm$base_url,
     embed_base_url = llm$embed_base_url,
+    allow_provider_key_forwarding = llm$allow_provider_key_forwarding,
+    allow_insecure_auth = llm$allow_insecure_auth,
     gguf_path = llm$gguf_path,
     cosine_adjustment = compute$cosine_adjustment,
     semantic_calibration = compute$semantic_calibration,
@@ -1444,6 +1766,7 @@ semantica_full_pipeline <- function(
     max_esem_fits = max_esem_fits,
     esem_weight = esem_weight,
     esem_failure_policy = esem_failure_policy,
+    uncalibrated_esem_policy = uncalibrated_esem_policy,
     esem_sample_size = esem$proxy_reference_n,
     elite_k = elite_k,
     esem_eval_top_k = esem_eval_top_k,
@@ -1488,10 +1811,27 @@ semantica_full_pipeline <- function(
     within_similarity_band = quality$within_similarity_band,
     semantic_objective_mode = quality$semantic_objective_mode,
     facet_coverage_weight = quality$facet_coverage_weight,
+    facet_constraint_mode = quality$facet_constraint_mode %||% "soft",
+    facet_min_per_facet = quality$facet_min_per_facet %||% 1L,
+    facet_max_imbalance = quality$facet_max_imbalance %||% 1L,
     psychometric_guard_weight = quality$psychometric_guard_weight,
+    psychometric_guard_action = quality$psychometric_guard_action %||% "penalty",
     psychometric_guard_min_ave = quality$psychometric_guard_min_ave,
     psychometric_guard_min_loading = quality$psychometric_guard_min_loading,
     psychometric_guard_min_primary_ge_50 = quality$psychometric_guard_min_primary_ge_50,
+    psychometric_guard_min_simple_structure = quality$psychometric_guard_min_simple_structure,
+    psychometric_guard_min_dominance = quality$psychometric_guard_min_dominance,
+    psychometric_guard_max_cross_loading = quality$psychometric_guard_max_cross_loading,
+    psychometric_guard_include_htmt = quality$psychometric_guard_include_htmt,
+    psychometric_guard_ave_warning_action = quality$psychometric_guard_ave_warning_action,
+    final_structure_repair = quality$final_structure_repair,
+    final_structure_repair_max_swaps = quality$final_structure_repair_max_swaps,
+    final_structure_repair_candidates_per_factor = quality$final_structure_repair_candidates_per_factor,
+    final_structure_repair_min_delta = quality$final_structure_repair_min_delta,
+    final_structure_repair_max_seconds = quality$final_structure_repair_max_seconds,
+    final_structure_repair_max_evals = quality$final_structure_repair_max_evals,
+    final_structure_repair_prefilter_top_k = quality$final_structure_repair_prefilter_top_k,
+    final_structure_repair_auto_skip_infeasible = quality$final_structure_repair_auto_skip_infeasible,
     semantic_threshold_mode = quality$threshold_mode,
     adaptive_redundancy_quantile = quality$adaptive_redundancy_quantile,
     adaptive_duplicate_quantile = quality$adaptive_duplicate_quantile,
@@ -1511,6 +1851,7 @@ semantica_full_pipeline <- function(
     pfa_rotation = pfa$rotation,
     pfa_min_loading = pfa$min_loading %||% quality$psychometric_guard_min_loading,
     pfa_min_margin = pfa$min_margin,
+    pfa_max_abs_loading = pfa$max_abs_loading,
     pfa_unit_diagnostics = pfa$unit_diagnostics,
     reference_rmsea_close = diagnostics$reference_rmsea_close,
     reference_rmsea_poor = diagnostics$reference_rmsea_poor,
@@ -1535,6 +1876,7 @@ semantica_full_pipeline <- function(
     validation_n_max_factor_cor_error = diagnostics$validation_n_max_factor_cor_error,
     validation_n_on_inadmissible = diagnostics$validation_planning_on_inadmissible,
     sigmoid_center = 0.15,
+    final_selection_mode = quality$final_selection_mode %||% "pareto",
     elite_multicriteria_rerank = TRUE,
     validation_data = validation_data,
     validation_ordered = validation_ordered,
@@ -1553,8 +1895,12 @@ semantica_full_pipeline <- function(
     n.cores = resource_args$n.cores,
     reserve.cores = resource_args$reserve.cores,
     max.cores = resource_args$max.cores,
+    memory_aware = resource_args$memory_aware,
     seed = seed,
+    restart_seeds = restart_seeds,
     generation_seed = seed,
+    checkpoint_dir = checkpoint_dir,
+    checkpoint_on_exit = checkpoint_on_exit,
     generate_plots = identical(plots$level, "full"),
     interactive_mode = plots$interactive_mode,
     save_plots = plots$save,
@@ -1578,7 +1924,13 @@ semantica_full_pipeline <- function(
     max_retries = generation$max_retries,
     global_forbidden_max = generation$global_forbidden_max,
     temperature = generation$temperature,
-    structured_output = generation$structured_output
+    structured_output = generation$structured_output,
+    pool_topup = generation$pool_topup,
+    pool_topup_min_slack = generation$pool_topup_min_slack,
+    pool_topup_max_rounds = generation$pool_topup_max_rounds,
+    pool_topup_overgenerate = generation$pool_topup_overgenerate,
+    pool_topup_relaxation_ladder = generation$pool_topup_relaxation_ladder,
+    pool_topup_structural_gate = generation$pool_topup_structural_gate
   )
 
   # Record the sanitized configuration that actually reached the execution
@@ -1588,6 +1940,7 @@ semantica_full_pipeline <- function(
   resolved_esem$run_esem_during_search <- run_esem_during_search
   resolved_esem$esem_weight <- esem_weight
   resolved_esem$esem_failure_policy <- esem_failure_policy
+  resolved_esem$uncalibrated_esem_policy <- uncalibrated_esem_policy
   resolved_esem$fast_esem <- fast_esem
   resolved_esem$fast_esem_iter_max <- fast_esem_iter_max
   resolved_esem$full_esem_iter_max <- full_esem_iter_max
@@ -1641,7 +1994,8 @@ semantica_full_pipeline <- function(
       ordered = validation_ordered
     ),
     plots = resolved_plots,
-    seed = seed
+    seed = seed,
+    restart_seeds = restart_seeds
   )
   resolved_config <- .semantica_canonicalize_config(
     .semantica_sanitize_config_provenance(resolved_config)
@@ -1658,212 +2012,16 @@ semantica_full_pipeline <- function(
     )
   }
 
-  out
+  .semantica_wrap_run_result(out)
 }
 
-#' Flat compatibility interface for the complete SEMANTICA pipeline
-#'
-#' Retains the historical flattened argument surface for existing scripts and
-#' method-development workflows. New configurable workflows can use
-#' [semantica_full_pipeline()] with configuration objects.
-#'
-#' @param backend_spec,embed_backend_spec Optional explicit custom backend
-#'   contracts created by [semantica_backend_spec()] for generation and
-#'   embeddings respectively.
-#' @param embed_base_url Optional provider/server URL for a separate embedding
-#'   backend.
-#'
-#' Executes the complete psychometric scale construction workflow in a single
-#' function call: LLM item generation, semantic embedding, ACO-ESEM optimization
-#' with DFI calibration, and comprehensive diagnostic plotting.
-#'
-#' @inheritParams ACO_with_ESEM
-#' @inheritParams semantica_plot_all
-#' @param backend Generation backend (see `semantica_connect()`).
-#' @param embed_backend Embedding backend. `NULL` = same as backend.
-#' @param api_key,embed_api_key API keys for generation/embedding.
-#' @param hf_token,embed_hf_token Hugging Face tokens for local model sessions.
-#'   Live credentials are removed from returned objects.
-#' @param chat_model,embed_model Override default model names.
-#' @param embedding_device,chat_device,device_map,gpu_layers,model_precision
-#'   Local Python model device configuration passed to `semantica_pipeline()`.
-#' @param embed_batch_size Items per embedding backend request. Lower values
-#'   reduce peak request memory for local embedding models.
-#' @param embedding_cache Logical; use persistent content-addressed embedding caching.
-#' @param embedding_cache_dir Optional persistent embedding-cache directory.
-#' @param embedding_cache_namespace Optional namespace included in embedding-cache keys.
-#' @param embedding_spec Optional embedding capability contract from
-#'   [semantica_embedding_spec()]. It controls provider/task text
-#'   preparation for unregistered models without changing psychometric
-#'   thresholds or automatic cosine transformations.
-#' @param retry_max_tries Maximum attempts for retryable provider requests.
-#' @param retry_on_failure Logical; retry transient provider failures when supported.
-#' @param preflight Logical; run provider/model capability checks before network work.
-#' @param embedding_task Embedding-task policy; `"auto"` applies documented model-specific instructions where required.
-#' @param embedding_instruction Optional explicit embedding prefix/instruction.
-#' @param content_alignment_mode Content-definition alignment behavior:
-#'   `"diagnostic"` (default), `"guard"`, or `"off"`. Guard mode is
-#'   feasibility-aware and removes only clear factor mismatches or explicit
-#'   exclusion conflicts; ordinary ambiguity remains diagnostic.
-#' @param polarity_action Selection behavior for wording polarity flags:
-#'   `"diagnostic"` (default), `"guard"`, or `"off"`.
-#' @param base_url,gguf_path Server overrides or GGUF path.
-#' @param cosine_adjustment Embedding cosine preprocessing passed to
-#'   `semantica_pipeline()`.
-#' @param semantic_calibration Optional matrix or function used to calibrate
-#'   the semantic cosine proxy before ACO/ESEM.
-#' @param semantic_threshold_mode Semantic threshold policy: fixed defaults or experimental pool-relative calibration.
-#' @param adaptive_redundancy_quantile Quantile used for the experimental pool-relative redundancy threshold.
-#' @param adaptive_duplicate_quantile Quantile used for the experimental pool-relative duplicate threshold.
-#' @param construct_blueprint Optional structured construct/facet blueprint used for coverage diagnostics and constraints.
-#' @param polarity_screen Logical; run conservative wording/polarity screening on generated items.
-#' @param compute_cosine_sensitivity Logical; compute the optional
-#'   none-versus-mean-centered embedding diagnostic.
-#' @param cosine_sensitivity_max_items Maximum item count used directly in cosine-sensitivity diagnostics before deterministic subsampling.
-#' @param cosine_sensitivity_seed Seed used for any cosine-sensitivity subsampling.
-#' @param compute_device,gpu_fallback,gpu_precision,compute_memory_limit
-#'   Full-pool cosine compute controls passed to `semantica_pipeline()`.
-#' @param release_local_models Logical; release cached Python llama.cpp models
-#'   after item generation and embedding to reduce retained RAM in one-shot
-#'   local workflows.
-#' @param retain_embeddings Logical; retain dense embeddings in the returned
-#'   generation object. Keep this `TRUE` when `pfa_unit_diagnostics` is needed.
-#' @param scale_name Short name of the scale.
-#' @param scale_description One-paragraph construct description.
-#' @param factors Named list of factor specs (`$description`, `$n_items`, etc.).
-#' @param n_per_factor Retained items per factor. When explicitly supplied,
-#'   this overrides nested dimension/facet item counts and is distributed
-#'   across facets; when omitted, counts stored in `factors` keep precedence.
-#' @param n_per_factor_override Logical; override nested factor/facet counts
-#'   using `n_per_factor`. Defaults to `TRUE` only when `n_per_factor` is
-#'   explicitly supplied.
-#' @param i.per.f Named integer vector of items to select per factor for ACO.
-#'   If `NULL`, defaults to 3 items per factor.
-#' @param generate_plots Logical; generate diagnostic plots?
-#' @param save_plots Logical; save plots to disk?
-#' @param plot_device Image format for saved plots (e.g., `"png"`, `"pdf"`).
-#' @param plot_width  Plot width in inches.
-#' @param plot_height Plot height in inches.
-#' @param plot_dpi    Resolution for saved images.
-#' @param plot_out_dir Directory for saved plots.
-#' @param plot_before_path_model How to build Plot 10's BEFORE panel:
-#'   `"proxy"` (default) uses a bounded sample-free proxy; `"refit"` opts into
-#'   a new guarded full-pool ESEM estimation during plotting.
-#' @param plot_before_path_refit_max_items Maximum pool size for the optional
-#'   Plot 10 BEFORE ESEM refit.
-#' @param plot_network_max_items Maximum number of BEFORE-pool items rendered
-#'   in the semantic network plot. Selected items are always retained.
-#' @param plot_mds_max_items Maximum number of pool items included in the
-#'   interactive MDS plot. Selected items are always retained.
-#' @param plot_path_proxy_max_items Maximum number of pool items represented in
-#'   the fast BEFORE path-diagram proxy. Selected items are always retained.
-#' @param include_interactive_plot Logical; construct Plot 9's interactive MDS
-#'   widget. Disable this when only static diagnostics are needed.
-#' @param plot_progress Logical; print per-plot elapsed-time progress.
-#' @param pfa_unit_diagnostics Logical; compute sample-free PFA on averaged
-#'   facet/unit embeddings when facet metadata are available.
-#' @param history_mode History retention policy passed to `ACO_with_ESEM()`.
-#'   This high-level pipeline defaults to `"summary"` to avoid retaining every
-#'   ant evaluation; use `"full"` for legacy candidate-level traces.
-#' @param generation_seed Optional generation-specific seed. `NULL` inherits
-#'   the ACO/master `seed`. Supported generation backends receive deterministic
-#'   per-call seeds; unsupported protocols are recorded as uncontrolled. Backend
-#'   seed control does not guarantee byte-identical text, so exact downstream
-#'   replay requires reusing the realized fingerprinted item pool.
-#' @param verbose Print progress messages.
-#' @param ... Additional arguments passed to `semantica_pipeline()`.
-#'
-#' @return A named list containing:
-#'   * `generation`: Output from `semantica_pipeline()`.
-#'   * `optimization`: Output from `ACO_with_ESEM()`.
-#'   * `plots`: List of `ggplot`/`plotly` objects (or `NULL`).
-#'   * `best_items`: Character vector of selected item IDs.
-#'   * `factor_assignment`: Named vector mapping items to factors.
-#'   * `best_objective`: Final optimization utility; interpret it together with
-#'     `objective_context`, not as a universal scale-quality score.
-#'   * `objective_context`: Evidence regime and comparability metadata for the
-#'     optimization utility.
-#'   * `selection_semantic_context`: Candidate-pool versus selected semantic
-#'     discrimination/gap context; selected values are post-selection descriptive.
-#'   * `factor_semantic_diagnostics`: Factor-specific selected semantic separation.
-#'   * `esem_state`: Consolidated technical and structural-quality ESEM state.
-#'   * `pfa_esem_discrepancy`: Complementary PFA/ESEM discrepancy state.
-#'   * `item_structure_diagnostics`: Item-level ESEM loading and cross-loading diagnostics.
-#'   * `embedding_diagnostics`: Embedding dimensionality, norm, and model checks.
-#'   * `cosine_diagnostics`: Cosine similarity distribution diagnostics.
-#'   * `fit_indices`: List of CFI, RMSEA, SRMR, AVE, HTMT.
-#'   * `semantic_score`: Sigmoid semantic score of the final solution.
-#'   * `proposal_objective_score`: Semantic/PFA proposal objective for the final
-#'     item set, prior to ESEM-guided scoring.
-#'     The legacy `search_objective_score` field is retained as an alias.
-#'   * `final_guided_objective_score`: Final objective after requested ESEM
-#'     guidance and archive reranking.
-#'   * `search_guidance_status`: Whether selection was ESEM-guided, explicitly
-#'     semantic-only, or continued under an explicit semantic fallback.
-#'   * `candidate_counts`: Generated, eligible, and selected-target counts by
-#'     factor after content-pool screening.
-#'   * `pfa_diagnostics`: Sample-free pseudo-factor-analysis diagnostics.
-#'   * `pfa_unit_diagnostics`: Optional facet/unit-level PFA diagnostics from
-#'     averaged unit embeddings.
-#'   * `reference_sample_size`: RMSEA-power reference fit N for semantic ESEM/DFI.
-#'   * `semantic_n_sensitivity`: Final selected semantic-proxy ESEM refits over
-#'     nearby reference-N anchors.
-#'   * `cosine_adjustment_sensitivity`: None-versus-mean-centered embedding
-#'     cosine sensitivity diagnostic.
-#'   * `recommended_validation_n`: PFA-informed Monte Carlo response-data
-#'     sample-size planning diagnostic.
-#'   * `semantic_similarity_reduction`: Metrics tracking within-factor redundancy change.
-#'   * `optimization$esem_alignment` and
-#'     `optimization$esem_admissibility`: Final factor-axis mapping and
-#'     canonical fit-admissibility diagnostics in the nested optimizer result.
-#'   * `semantic_resampling_stability`: Stratified within/between-pair bootstrap
-#'     and item-jackknife sensitivity diagnostics. Pair similarities are dependent,
-#'     so intervals are descriptive representation-sensitivity summaries rather
-#'     than respondent-sampling confidence intervals.
-#'   * `semantic_pair_perturbation_stability` and `split_half_stability`: legacy
-#'     compatibility aliases; new analyses no longer use their uncalibrated 0.10
-#'     stable/unstable rule.
-#'   * `resource_plan`, `performance`, and `evaluation_telemetry`: Resolved
-#'     workers/devices, stage timings, and cache-aware evaluation accounting.
-#'   * `reproducibility`: Master/task seeds, RNG configuration, effective
-#'     resources, package versions, and optimizer settings.
-#'   * `summary`: Compact summary object from ACO.
-#'
-#' @section Side effects:
-#' May perform provider network I/O, persistent embedding-cache I/O, local
-#' Python/model initialization, stochastic ACO/DFI computation, parallel worker
-#' creation, response-data fitting, and optional plot-file writes.
-#'
-#' @section Reproducibility:
-#' The returned `reproducibility` record retains master/task seeds, resource and
-#' model metadata, and optimizer settings. Provider aliases should be treated as
-#' mutable unless an explicit model revision is available and recorded.
-#'
-#' @export
-#' @examples
-#' \dontrun{
-#' # Requires valid API credentials or an available local backend.
-#' result <- semantica_full_pipeline_custom(
-#'   backend = "openai",
-#'   scale_name = "Cognitive Agility",
-#'   scale_description = "Clear and adaptive thinking.",
-#'   factors = list(
-#'     Clarity = list(description = "Clear thinking.", n_items = 8L),
-#'     Flexibility = list(description = "Adaptive thinking.", n_items = 8L)
-#'   ),
-#'   i.per.f = c(Clarity = 3L, Flexibility = 3L),
-#'   ants = 20L,
-#'   max.iter = 10L,
-#'   generate_plots = TRUE,
-#'   verbose = FALSE
-#' )
-#' }
-semantica_full_pipeline_custom <- function(
+.semantica_execute_pipeline <- function(
     # LLM & Embedding Setup
   backend = "openai", embed_backend = NULL, api_key = NULL, embed_api_key = NULL,
   chat_model = NULL, embed_model = NULL, embed_batch_size = 64L,
   embedding_cache = TRUE, embedding_cache_dir = NULL,
-  embedding_cache_namespace = NULL, embedding_spec = NULL, retry_max_tries = 4L,
+  embedding_cache_namespace = NULL,
+  embedding_dimension_action = c("warn", "error"), embedding_spec = NULL, retry_max_tries = 4L,
   retry_on_failure = TRUE, preflight = TRUE,
   hf_token = NULL, embed_hf_token = NULL,
   embedding_device = "auto", chat_device = "auto", device_map = NULL,
@@ -1891,7 +2049,10 @@ semantica_full_pipeline_custom <- function(
   rotation = "geomin", rotation_args = list(geomin.epsilon = 0.50),
   data_type = "continuous", target_loadings = 0.70, target_factor_cors = NULL,
   dfi_reps = 500, dfi_level = 1, dfi_criterion = "Sensitivity",
-  dfi_mode = c("auto", "semantic_roc_dfi", "semantic_approx_dfi", "esem_parametric_dfi", "strict_cfa_dfi", "heuristic_semantic"),
+  dfi_mode = c(
+    "auto", "semantic_roc_dfi", "semantic_approx_dfi",
+    "esem_parametric_dfi", "strict_cfa_dfi", "heuristic_semantic"
+  ),
   dfi_esem_reps = NULL, dfi_search_reps = NULL,
   final_dfi_recalibrate = FALSE, final_dfi_reps = NULL,
   dfi_roc_misspec_strength = 1.0,
@@ -1907,10 +2068,21 @@ semantica_full_pipeline_custom <- function(
   htmt_threshold = 0.85, cohesion_quantile = NULL, cohesion_retention = 0.75,
   within_similarity_target = NULL, within_similarity_band = 0.08,
   semantic_objective_mode = c("relative_conservative", "legacy_target_burden"),
-  facet_coverage_weight = 0.15, psychometric_guard_weight = 0.50,
+  facet_coverage_weight = 0.15,
+  facet_constraint_mode = c("soft", "presence", "balanced"),
+  facet_min_per_facet = 1L,
+  facet_max_imbalance = 1L,
+  psychometric_guard_weight = 0.50,
+  psychometric_guard_action = c("penalty", "final_constraint"),
+  uncalibrated_esem_policy = c("fail_early", "guard_screen", "semantic_fallback"),
   psychometric_guard_min_ave = 0.30,
   psychometric_guard_min_loading = 0.40,
   psychometric_guard_min_primary_ge_50 = 0.70,
+  psychometric_guard_min_simple_structure = NULL,
+  psychometric_guard_min_dominance = NULL,
+  psychometric_guard_max_cross_loading = NULL,
+  psychometric_guard_include_htmt = NULL,
+  psychometric_guard_ave_warning_action = c("penalty", "final_constraint"),
   semantic_threshold_mode = c("fixed", "adaptive_pool"),
   adaptive_redundancy_quantile = 0.95,
   adaptive_duplicate_quantile = 0.99,
@@ -1927,6 +2099,7 @@ semantica_full_pipeline_custom <- function(
   pfa_rotation = c("promax", "target_oblique", "oblimin", "varimax", "none"),
   pfa_min_loading = psychometric_guard_min_loading,
   pfa_min_margin = NULL,
+  pfa_max_abs_loading = Inf,
   pfa_unit_diagnostics = TRUE,
   reference_rmsea_close = 0.05,
   reference_rmsea_poor = 0.06,
@@ -1950,7 +2123,16 @@ semantica_full_pipeline_custom <- function(
   validation_n_max_cross_error = NULL,
   validation_n_max_factor_cor_error = NULL,
   sigmoid_center = 0.15,
+  final_selection_mode = c("pareto", "scalar"),
   elite_pareto_rerank = NULL,
+  final_structure_repair = FALSE,
+  final_structure_repair_max_swaps = 6L,
+  final_structure_repair_candidates_per_factor = 6L,
+  final_structure_repair_min_delta = 1e-6,
+  final_structure_repair_max_seconds = 60,
+  final_structure_repair_max_evals = 20L,
+  final_structure_repair_prefilter_top_k = 10L,
+  final_structure_repair_auto_skip_infeasible = TRUE,
   validation_data = NULL, validation_ordered = NULL,
   sigmoid_steepness = 10, heuristic_beta = 0.50, archive_stable_window = 8L,
   structural_archive_stable_window = 2L,
@@ -1958,7 +2140,11 @@ semantica_full_pipeline_custom <- function(
   pheromone_update = c("top_elite", "best_ant"), fixed_evaporation = NULL,
   debug_mode = FALSE, keep_solution_history = TRUE,
   history_mode = c("summary", "full", "none"), use_parallel = TRUE,
-  n.cores = 2L, reserve.cores = 1L, max.cores = NULL, seed = NULL,
+  n.cores = 2L, reserve.cores = 1L, max.cores = NULL,
+  memory_aware = TRUE, seed = NULL,
+  restart_seeds = NULL,
+  checkpoint_dir = if (interactive()) "semantica_checkpoints" else NULL,
+  checkpoint_on_exit = TRUE,
   # Visualization Parameters
   generate_plots = TRUE, interactive_mode = c("2d", "3d"),
   save_plots = FALSE, plot_out_dir = "semantica_plots/",
@@ -1974,8 +2160,12 @@ semantica_full_pipeline_custom <- function(
   content_alignment_mode = c("diagnostic", "guard", "off"),
   polarity_action = c("diagnostic", "guard", "off"),
   within_target_method = c("nonredundant_median", "legacy_q40"),
-  validation_n_on_inadmissible = c("skip", "run"), ...,
+  validation_n_on_inadmissible = c("skip", "run"),
+  pool_topup = TRUE, pool_topup_min_slack = 2L,
+  pool_topup_max_rounds = 2L, pool_topup_overgenerate = NULL,
+  pool_topup_relaxation_ladder = TRUE, pool_topup_structural_gate = TRUE, ...,
   backend_spec = NULL, embed_backend_spec = NULL, embed_base_url = NULL,
+  allow_provider_key_forwarding = FALSE, allow_insecure_auth = FALSE,
   esem_cadence_mode = c("adaptive", "fixed"), generation_seed = NULL,
   htmt_objective_role = c("diagnostic", "penalty"),
   elite_multicriteria_rerank = NULL
@@ -1984,6 +2174,61 @@ semantica_full_pipeline_custom <- function(
   if (!max_iter_explicit && !is.null(search_patience)) max.iter <- search_patience
 
   full_pipeline_started <- proc.time()[["elapsed"]]
+  checkpoint_on_exit <- .semantica_assert_flag(checkpoint_on_exit, "checkpoint_on_exit")
+  checkpoint_enabled <- !is.null(checkpoint_dir) && length(checkpoint_dir) == 1L && !is.na(checkpoint_dir) && nzchar(as.character(checkpoint_dir))
+  if (checkpoint_enabled) {
+    checkpoint_dir <- normalizePath(as.character(checkpoint_dir), winslash = "/", mustWork = FALSE)
+    dir.create(checkpoint_dir, recursive = TRUE, showWarnings = FALSE)
+    if (!dir.exists(checkpoint_dir)) {
+      warning("Could not create 'checkpoint_dir'; automatic checkpoints are disabled for this run.", call. = FALSE)
+      checkpoint_enabled <- FALSE
+    }
+  }
+  checkpoint_state <- new.env(parent = emptyenv())
+  checkpoint_state$last_stage <- NULL
+  checkpoint_state$final_result <- NULL
+  checkpoint_state$failure_details <- NULL
+  write_checkpoint <- function(filename, value) {
+    if (!checkpoint_enabled) return(invisible(NULL))
+    path <- file.path(checkpoint_dir, filename)
+    tmp <- paste0(path, ".tmp")
+    safe_value <- tryCatch(sanitize_result_for_serialization(value), error = function(e) value)
+    ok <- tryCatch({
+      saveRDS(safe_value, tmp, version = 3L, compress = "xz")
+      isTRUE(file.rename(tmp, path))
+    }, error = function(e) {
+      checkpoint_state$last_checkpoint_error <- conditionMessage(e)
+      FALSE
+    })
+    if (!isTRUE(ok)) {
+      unlink(tmp)
+      checkpoint_state$last_checkpoint_error <- checkpoint_state$last_checkpoint_error %||%
+        sprintf("Could not atomically write checkpoint '%s'.", path)
+      warning(
+        sprintf("SEMANTICA checkpoint write failed for '%s'; analysis continues.", path),
+        call. = FALSE
+      )
+      return(invisible(NULL))
+    }
+    checkpoint_state$last_stage <- filename
+    checkpoint_state$last_checkpoint_error <- NULL
+    invisible(path)
+  }
+  if (checkpoint_enabled && checkpoint_on_exit) {
+    on.exit({
+      if (!is.null(checkpoint_state$final_result)) {
+        try(write_checkpoint("05_full_result.rds", checkpoint_state$final_result), silent = TRUE)
+      } else {
+        failure_state <- list(
+          status = "incomplete_run",
+          last_completed_checkpoint = checkpoint_state$last_stage,
+          timestamp = format(Sys.time(), tz = "UTC", usetz = TRUE),
+          failure_details = checkpoint_state$failure_details
+        )
+        try(write_checkpoint("99_incomplete_run.rds", failure_state), silent = TRUE)
+      }
+    }, add = TRUE)
+  }
   pheromone_update <- match.arg(pheromone_update)
   interactive_mode <- match.arg(interactive_mode)
   dfi_mode <- match.arg(dfi_mode)
@@ -1995,6 +2240,7 @@ semantica_full_pipeline_custom <- function(
   pfa_extraction <- match.arg(pfa_extraction)
   pfa_final_extraction <- match.arg(pfa_final_extraction)
   pfa_rotation <- match.arg(pfa_rotation)
+  final_selection_mode <- match.arg(final_selection_mode)
   pfa_every <- suppressWarnings(as.integer(pfa_every[1L]))
   if (length(pfa_every) != 1L || !is.finite(pfa_every) || pfa_every < 1L) {
     stop("'pfa_every' must be a positive integer.")
@@ -2007,6 +2253,20 @@ semantica_full_pipeline_custom <- function(
   polarity_action <- match.arg(polarity_action)
   within_target_method <- match.arg(within_target_method)
   semantic_objective_mode <- match.arg(semantic_objective_mode)
+  facet_constraint_mode <- match.arg(facet_constraint_mode)
+  psychometric_guard_action <- match.arg(psychometric_guard_action)
+  psychometric_guard_ave_warning_action <- match.arg(psychometric_guard_ave_warning_action)
+  uncalibrated_esem_policy <- match.arg(uncalibrated_esem_policy)
+  facet_min_per_facet <- suppressWarnings(as.integer(facet_min_per_facet[1L]))
+  facet_max_imbalance <- suppressWarnings(as.integer(facet_max_imbalance[1L]))
+  if (length(facet_min_per_facet) != 1L || !is.finite(facet_min_per_facet) ||
+      facet_min_per_facet < 1L) {
+    stop("'facet_min_per_facet' must be a positive integer.", call. = FALSE)
+  }
+  if (length(facet_max_imbalance) != 1L || !is.finite(facet_max_imbalance) ||
+      facet_max_imbalance < 0L) {
+    stop("'facet_max_imbalance' must be a non-negative integer.", call. = FALSE)
+  }
   htmt_objective_role <- match.arg(htmt_objective_role)
   validation_n_on_inadmissible <- match.arg(validation_n_on_inadmissible)
   if (!is.null(elite_multicriteria_rerank) && !is.null(elite_pareto_rerank)) {
@@ -2026,11 +2286,13 @@ semantica_full_pipeline_custom <- function(
   esem_failure_policy <- match.arg(esem_failure_policy)
   history_mode <- match.arg(history_mode)
   plot_before_path_model <- match.arg(plot_before_path_model)
+  memory_aware <- .semantica_assert_flag(memory_aware, "memory_aware")
   resource_plan_preview <- semantica_resource_plan(
     n.cores = n.cores,
     use_parallel = use_parallel,
     reserve.cores = reserve.cores,
-    max.cores = max.cores
+    max.cores = max.cores,
+    memory_aware = memory_aware
   )
   if (verbose) {
     cat("\n[SEMANTICA] Resolved resource plan before expensive execution:\n")
@@ -2043,6 +2305,16 @@ semantica_full_pipeline_custom <- function(
   dots <- list(...)
   if (is.null(generation_seed)) generation_seed <- seed
   generation_seed <- .semantica_normalize_generation_seed(generation_seed)
+  if (!is.null(restart_seeds)) {
+    restart_seeds <- suppressWarnings(as.integer(restart_seeds))
+    if (!length(restart_seeds) || any(!is.finite(restart_seeds) | restart_seeds < 0L)) {
+      stop("'restart_seeds' must be NULL or a non-empty vector of nonnegative integers.", call. = FALSE)
+    }
+    restart_seeds <- unique(restart_seeds)
+  } else {
+    restart_seeds <- integer(0L)
+  }
+  optimizer_seed <- if (length(restart_seeds)) restart_seeds[[1L]] else seed
   polarity_language <- dots$language %||% "auto"
   if (isTRUE(pfa_unit_diagnostics) && !isTRUE(retain_embeddings)) {
     warning(
@@ -2071,6 +2343,15 @@ semantica_full_pipeline_custom <- function(
     i.per.f <- setNames(rep(3L, length(factors)), names(factors))
     if (verbose) message("[FULL PIPELINE] i.per.f not specified. Defaulting to 3 items per factor.")
   }
+  i.per.f <- .semantica_validate_i_per_f(i.per.f)
+  missing_targets <- setdiff(names(i.per.f), names(factors))
+  if (length(missing_targets)) {
+    stop(
+      "'i.per.f' contains factor(s) not present in 'factors': ",
+      paste(missing_targets, collapse = ", "),
+      call. = FALSE
+    )
+  }
 
   blueprint_eff <- if (is.null(construct_blueprint)) {
     semantica_construct_blueprint(factors)
@@ -2091,6 +2372,8 @@ semantica_full_pipeline_custom <- function(
         backend = backend, embed_backend = embed_backend, api_key = api_key,
         embed_api_key = embed_api_key, chat_model = chat_model, embed_model = embed_model,
         backend_spec = backend_spec, embed_backend_spec = embed_backend_spec,
+        allow_provider_key_forwarding = allow_provider_key_forwarding,
+        allow_insecure_auth = allow_insecure_auth,
         hf_token = hf_token, embed_hf_token = embed_hf_token,
         embedding_device = embedding_device, chat_device = chat_device,
         device_map = device_map, gpu_layers = gpu_layers,
@@ -2099,6 +2382,7 @@ semantica_full_pipeline_custom <- function(
         embedding_cache = embedding_cache,
         embedding_cache_dir = embedding_cache_dir,
         embedding_cache_namespace = embedding_cache_namespace,
+    embedding_dimension_action = embedding_dimension_action,
         retry_max_tries = retry_max_tries,
         retry_on_failure = retry_on_failure,
         preflight = preflight, embedding_task = embedding_task,
@@ -2118,11 +2402,48 @@ semantica_full_pipeline_custom <- function(
         release_local_models = release_local_models,
         retain_embeddings = retain_embeddings,
         generation_seed = generation_seed,
+        pool_topup = pool_topup,
+        pool_topup_i_per_f = i.per.f,
+        pool_topup_min_slack = pool_topup_min_slack,
+        pool_topup_max_rounds = pool_topup_max_rounds,
+        pool_topup_overgenerate = pool_topup_overgenerate,
+        pool_topup_relaxation_ladder = pool_topup_relaxation_ladder,
+        pool_topup_structural_gate = pool_topup_structural_gate,
+        pool_topup_cohesion_retention = cohesion_retention,
+        pool_topup_within_similarity_target = within_similarity_target,
+        pool_topup_within_similarity_band = within_similarity_band,
+        pool_topup_semantic_objective_mode = semantic_objective_mode,
+        pool_topup_redundancy_threshold = redundancy_threshold,
+        pool_topup_dup_threshold = dup_threshold,
+        pool_topup_content_alignment_mode = content_alignment_mode,
+        pool_topup_polarity_action = polarity_action,
+        pool_topup_polarity_language = polarity_language,
         verbose = verbose
       ),
       dots
     )
   )
+
+  pool_topup_state <- gen_res$pool_topup %||%
+    gen_res$generation_provenance$pool_topup %||% list()
+  effective_preaco_relaxation <- .semantica_normalize_relaxation_policy(
+    pool_topup_state$effective_constraint_level %||% "strict",
+    names(i.per.f),
+    arg = "pool_topup$effective_constraint_level"
+  )
+
+  write_checkpoint("01_generated_pool.rds", list(
+    items_tbl = gen_res$items_tbl_raw %||% gen_res$items_tbl,
+    generation_provenance = gen_res$generation_provenance,
+    pool_topup_diagnostics = pool_topup_state,
+    embedding_policy = gen_res$embedding_policy
+  ))
+  write_checkpoint("02_embeddings.rds", list(
+    embeddings = gen_res$embeddings %||% NULL,
+    cosine_sim_matrix = gen_res$cosine_sim_matrix,
+    embedding_diagnostics = gen_res$embedding_diagnostics,
+    cosine_diagnostics = gen_res$cosine_diagnostics
+  ))
 
   # -----------------------------------------------------------------
   # Method safeguards / research diagnostics before optimization
@@ -2171,7 +2492,12 @@ semantica_full_pipeline_custom <- function(
   )
   polarity_diagnostics_pool <- polarity_pool_eval$value
   polarity_diagnostics_pool_status <- polarity_pool_eval$status
-  if (is.data.frame(polarity_diagnostics_pool)) {
+  # semantica_pipeline() already computes the polarity flag used by top-up when
+  # polarity is a guard. Preserve that exact decision here so the final gate
+  # cannot silently reclassify the pool after recovery. A diagnostic is still
+  # produced for reporting when requested.
+  polarity_flag_already_resolved <- "semantica_polarity_flag" %in% names(gen_res$df)
+  if (is.data.frame(polarity_diagnostics_pool) && !polarity_flag_already_resolved) {
     pd <- polarity_diagnostics_pool
     flag <- if ("explicit_negation" %in% names(pd)) as.logical(pd$explicit_negation) else
       if ("flagged" %in% names(pd)) as.logical(pd$flagged) else rep(FALSE, nrow(pd))
@@ -2182,13 +2508,73 @@ semantica_full_pipeline_custom <- function(
     }
   }
 
+  preaco_checkpoint_gate <- tryCatch(
+    .semantica_preaco_pool_gate(
+      cosine_sim_matrix = gen_res$cosine_sim_matrix,
+      df = gen_res$df,
+      i.per.f = i.per.f,
+      min_slack = pool_topup_min_slack,
+      cohesion_retention = cohesion_retention,
+      within_similarity_target = within_similarity_target,
+      within_similarity_band = within_similarity_band,
+      semantic_objective_mode = semantic_objective_mode,
+      redundancy_threshold = redundancy_threshold,
+      dup_threshold = dup_threshold,
+      content_alignment_mode = content_alignment_mode,
+      polarity_action = polarity_action,
+      relaxation_level = effective_preaco_relaxation
+    ),
+    error = function(e) list(feasible = FALSE, error = conditionMessage(e))
+  )
+  write_checkpoint("03_preaco_diagnostics.rds", list(
+    feasibility_gate = preaco_checkpoint_gate,
+    pool_topup_diagnostics = pool_topup_state,
+    effective_constraint_level = effective_preaco_relaxation,
+    threshold_calibration = threshold_calibration,
+    construct_coverage_pool = construct_coverage_pool,
+    polarity_diagnostics_pool = polarity_diagnostics_pool
+  ))
+
+  if (!isTRUE(preaco_checkpoint_gate$feasible)) {
+    gate_error <- preaco_checkpoint_gate$error %||% NULL
+    weak <- preaco_checkpoint_gate$table
+    detail <- if (is.data.frame(weak) && nrow(weak)) {
+      weak <- weak[!weak$feasible, , drop = FALSE]
+      paste(vapply(seq_len(nrow(weak)), function(i) {
+        sprintf(
+          "%s: eligible=%d, selected=%d, required_with_slack=%d, independent_duplicate_units=%d, alignment_unresolved=%d",
+          weak$factor[[i]], weak$eligible_n[[i]], weak$selected_n[[i]],
+          weak$required_with_slack[[i]], weak$independent_duplicate_units[[i]],
+          weak$alignment_unresolved_n[[i]] %||% 0L
+        )
+      }, character(1L)), collapse = "; ")
+    } else {
+      gate_error %||% "pre-ACO feasibility diagnostics unavailable"
+    }
+    policy_text <- paste(
+      paste0(names(effective_preaco_relaxation), "=", unname(effective_preaco_relaxation)),
+      collapse = ", "
+    )
+    stop(
+      paste0(
+        "Candidate-pool recovery was exhausted before ACO under effective factor policies [",
+        policy_text, "]. ", detail,
+        ". SEMANTICA stopped before DFI/ACO because further optimization cannot ",
+        "repair a pool without the required slack/independent units. Persistent ",
+        "alignment_unresolved counts are diagnostic calibration uncertainty, not ",
+        "automatic item ineligibility. Top-up status: ",
+        pool_topup_state$reason %||% "unavailable", "."
+      ),
+      call. = FALSE
+    )
+  }
+
   # =================================================================
   # STEP 2: ACO-ESEM Optimization with DFI Calibration
   # =================================================================
   if (verbose) cat("\n[SEMANTICA] Step 2/3: ACO-ESEM Optimization...\n")
-  aco_res <- ACO_with_ESEM(
-    cosine_sim_matrix = gen_res$cosine_sim_matrix, df = gen_res$df,
-    i.per.f = i.per.f, ants = ants, max.iter = max.iter,
+  aco_args <- list(
+    ants = ants, max.iter = max.iter,
     search_patience = search_patience, evaporation = evaporation, esem_every = esem_every,
     esem_cadence_mode = esem_cadence_mode,
     run_esem_during_search = run_esem_during_search, esem_weight = esem_weight,
@@ -2219,6 +2605,9 @@ semantica_full_pipeline_custom <- function(
     embed_reliability = embed_reliability, residual_inflation = residual_inflation,
     dfi_warmup_iters = dfi_warmup_iters, redundancy_threshold = redundancy_threshold,
     dup_threshold = dup_threshold, htmt_threshold = htmt_threshold,
+    preaco_min_slack = pool_topup_min_slack,
+    preaco_feasibility_action = "stop",
+    preaco_relaxation_level = effective_preaco_relaxation,
     htmt_objective_role = htmt_objective_role,
     cohesion_quantile = cohesion_quantile,
     cohesion_retention = cohesion_retention,
@@ -2232,10 +2621,20 @@ semantica_full_pipeline_custom <- function(
     within_target_method = within_target_method,
     validation_n_on_inadmissible = validation_n_on_inadmissible,
     facet_coverage_weight = facet_coverage_weight,
+    facet_constraint_mode = facet_constraint_mode,
+    facet_min_per_facet = facet_min_per_facet,
+    facet_max_imbalance = facet_max_imbalance,
     psychometric_guard_weight = psychometric_guard_weight,
+    psychometric_guard_action = psychometric_guard_action,
+    uncalibrated_esem_policy = uncalibrated_esem_policy,
     psychometric_guard_min_ave = psychometric_guard_min_ave,
     psychometric_guard_min_loading = psychometric_guard_min_loading,
     psychometric_guard_min_primary_ge_50 = psychometric_guard_min_primary_ge_50,
+    psychometric_guard_min_simple_structure = psychometric_guard_min_simple_structure,
+    psychometric_guard_min_dominance = psychometric_guard_min_dominance,
+    psychometric_guard_max_cross_loading = psychometric_guard_max_cross_loading,
+    psychometric_guard_include_htmt = psychometric_guard_include_htmt,
+    psychometric_guard_ave_warning_action = psychometric_guard_ave_warning_action,
     pfa_mode = pfa_mode,
     pfa_weight = pfa_weight,
     pfa_failure_policy = pfa_failure_policy,
@@ -2246,6 +2645,7 @@ semantica_full_pipeline_custom <- function(
     pfa_rotation = pfa_rotation,
     pfa_min_loading = pfa_min_loading,
     pfa_min_margin = pfa_min_margin,
+    pfa_max_abs_loading = pfa_max_abs_loading,
     reference_rmsea_close = reference_rmsea_close,
     reference_rmsea_poor = reference_rmsea_poor,
     reference_power = reference_power,
@@ -2268,7 +2668,16 @@ semantica_full_pipeline_custom <- function(
     validation_n_max_cross_error = validation_n_max_cross_error,
     validation_n_max_factor_cor_error = validation_n_max_factor_cor_error,
     sigmoid_center = sigmoid_center,
+    final_selection_mode = final_selection_mode,
     elite_multicriteria_rerank = elite_multicriteria_rerank,
+    final_structure_repair = final_structure_repair,
+    final_structure_repair_max_swaps = final_structure_repair_max_swaps,
+    final_structure_repair_candidates_per_factor = final_structure_repair_candidates_per_factor,
+    final_structure_repair_min_delta = final_structure_repair_min_delta,
+    final_structure_repair_max_seconds = final_structure_repair_max_seconds,
+    final_structure_repair_max_evals = final_structure_repair_max_evals,
+    final_structure_repair_prefilter_top_k = final_structure_repair_prefilter_top_k,
+    final_structure_repair_auto_skip_infeasible = final_structure_repair_auto_skip_infeasible,
     validation_data = validation_data,
     validation_ordered = validation_ordered,
     sigmoid_steepness = sigmoid_steepness, heuristic_beta = heuristic_beta,
@@ -2281,8 +2690,129 @@ semantica_full_pipeline_custom <- function(
     keep_solution_history = keep_solution_history, history_mode = history_mode,
     use_parallel = use_parallel,
     n.cores = n.cores, reserve.cores = reserve.cores,
-    max.cores = max.cores, seed = seed, verbose = verbose
+    max.cores = max.cores, memory_aware = memory_aware
   )
+  run_aco <- function(run_seed, search_calibration = NULL) do.call(
+    ACO_with_ESEM,
+    c(list(
+      cosine_sim_matrix = gen_res$cosine_sim_matrix, df = gen_res$df,
+      i.per.f = i.per.f, seed = run_seed, verbose = verbose,
+      search_calibration = search_calibration
+    ), aco_args)
+  )
+  aco_res <- tryCatch(run_aco(optimizer_seed), error = function(error) {
+    # Preserve structured guard diagnostics in the incomplete-run checkpoint.
+    # Other errors retain their class and message without attempting to infer
+    # an analysis-specific cause from text.
+    fields <- c(
+      "psychometric_guard_action", "guard_failure_summary",
+      "guard_diagnostics", "final_structure_repair"
+    )
+    details <- list(
+      condition_class = class(error),
+      message = conditionMessage(error)
+    )
+    for (field in fields) if (!is.null(error[[field]])) details[[field]] <- error[[field]]
+    checkpoint_state$failure_details <- details
+    stop(error)
+  })
+  restart_stability <- list(
+    status = "single_start",
+    requested_seeds = if (length(restart_seeds)) restart_seeds else optimizer_seed,
+    successful_seeds = optimizer_seed,
+    selected_seed = optimizer_seed,
+    selection_policy = "single_start",
+    scope = "optimizer_only_frozen_item_pool_and_similarity_matrix",
+    note = "One optimizer start; LLM generation and embeddings were not repeated."
+  )
+  if (length(restart_seeds) > 1L) {
+    companion <- lapply(restart_seeds[-1L], function(s) tryCatch(
+      run_aco(s, aco_res$search_calibration %||% NULL), error = function(e) e
+    ))
+    ok <- !vapply(companion, inherits, logical(1L), what = "error")
+    results <- c(list(aco_res), companion[ok])
+    successful_seeds <- c(optimizer_seed, restart_seeds[-1L][ok])
+    regime <- vapply(results, function(x) {
+      as.character(x$objective_context$evidence_regime %||% x$search_guidance_status %||% "unknown")
+    }, character(1L))
+    calibration_id <- vapply(results, function(x) {
+      id <- x$search_calibration$calibration_id %||% x$objective_context$search_calibration_id %||% NULL
+      if (!is.null(id) && length(id) == 1L && !is.na(id) && nzchar(id)) return(as.character(id))
+      .semantica_object_md5(.semantica_canonicalize_config(list(
+        evidence_regime = x$objective_context$evidence_regime %||% x$search_guidance_status,
+        objective_schema = x$objective_context$objective_schema %||% NULL,
+        search_active_cutoffs = x$search_active_cutoffs %||% NULL,
+        search_cutoff_source = x$search_cutoff_source %||% NULL
+      )))
+    }, character(1L))
+    objective_id <- vapply(seq_along(results), function(i) {
+      .semantica_object_md5(.semantica_canonicalize_config(list(
+        evidence_regime = regime[[i]],
+        calibration_id = calibration_id[[i]],
+        objective_schema = results[[i]]$objective_context$objective_schema %||% NULL
+      )))
+    }, character(1L))
+    scores <- vapply(results, function(x) {
+      score <- suppressWarnings(as.numeric(x$best_objective %||% NA_real_))
+      if (length(score) && is.finite(score[[1L]])) score[[1L]] else NA_real_
+    }, numeric(1L))
+    comparable <- length(unique(objective_id)) == 1L
+    choice <- if (comparable && any(is.finite(scores))) which(scores == max(scores, na.rm = TRUE))[[1L]] else 1L
+    forms <- vapply(results, function(x) paste(sort(unique(as.character(x$best_items %||% character()))), collapse = "\r"), character(1L))
+    pairs <- if (length(results) > 1L) utils::combn(seq_along(results), 2L) else NULL
+    jaccard <- if (is.null(pairs)) numeric(0L) else apply(pairs, 2L, function(i) {
+      a <- results[[i[[1L]]]]$best_items; b <- results[[i[[2L]]]]$best_items
+      length(intersect(a, b)) / length(union(a, b))
+    })
+    frequency <- sort(table(unlist(lapply(results, `[[`, "best_items"))), decreasing = TRUE)
+    restart_parallel <- stats::setNames(lapply(results, function(x) {
+      rep <- x$reproducibility %||% list()
+      list(
+        search = rep$search_esem_parallel_fallbacks %||% data.frame(),
+        final = rep$final_parallel_fallbacks %||% data.frame()
+      )
+    }), successful_seeds)
+    parallel_degraded <- vapply(restart_parallel, function(x) {
+      nrow(x$search) > 0L || nrow(x$final) > 0L
+    }, logical(1L))
+    restart_stability <- list(
+      status = if (length(unique(forms)) == 1L) "multi_start_consistent" else "multi_start_variation_observed",
+      requested_seeds = restart_seeds,
+      successful_seeds = successful_seeds,
+      failed_seeds = restart_seeds[-1L][!ok],
+      failures = unname(vapply(companion[!ok], conditionMessage, character(1L))),
+      selected_seed = successful_seeds[[choice]],
+      selection_policy = if (comparable) "highest_observed_objective_with_shared_calibration" else "primary_retained_noncomparable_objectives",
+      objective_regimes = stats::setNames(regime, successful_seeds),
+      objective_calibration_ids = stats::setNames(calibration_id, successful_seeds),
+      objective_identities = stats::setNames(objective_id, successful_seeds),
+      objective_comparable = comparable,
+      objective_scores = stats::setNames(scores, successful_seeds),
+      candidate_forms = stats::setNames(lapply(results, `[[`, "best_items"), successful_seeds),
+      item_frequencies = frequency,
+      pairwise_jaccard = jaccard,
+      n_unique_forms = length(unique(forms)),
+      selection_stability = if (length(unique(forms)) == 1L) "high" else "sensitive",
+      parallel_degraded = any(parallel_degraded),
+      parallel_fallbacks = restart_parallel[parallel_degraded],
+      scope = "optimizer_only_frozen_item_pool_and_similarity_matrix",
+      note = "Restart agreement is descriptive optimizer sensitivity, not participant-data validation or a global-optimum certificate; score ranking requires a shared calibration."
+    )
+    aco_res <- results[[choice]]
+  }
+  write_checkpoint("04_selected_result.rds", list(
+    best_items = aco_res$best_items,
+    factor_assignment = aco_res$factor_assignment,
+    quality_status = aco_res$quality_status,
+    proxy_quality = aco_res$proxy_quality,
+    evidence_profile = aco_res$evidence_profile,
+    content_coverage = aco_res$content_coverage,
+    selection_objectives = aco_res$selection_objectives,
+    preaco_feasibility_gate = aco_res$preaco_feasibility_gate,
+    pareto_archive = aco_res$pareto_archive,
+    final_structure_repair = aco_res$final_structure_repair,
+    summary = aco_res$summary
+  ))
 
   # ---- Compute semantic similarity reduction metric ----
   # The baseline is the full generated pool, not the ACO eligible subset.
@@ -2394,24 +2924,24 @@ semantica_full_pipeline_custom <- function(
   }
 
   if (verbose && is.null(aco_res$semantic_similarity_reduction)) {
-    cat("\n[SEMANTICA] Semantic Similarity Reduction Summary:\n")
-    cat(sprintf("  Within-factor : %.4f -> %.4f | reduction = %.4f",
-                within_before, within_after, reduction))
-    if (!is.na(percent_reduction)) cat(sprintf(" (%.2f%%)", percent_reduction))
+    cat("\n[SEMANTICA] Semantic Similarity Change Summary:\n")
+    cat(sprintf("  Within-factor : %.4f -> %.4f | change = %+.4f",
+                within_before, within_after, -reduction))
+    if (!is.na(percent_reduction)) cat(sprintf(" (%+.2f%%)", -percent_reduction))
     cat("\n")
     if (is.finite(target_value)) {
       cat(sprintf("  Within target : %.4f +/- %.4f | deviation %.4f -> %.4f | %s\n",
                   target_value, within_similarity_band, target_dev_before, target_dev_after,
                   target_band_status))
     }
-    cat(sprintf("  Between-factor: %.4f -> %.4f | reduction = %.4f\n",
-                between_before, between_after, between_reduction))
+    cat(sprintf("  Between-factor: %.4f -> %.4f | change = %+.4f\n",
+                between_before, between_after, -between_reduction))
     if (is.finite(separation_gap_before) && is.finite(separation_gap_after)) {
       cat(sprintf("  Separation gap: %.4f -> %.4f | change = %+.4f\n",
                   separation_gap_before, separation_gap_after, separation_gap_change))
     }
-    cat(sprintf("  Composite index: %.4f -> %.4f | reduction = %.4f\n",
-                sem_index_before, sem_index_after, sem_index_reduction))
+    cat(sprintf("  Composite index: %.4f -> %.4f | change = %+.4f\n",
+                sem_index_before, sem_index_after, -sem_index_reduction))
     cat(sprintf("  Interpretation: %s\n", sem_reduction_interpretation))
   }
 
@@ -2440,6 +2970,41 @@ semantica_full_pipeline_custom <- function(
       selected_item_metadata$semantica_polarity_flag <- gen_res$df$semantica_polarity_flag[dfi]
     }
   }
+
+  selected_alignment_summary <- list(
+    available = FALSE,
+    mode = content_alignment_mode,
+    n_selected = length(aco_res$best_items %||% character(0L))
+  )
+  if (is.data.frame(selected_item_metadata) &&
+      "semantica_factor_alignment_status" %in% names(selected_item_metadata)) {
+    alignment_status <- as.character(selected_item_metadata$semantica_factor_alignment_status)
+    clear_mismatch_n <- sum(alignment_status == "clear_mismatch", na.rm = TRUE)
+    unresolved_n <- sum(alignment_status == "alignment_unresolved", na.rm = TRUE)
+    aligned_n <- if ("semantica_factor_aligned" %in% names(selected_item_metadata)) {
+      sum(as.logical(selected_item_metadata$semantica_factor_aligned), na.rm = TRUE)
+    } else {
+      sum(alignment_status == "aligned", na.rm = TRUE)
+    }
+    selected_alignment_summary <- c(selected_alignment_summary, list(
+      available = TRUE,
+      aligned_n = as.integer(aligned_n),
+      ambiguous_n = as.integer(sum(alignment_status == "ambiguous", na.rm = TRUE)),
+      alignment_unresolved_n = as.integer(unresolved_n),
+      clear_mismatch_n = as.integer(clear_mismatch_n),
+      warning = if (clear_mismatch_n > 0L || unresolved_n > 0L) paste(
+        "Selected items include", clear_mismatch_n, "clear definition mismatch(es) and",
+        unresolved_n, "unresolved alignment(s). Use content_alignment_mode = 'guard'",
+        "to exclude clear mismatches during selection."
+      ) else NULL
+    ))
+  }
+  pool_status <- aco_res$pool_health$status %||% character()
+  candidate_pool_status <- if (
+    !is.null(selected_alignment_summary$warning) ||
+      any(pool_status %in% c("content_mixed", "adequate_capacity_with_ambiguity",
+                             "adequate_capacity_with_unresolved_alignment"))
+  ) "content_review_required" else "no_content_review_flag"
 
   semantic_cluster_consensus <- list(pool = NULL, selected = NULL)
   if (!is.null(generated_item_metadata) && all(c("ID", "Dimension") %in% names(generated_item_metadata))) {
@@ -2501,7 +3066,8 @@ semantica_full_pipeline_custom <- function(
         extraction = pfa_final_extraction,
         rotation = pfa_rotation,
         min_loading = pfa_min_loading,
-        min_margin = pfa_min_margin
+        min_margin = pfa_min_margin,
+        max_abs_loading = pfa_max_abs_loading
       )
     }, error = function(e) list(
       available = FALSE, score = 0,
@@ -2585,8 +3151,11 @@ semantica_full_pipeline_custom <- function(
   # STEP 3: Diagnostic Visualization
   # =================================================================
   plots <- NULL
+  plot_generation_seconds <- 0
+  plot_generation_breakdown_seconds <- numeric(0L)
   if (generate_plots) {
     if (verbose) cat("\n[SEMANTICA] Step 3/3: Generating Diagnostic Plots...\n")
+    plot_started <- proc.time()[["elapsed"]]
     plots <- semantica_plot_all(
       result = aco_res, cosine_sim_matrix = gen_res$cosine_sim_matrix,
       df = gen_res$df, interactive_mode = interactive_mode, save = save_plots,
@@ -2600,6 +3169,8 @@ semantica_full_pipeline_custom <- function(
       include_interactive = include_interactive_plot,
       progress = plot_progress
     )
+    plot_generation_seconds <- proc.time()[["elapsed"]] - plot_started
+    plot_generation_breakdown_seconds <- attr(plots, "semantica_plot_timing_seconds") %||% numeric(0L)
   }
 
   # =================================================================
@@ -2652,6 +3223,7 @@ semantica_full_pipeline_custom <- function(
   combined_reproducibility$construct_blueprint <- blueprint_eff
   combined_reproducibility$cosine_adjustment <- cosine_adjustment
   combined_reproducibility$local_model_precision <- model_precision
+  combined_reproducibility$optimizer_restarts <- restart_stability
   session_protocols <- c(
     .metadata_value(gen_res$session, "protocol"),
     .metadata_value(gen_res$embed_session, "protocol")
@@ -2709,6 +3281,8 @@ semantica_full_pipeline_custom <- function(
   combined_performance <- list(
     generation = gen_res$performance,
     optimization = aco_res$performance,
+    plotting_seconds = unname(plot_generation_seconds),
+    plotting_breakdown_seconds = plot_generation_breakdown_seconds,
     resource = aco_res$performance$resource %||% resource_plan_preview,
     compute = gen_res$compute_telemetry,
     total_seconds = unname(proc.time()[["elapsed"]] - full_pipeline_started)
@@ -2722,6 +3296,16 @@ semantica_full_pipeline_custom <- function(
     best_objective    = aco_res$best_objective,
     objective_context = aco_res$objective_context,
     objective_schema = aco_res$objective_schema,
+    evidence_profile = aco_res$evidence_profile,
+    proxy_quality = aco_res$proxy_quality,
+    quality_status = aco_res$quality_status %||% aco_res$proxy_quality$status %||% "unknown",
+    validation_status = aco_res$validation_status,
+    eligible_for_participant_validation = aco_res$eligible_for_participant_validation,
+    structural_guard = aco_res$structural_guard,
+    content_coverage = aco_res$content_coverage,
+    selection_objectives = aco_res$selection_objectives,
+    preaco_feasibility_gate = aco_res$preaco_feasibility_gate,
+    pareto_archive = aco_res$pareto_archive,
     evidence_records = full_evidence_records,
     dimensionality_mode = aco_res$dimensionality_mode %||% if (length(unique(as.character(aco_res$factor_assignment))) == 1L) "unidimensional" else "multidimensional",
     unidimensional_diagnostics = aco_res$unidimensional_diagnostics,
@@ -2731,6 +3315,9 @@ semantica_full_pipeline_custom <- function(
     pfa_esem_discrepancy = aco_res$pfa_esem_discrepancy,
     generated_item_metadata = generated_item_metadata,
     selected_item_metadata = selected_item_metadata,
+    selected_content_alignment = selected_alignment_summary,
+    selected_content_alignment_warning = selected_alignment_summary$warning %||% NULL,
+    candidate_pool_status = candidate_pool_status,
     item_structure_diagnostics = aco_res$item_structure_diagnostics,
     embedding_diagnostics = gen_res$embedding_diagnostics,
     embedding_policy = gen_res$embedding_policy,
@@ -2772,6 +3359,7 @@ semantica_full_pipeline_custom <- function(
            active_cutoffs = aco_res$active_cutoffs,
            search_cutoff_source = aco_res$search_cutoff_source,
            search_active_cutoffs = aco_res$search_active_cutoffs,
+           search_calibration_id = aco_res$search_calibration$calibration_id %||% NA_character_,
            reference_sample_size = aco_res$reference_sample_size,
            semantic_n_sensitivity = aco_res$semantic_n_sensitivity,
            recommended_validation_n = aco_res$recommended_validation_n,
@@ -2798,7 +3386,10 @@ semantica_full_pipeline_custom <- function(
     pfa_diagnostics  = aco_res$pfa_diagnostics,
     pfa_objective_score = aco_res$pfa_objective_score,
     pfa_objective_diagnostics = aco_res$pfa_objective_diagnostics,
+    pfa_boundary_loading_count = aco_res$pfa_boundary_loading_count,
+    pfa_boundary_loading_penalty = aco_res$pfa_boundary_loading_penalty,
     pfa_unit_diagnostics = pfa_unit_result,
+    final_structure_repair = aco_res$final_structure_repair,
     reference_sample_size = aco_res$reference_sample_size,
     semantic_reference_n = aco_res$semantic_reference_n,
     semantic_n_sensitivity = aco_res$semantic_n_sensitivity,
@@ -2810,18 +3401,23 @@ semantica_full_pipeline_custom <- function(
     semantic_pair_perturbation_stability = aco_res$semantic_pair_perturbation_stability,
     semantic_resampling_stability = aco_res$semantic_resampling_stability,
     split_half_stability = aco_res$split_half_stability,
+    multi_seed_stability = restart_stability,
     summary           = aco_res$summary,
     semantic_similarity_reduction = list(
       within_factor_before = within_before,
       within_factor_after  = within_after,
+      within_factor_change = -reduction,
       between_factor_before = between_before,
       between_factor_after  = between_after,
+      between_factor_change = -between_reduction,
       absolute_reduction   = reduction,
       percent_reduction    = percent_reduction,
+      percent_change       = -percent_reduction,
       between_absolute_reduction = between_reduction,
       semantic_similarity_index_before = sem_index_before,
       semantic_similarity_index_after = sem_index_after,
       semantic_similarity_index_reduction = sem_index_reduction,
+      semantic_similarity_index_change = -sem_index_reduction,
       within_similarity_target = target_value,
       within_similarity_band = within_similarity_band,
       within_target_deviation_before = target_dev_before,
@@ -2832,5 +3428,7 @@ semantica_full_pipeline_custom <- function(
   )
   )
   class(out) <- c("semantica_full_pipeline_result", "list")
-  sanitize_result_for_serialization(out)
+  out <- sanitize_result_for_serialization(out)
+  checkpoint_state$final_result <- out
+  out
 }

@@ -18,7 +18,7 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 | construct/factor definitions only | `semantica_run()` |
 | item text but no embeddings | `semantica_embed()` -> `semantica_wrap()` |
 | item text plus external embeddings | `semantica_import_embeddings()` -> `semantica_wrap()` |
-| participant responses after a pilot | `semantica_full_pipeline(..., validation_data = ...)` |
+| participant responses after a pilot | `semantica_run_custom(..., validation_data = ...)` |
 
 # Item-table schema
 
@@ -113,7 +113,7 @@ For ordinal items, supply the ordered item-column names through
 `validation_ordered`.
 
 ```{r eval=FALSE}
-result <- semantica_full_pipeline(
+result <- semantica_run_custom(
   scale_name = "Example Scale",
   scale_description = "...",
   factors = factors,

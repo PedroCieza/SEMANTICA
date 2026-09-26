@@ -10,6 +10,8 @@ test_that("direct RNG calls remain confined to reviewed stochastic code", {
   function_pattern <- "^([.A-Za-z][.A-Za-z0-9_]*)\\s*<-\\s*function\\b"
   allowed <- c(
     "evaluation_broker.R::.semantica_with_task_seed",
+    "minimal_pipeline.R::.semantica_run_resolve_seed",
+    "analysis_extensions.R::.semantica_bootstrap_semantic_resampling",
     "item_generation.R::semantica_wrap",
     "pipeline_core.R::single_rep",
     "pipeline_core.R::compute_esem_parametric_dfi_cutoffs",
@@ -17,6 +19,7 @@ test_that("direct RNG calls remain confined to reviewed stochastic code", {
     "pipeline_core.R::compute_semantic_roc_dfi_cutoffs",
     "pipeline_core.R::estimate_recommended_validation_n",
     "pipeline_core.R::sample_items_with_duplicate_guard",
+    "pipeline_core.R::.semantica_sample_factor_items_feasible",
     "pipeline_core.R::ACO_with_ESEM",
     "pipeline_core.R::eval_sem_fn",
     "pipeline_core.R::get_final_dfi_cluster"

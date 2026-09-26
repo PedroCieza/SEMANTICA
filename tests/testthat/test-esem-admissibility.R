@@ -143,10 +143,10 @@ test_that("the lavaan fit predicate returns a boolean and optional assessment", 
 })
 
 test_that("admissible ESEM search jobs pass the integrated gate and ledger", {
-  item_ids <- paste0("item_", seq_len(10L))
-  intended <- rep(c("F1", "F2"), each = 5L)
-  lambda <- matrix(0.08, nrow = 10L, ncol = 2L)
-  lambda[cbind(seq_len(10L), rep(seq_len(2L), each = 5L))] <- 0.68
+  item_ids <- paste0("item_", seq_len(12L))
+  intended <- rep(c("F1", "F2"), each = 6L)
+  lambda <- matrix(0.08, nrow = 12L, ncol = 2L)
+  lambda[cbind(seq_len(12L), rep(seq_len(2L), each = 6L))] <- 0.68
   phi <- matrix(c(1, 0.25, 0.25, 1), nrow = 2L)
   similarity <- lambda %*% phi %*% t(lambda)
   diag(similarity) <- 1
@@ -253,10 +253,10 @@ test_that("an inadmissible full archive refit cannot win or finalize", {
     .package = "SEMANTICA"
   )
 
-  item_ids <- paste0("item_", seq_len(10L))
-  intended <- rep(c("F1", "F2"), each = 5L)
-  lambda <- matrix(0.08, nrow = 10L, ncol = 2L)
-  lambda[cbind(seq_len(10L), rep(seq_len(2L), each = 5L))] <- 0.68
+  item_ids <- paste0("item_", seq_len(12L))
+  intended <- rep(c("F1", "F2"), each = 6L)
+  lambda <- matrix(0.08, nrow = 12L, ncol = 2L)
+  lambda[cbind(seq_len(12L), rep(seq_len(2L), each = 6L))] <- 0.68
   phi <- matrix(c(1, 0.25, 0.25, 1), nrow = 2L)
   similarity <- lambda %*% phi %*% t(lambda)
   diag(similarity) <- 1

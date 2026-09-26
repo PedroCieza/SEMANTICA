@@ -1,7 +1,7 @@
 test_that("casual QoL generation controls only populate existing generation config", {
   captured <- NULL
   local_mocked_bindings(
-    semantica_full_pipeline = function(...) {
+    semantica_run_custom = function(...) {
       captured <<- list(...)
       structure(list(reproducibility = list(), best_items = c("i1", "i2", "i3", "i4", "i5", "i6")),
                 class = c("semantica_full_pipeline_result", "list"))
@@ -185,12 +185,17 @@ test_that("core result plot wrapper keeps the requested stored plot set compact"
 test_that("cache helpers are explicit and bounded to the cache directory", {
   td <- tempfile("semantica-cache-")
   dir.create(file.path(td, "aa"), recursive = TRUE)
-  saveRDS(c(1, 2, 3), file.path(td, "aa", "entry.rds"))
+  cache_entry <- file.path(td, "aa", paste0(strrep("a", 32L), ".rds"))
+  user_rds <- file.path(td, "aa", "user-analysis.rds")
+  saveRDS(c(1, 2, 3), cache_entry)
+  saveRDS("do not delete", user_rds)
   writeLines("do not delete", file.path(td, "user-note.txt"))
   info <- semantica_cache_info(cache_dir = td)
   expect_identical(info$entries, 1L)
   expect_error(semantica_clear_cache(td), "confirm = TRUE")
   expect_invisible(semantica_clear_cache(td, confirm = TRUE))
   expect_identical(semantica_cache_info(cache_dir = td)$entries, 0L)
+  expect_false(file.exists(cache_entry))
+  expect_true(file.exists(user_rds))
   expect_true(file.exists(file.path(td, "user-note.txt")))
 })

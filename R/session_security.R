@@ -146,7 +146,7 @@ sanitize_session_for_result <- function(session) {
     "gpu_layers", "gpu_layers_requested", "model_precision",
     "gpu_precision", "accelerator", "device_status",
     "python_version", "python_package_versions", "torch_version",
-    "cuda_available", "mps_available"
+    "cuda_available", "mps_available", "credential_policy"
   )
   url_fields <- c("base_url", "chat_url", "embed_url", "endpoint")
   out <- list()

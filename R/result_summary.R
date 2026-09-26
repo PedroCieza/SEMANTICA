@@ -241,6 +241,7 @@ summary.semantica_full_pipeline_result <- function(object, sections = "all", ...
   align_meta <- object$selected_item_metadata %||% NULL
   aligned_prop <- if (is.data.frame(align_meta) && "semantica_factor_aligned" %in% names(align_meta)) mean(align_meta$semantica_factor_aligned, na.rm=TRUE) else NA_real_
   ambiguous_prop <- if (is.data.frame(align_meta) && "semantica_factor_alignment_status" %in% names(align_meta)) mean(align_meta$semantica_factor_alignment_status == "ambiguous", na.rm=TRUE) else NA_real_
+  unresolved_prop <- if (is.data.frame(align_meta) && "semantica_factor_alignment_status" %in% names(align_meta)) mean(align_meta$semantica_factor_alignment_status == "alignment_unresolved", na.rm=TRUE) else NA_real_
   clear_mismatch_prop <- if (is.data.frame(align_meta) && "semantica_factor_clear_mismatch" %in% names(align_meta)) mean(align_meta$semantica_factor_clear_mismatch, na.rm=TRUE) else NA_real_
   median_factor_margin <- if (is.data.frame(align_meta) && "semantica_factor_margin" %in% names(align_meta) && any(is.finite(align_meta$semantica_factor_margin))) stats::median(align_meta$semantica_factor_margin, na.rm=TRUE) else NA_real_
   median_factor_score <- if (is.data.frame(align_meta) && "semantica_factor_score" %in% names(align_meta) && any(is.finite(align_meta$semantica_factor_score))) stats::median(align_meta$semantica_factor_score, na.rm=TRUE) else NA_real_
@@ -250,6 +251,16 @@ summary.semantica_full_pipeline_result <- function(object, sections = "all", ...
   metadata_cov <- coverage$metadata_overall_coverage %||% NA_real_
   semantic_cov <- coverage$semantic_overall_coverage %||% NA_real_
   embedding_policy <- object$embedding_policy %||% object$generation$embedding_policy %||% NULL
+  pool_recovery <- object$generation$pool_topup %||%
+    object$generation$generation_provenance$pool_topup %||%
+    object$pool_topup %||% list()
+  preaco_policy_raw <- pool_recovery$effective_constraint_level %||%
+    opt$model_info$preaco_relaxation_level %||% "strict"
+  preaco_policy <- as.character(preaco_policy_raw)
+  names(preaco_policy) <- names(preaco_policy_raw)
+  preaco_policy_label <- if (length(unique(preaco_policy)) == 1L) unique(preaco_policy) else "factor_specific"
+  relaxed_factors <- names(preaco_policy)[preaco_policy == "wording_forbidden_relaxed"]
+  if (is.null(relaxed_factors)) relaxed_factors <- character(0L)
   flagged_polarity <- if (is.data.frame(polarity)) sum(polarity$direction != "not_flagged", na.rm = TRUE) else NA_integer_
   dimensionality_mode <- object$dimensionality_mode %||% object$optimization$dimensionality_mode %||%
     object$run_config$dimensionality %||% "multidimensional"
@@ -260,10 +271,16 @@ summary.semantica_full_pipeline_result <- function(object, sections = "all", ...
     # item-definition similarity only as a descriptive representation metric.
     aligned_prop <- NA_real_
     ambiguous_prop <- NA_real_
+    unresolved_prop <- NA_real_
     clear_mismatch_prop <- NA_real_
     median_factor_margin <- NA_real_
   }
   out <- list(
+    quality_status = object$quality_status %||% opt$quality_status %||% object$proxy_quality$status %||% "unknown",
+    quality_reasons = object$proxy_quality$reasons %||% opt$proxy_quality$reasons %||% character(0L),
+    validation_status = object$validation_status %||% opt$validation_status %||% "unknown",
+    eligible_for_participant_validation = isTRUE(object$eligible_for_participant_validation %||% opt$eligible_for_participant_validation),
+    content_alignment_warning = object$selected_content_alignment_warning %||% NULL,
     dimensionality_mode = dimensionality_mode,
     unidimensional_diagnostics = object$unidimensional_diagnostics %||% object$optimization$unidimensional_diagnostics %||%
       .semantica_fit_indices_component(fit_indices_obj, "unidimensional_diagnostics", NULL),
@@ -276,8 +293,14 @@ summary.semantica_full_pipeline_result <- function(object, sections = "all", ...
     semantic_facet_coverage = semantic_cov,
     content_factor_alignment = aligned_prop,
     content_ambiguous_rate = ambiguous_prop,
+    content_alignment_unresolved_rate = unresolved_prop,
     content_clear_mismatch_rate = clear_mismatch_prop,
     content_alignment_mode = opt$model_info$content_alignment_mode %||% NA_character_,
+    preaco_constraint_level = preaco_policy_label,
+    preaco_constraint_policy = preaco_policy,
+    preaco_relaxed_factors = relaxed_factors,
+    forbidden_conflicts_relaxed = isTRUE(pool_recovery$forbidden_conflicts_relaxed) ||
+      any(preaco_policy == "wording_forbidden_relaxed"),
     content_median_factor_margin = median_factor_margin,
     content_median_definition_similarity = median_factor_score,
     content_exclusion_conflicts = exclusion_conflicts,
@@ -303,6 +326,8 @@ summary.semantica_full_pipeline_result <- function(object, sections = "all", ...
     diagnostic_sections = .semantica_diagnostic_sections(object),
     evidence_status = semantica_evidence_status(object),
     evidence_profile = object$evidence_profile %||% opt$evidence_profile %||% NULL,
+    content_coverage = object$content_coverage %||% opt$content_coverage %||% NULL,
+    selection_objectives = object$selection_objectives %||% opt$selection_objectives %||% NULL,
     decision_policy = object$decision_policy %||% opt$decision_policy %||% NULL,
     notice = paste(
       "Semantic-proxy diagnostics are pre-data screening evidence.",
@@ -320,6 +345,21 @@ print.summary.semantica_full_pipeline_result <- function(x, ...) {
   }
   cat("\nSEMANTICA summary\n")
   cat("============================\n")
+  cat(sprintf("Legacy proxy status            : %s\n", x$quality_status %||% "unknown"))
+  cat(sprintf("Participant-validation gate     : %s\n", x$validation_status %||% "unknown"))
+  cat(sprintf("Pre-ACO constraint policy      : %s%s\n",
+              x$preaco_constraint_level %||% "strict",
+              if (isTRUE(x$forbidden_conflicts_relaxed)) {
+                relaxed <- x$preaco_relaxed_factors %||% character(0L)
+                if (length(relaxed)) paste0(" (forbidden conflicts relaxed only for: ", paste(relaxed, collapse = ", "), ")")
+                else " (forbidden conflicts relaxed; construct mismatch/polarity remain hard)"
+              } else ""))
+  if (length(x$quality_reasons %||% character(0L)) > 0L && !identical(x$quality_status, "proxy_guards_passed")) {
+    cat(sprintf("Quality reasons                : %s\n", paste(unique(x$quality_reasons), collapse = "; ")))
+  }
+  if (!is.null(x$content_alignment_warning)) {
+    cat(sprintf("Content alignment warning       : %s\n", x$content_alignment_warning))
+  }
   sec <- x$diagnostic_sections %||% list()
   ep <- x$evidence_profile %||% NULL
   if (!is.null(ep)) {
@@ -329,6 +369,12 @@ print.summary.semantica_full_pipeline_result <- function(x, ...) {
     cat(sprintf("Independent participant family  : %s\n",
                 if (isTRUE(ep$participant_response_family_available)) "available" else "not supplied"))
     cat("Evidence dependency             : semantic/PFA/ESEM/HTMT/DFI proxies share one embedding source family\n")
+    vd <- ep$validity_dimensions %||% NULL
+    if (is.list(vd)) {
+      cat(sprintf("Structural proxy evidence       : %s\n", vd$structural$status %||% "not established"))
+      cat(sprintf("Content evidence                : %s\n", vd$content$status %||% "not established"))
+      cat("Overall validity inference       : not inferred from sample-free proxy diagnostics alone\n")
+    }
   }
 
   if (!is.null(sec$content_blueprint)) {
@@ -342,6 +388,9 @@ print.summary.semantica_full_pipeline_result <- function(x, ...) {
       }
     } else if (is.finite(x$content_factor_alignment)) {
       cat(sprintf("Content-definition alignment     : %.1f%% assigned-factor top match\n", 100 * x$content_factor_alignment))
+    }
+    if (is.finite(x$content_alignment_unresolved_rate) && x$content_alignment_unresolved_rate > 0) {
+      cat(sprintf("Unresolved factor alignment      : %.1f%%\n", 100 * x$content_alignment_unresolved_rate))
     }
     if (is.finite(x$content_clear_mismatch_rate) && x$content_clear_mismatch_rate > 0) {
       cat(sprintf("Clear factor mismatch rate       : %.1f%%\n", 100 * x$content_clear_mismatch_rate))

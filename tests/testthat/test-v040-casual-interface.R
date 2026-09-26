@@ -16,7 +16,7 @@ test_that("ACO presets preserve intended evidence regimes", {
   expect_true(standard$pfa_during_search)
   expect_identical(standard$pfa_every, 5L)
   expect_identical(standard$esem_every, 10L)
-  expect_identical(standard$esem_cadence_mode, "fixed")
+  expect_identical(standard$esem_cadence_mode, "adaptive")
   expect_identical(standard$fit_calibration_mode, "fast")
 
   expect_identical(full$ants, 60L)
@@ -59,7 +59,7 @@ test_that("casual factors accept description shorthand and prompt augmentation",
 test_that("semantica_run standard mode delegates to full pipeline with requested defaults", {
   captured <- NULL
   local_mocked_bindings(
-    semantica_full_pipeline = function(...) {
+    semantica_run_custom = function(...) {
       captured <<- list(...)
       structure(
         list(reproducibility = list()),
@@ -90,9 +90,9 @@ test_that("semantica_run standard mode delegates to full pipeline with requested
   expect_identical(captured$item_counts$pool, 12L)
   expect_identical(captured$item_counts$selected, 4L)
   expect_equal(captured$generation$overgenerate, 1)
-  expect_identical(captured$ants, 60L)
-  expect_identical(captured$search_patience, 40L)
-  expect_identical(captured$max_total_iter, 60L)
+  expect_identical(captured$ants, 70L)
+  expect_identical(captured$search_patience, 46L)
+  expect_identical(captured$max_total_iter, 70L)
   expect_identical(captured$pfa$mode, "objective")
   expect_true(captured$pfa$during_search)
   expect_identical(captured$pfa$every, 5L)
@@ -103,7 +103,7 @@ test_that("semantica_run standard mode delegates to full pipeline with requested
   expect_identical(captured$esem$proxy_reference_n, "auto")
   expect_identical(captured$esem$rotation, "geomin")
   expect_identical(captured$esem$score_mode, "structure_weighted")
-  expect_identical(captured$esem$cadence_mode, "fixed")
+  expect_identical(captured$esem$cadence_mode, "adaptive")
   expect_identical(captured$fit_calibration$mode, "fast")
   expect_identical(captured$quality$content_alignment_mode, "guard")
   expect_identical(captured$quality$semantic_objective_mode, "relative_conservative")
@@ -118,7 +118,7 @@ test_that("semantica_run standard mode delegates to full pipeline with requested
 test_that("fast and full casual modes alter evidence depth without replacing the engine", {
   calls <- list()
   local_mocked_bindings(
-    semantica_full_pipeline = function(...) {
+    semantica_run_custom = function(...) {
       calls[[length(calls) + 1L]] <<- list(...)
       structure(list(reproducibility = list()), class = c("semantica_full_pipeline_result", "list"))
     },

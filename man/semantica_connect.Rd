@@ -6,7 +6,8 @@
 \usage{
 semantica_connect(
   backend = c(
-    "openai", "anthropic", "groq", "ollama", "unsloth", "llamacpp",
+    "openai", "anthropic", "groq", "gemini", "nvidia_nim", "huggingface",
+    "ollama", "unsloth", "llamacpp",
     "generic_openai", "python_hf", "python_llamacpp"
   ),
   api_key = NULL,
@@ -29,7 +30,9 @@ semantica_connect(
   embedding_task = "auto",
   embedding_instruction = NULL,
   embedding_spec = NULL,
-  backend_spec = NULL
+  backend_spec = NULL,
+  allow_provider_key_forwarding = FALSE,
+  allow_insecure_auth = FALSE
 )
 }
 \arguments{
@@ -89,6 +92,17 @@ never changes psychometric thresholds or score definitions.}
 
 \item{backend_spec}{Optional explicit custom backend contract created by
 \code{\link[=semantica_backend_spec]{semantica_backend_spec()}}. Required when \code{backend} is not a built-in name.}
+
+\item{allow_provider_key_forwarding}{Logical; permit a credential associated
+with a registered cloud provider to be
+sent to a different endpoint origin after \code{base_url} override. Defaults to
+\code{FALSE} so an accidental proxy/host override cannot exfiltrate a provider
+key. Explicit custom backend contracts are not treated as provider-key
+forwarding because their \code{auth_env} is intentionally bound to that service.}
+
+\item{allow_insecure_auth}{Logical; permit credentials over non-loopback
+plain HTTP. Defaults to \code{FALSE}. Loopback HTTP remains allowed for local
+Ollama/llama.cpp/OpenAI-compatible servers.}
 }
 \value{
 A \code{semantica_session} S3 object.

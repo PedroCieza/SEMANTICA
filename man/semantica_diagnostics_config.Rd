@@ -55,7 +55,7 @@ planning is requested but the selected semantic-proxy ESEM is inadmissible.
 \code{"run"} forces the legacy PFA-informed planning calculation.}
 }
 \value{
-A configuration list for \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}.
+A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.
 }
 \description{
 Configure optional diagnostics for the configurable pipeline

@@ -13,6 +13,7 @@ semantica_esem_config(
   run_esem_during_search = NULL,
   esem_weight = NULL,
   esem_failure_policy = NULL,
+  uncalibrated_esem_policy = NULL,
   fast_esem = NULL,
   fast_esem_iter_max = NULL,
   full_esem_iter_max = NULL,
@@ -35,7 +36,7 @@ established fit/quality score; \code{"structure_weighted"} additionally
 emphasizes simple-structure and intended-factor dominance diagnostics.}
 
 \item{esem_every, run_esem_during_search, esem_weight, fast_esem, fast_esem_iter_max, full_esem_iter_max, esem_eval_top_k}{Optional convenience overrides for ESEM search controls. The canonical
-configurable interface keeps these as top-level \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}
+configurable interface keeps these as top-level \code{\link[=semantica_run_custom]{semantica_run_custom()}}
 arguments; top-level values take precedence when both are supplied.}
 
 \item{esem_failure_policy}{Optional ESEM failure policy: \code{"stop"} or
@@ -44,15 +45,20 @@ semantically/PFA for that checkpoint, but later ESEM checkpoints are still
 attempted. Final archived candidates are also refit before non-ESEM
 fallback selection is allowed.}
 
+\item{uncalibrated_esem_policy}{Handling when automatic DFI calibration
+disables ESEM scoring while final guardrails are hard constraints:
+\code{"fail_early"} (default), \code{"guard_screen"}, or explicit
+\code{"semantic_fallback"}.}
+
 \item{cadence_mode}{ESEM checkpoint scheduler. \code{"adaptive"} preserves the
 established entropy-responsive advanced behavior; \code{"fixed"} evaluates at
 the declared \code{esem_every} interval exactly.}
 }
 \value{
-A configuration list for \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}.
+A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.
 }
 \description{
 Collects advanced proxy-ESEM scheduling and scoring options for
-\code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}. Normal scale-construction workflows should prefer
+\code{\link[=semantica_run_custom]{semantica_run_custom()}}. Normal scale-construction workflows should prefer
 \code{\link[=semantica_run]{semantica_run()}} and its coherent ACO presets.
 }

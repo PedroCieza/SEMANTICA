@@ -15,10 +15,28 @@ semantica_quality_config(
   within_similarity_band = NULL,
   semantic_objective_mode = c("relative_conservative", "legacy_target_burden"),
   facet_coverage_weight = NULL,
+  facet_constraint_mode = c("auto", "soft", "presence", "balanced"),
+  facet_min_per_facet = 1L,
+  facet_max_imbalance = 1L,
   psychometric_guard_weight = NULL,
+  psychometric_guard_action = c("auto", "penalty", "final_constraint"),
   psychometric_guard_min_ave = NULL,
   psychometric_guard_min_loading = NULL,
   psychometric_guard_min_primary_ge_50 = NULL,
+  psychometric_guard_min_simple_structure = NULL,
+  psychometric_guard_min_dominance = NULL,
+  psychometric_guard_max_cross_loading = NULL,
+  psychometric_guard_include_htmt = NULL,
+  psychometric_guard_ave_warning_action = c("penalty", "final_constraint"),
+  final_structure_repair = FALSE,
+  final_structure_repair_max_swaps = 6L,
+  final_structure_repair_candidates_per_factor = 6L,
+  final_structure_repair_min_delta = 1e-06,
+  final_structure_repair_max_seconds = 60,
+  final_structure_repair_max_evals = 20L,
+  final_structure_repair_prefilter_top_k = 10L,
+  final_structure_repair_auto_skip_infeasible = TRUE,
+  final_selection_mode = c("pareto", "scalar"),
   threshold_mode = c("fixed", "adaptive_pool"),
   adaptive_redundancy_quantile = 0.95,
   adaptive_duplicate_quantile = 0.99,
@@ -56,12 +74,64 @@ the primary definition of semantic quality.}
 superiority with a robust within-between median-gap component.
 \code{"legacy_target_burden"} retains the 0.4.x score for reproducibility.}
 
-\item{facet_coverage_weight}{Soft weight for facet coverage.}
+\item{facet_coverage_weight}{Soft weight for facet coverage among candidates
+that satisfy any active facet constraint.}
 
-\item{psychometric_guard_weight}{Soft penalty strength for weak proxy
+\item{facet_constraint_mode}{Content-blueprint constraint for declared facets.
+\code{"auto"} resolves by quality profile (\code{lenient = "soft"},
+\code{standard = "presence"}, \code{strict = "balanced"}). \code{"presence"} requires at
+least \code{facet_min_per_facet} selected item(s) from every declared facet when
+feasible; \code{"balanced"} additionally limits within-factor count imbalance.}
+
+\item{facet_min_per_facet}{Minimum selected items required per declared facet
+when a hard facet constraint is active.}
+
+\item{facet_max_imbalance}{Maximum difference between the most- and
+least-represented facets within a factor under \code{"balanced"}.}
+
+\item{psychometric_guard_weight}{Soft search penalty strength for weak proxy
 structure.}
 
+\item{psychometric_guard_action}{Whether structural guardrails are only a
+search penalty or also a final admissibility constraint. \code{"auto"} preserves
+legacy penalty-only behavior unless structural thresholds are explicitly
+supplied (or the strict profile is used), in which case final candidates
+must pass the declared guardrails.}
+
 \item{psychometric_guard_min_ave, psychometric_guard_min_loading, psychometric_guard_min_primary_ge_50}{Minimum proxy-structure guardrails.}
+
+\item{psychometric_guard_min_simple_structure, psychometric_guard_min_dominance, psychometric_guard_max_cross_loading}{Optional ESEM structure guardrails. \code{NULL} leaves the legacy guard
+unchanged; finite values penalize low simple structure, low intended-factor
+dominance, or excessive cross-loading.}
+
+\item{psychometric_guard_include_htmt}{Logical or \code{NULL}; \code{NULL} lets the
+lower-level ACO objective include HTMT only when
+\code{htmt_objective_role = "penalty"}.}
+
+\item{psychometric_guard_ave_warning_action}{Whether AVE-computation
+warnings remain a soft penalty (default) or become an explicit final
+admissibility constraint.}
+
+\item{final_structure_repair}{Enable a bounded same-factor repair pass after
+archive reranking. Accepted swaps must improve the declared objective.}
+
+\item{final_structure_repair_max_swaps, final_structure_repair_candidates_per_factor, final_structure_repair_min_delta}{Limits for the optional final repair pass.}
+
+\item{final_structure_repair_max_seconds, final_structure_repair_max_evals}{Exact-fit launch-time and evaluation budgets for final repair. A finite
+seconds budget is checked before each expensive fit; an in-flight fit is
+allowed to finish. Defaults are 60 seconds and 20 exact evaluations; \code{Inf}
+explicitly removes a budget.}
+
+\item{final_structure_repair_prefilter_top_k}{Optional cheap surrogate
+prefilter size per repair step. The default is 10; \code{Inf} keeps all candidate swaps.}
+
+\item{final_structure_repair_auto_skip_infeasible}{Automatically skip final
+repair when the selected factor pools have no semantic-eligible slack or
+infeasible duplicate constraints.}
+
+\item{final_selection_mode}{Final archive decision rule. \code{"pareto"}
+(default) selects from the non-dominated ESEM finalist set using explicit
+structural priorities; \code{"scalar"} preserves legacy scalar ranking.}
 
 \item{threshold_mode}{\code{"fixed"} preserves declared thresholds; \code{"adaptive_pool"} enables an explicitly experimental pool-relative heuristic.}
 
@@ -89,7 +159,7 @@ current pool/model; \code{"legacy_q40"} reproduces the older 0.25--0.55-clamped
 40th-percentile heuristic for compatibility studies.}
 }
 \value{
-A configuration list for \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}.
+A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.
 }
 \description{
 Configure semantic and psychometric quality guardrails

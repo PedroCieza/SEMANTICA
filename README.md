@@ -1,14 +1,14 @@
 # SEMANTICA
 
 [![R-CMD-check](https://github.com/PedroCieza/SEMANTICA/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/PedroCieza/SEMANTICA/actions/workflows/R-CMD-check.yaml)
-[![pkgdown](https://github.com/PedroCieza/SEMANTICA/actions/workflows/pkgdown.yaml/badge.svg)](https://github.com/PedroCieza/SEMANTICA/actions/workflows/pkgdown.yaml)
+[![release validation](https://github.com/PedroCieza/SEMANTICA/actions/workflows/release-validation.yaml/badge.svg)](https://github.com/PedroCieza/SEMANTICA/actions/workflows/release-validation.yaml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
 
 SEMANTICA is an R package for **semantic-assisted psychometric scale development and pre-data item screening**. It combines LLM item generation, semantic embeddings, construct-coverage diagnostics, ant colony optimization (ACO), sample-free PFA/ESEM/DFI proxy diagnostics, optional participant-response validation, reproducibility bundles, and visualization tools.
 
 <img width="2276" height="1018" alt="semantica logo" src="https://github.com/user-attachments/assets/aa2033aa-aa45-4d5e-a64c-4a181dfe4c88" />
 
-**Current build: 0.2.** Start a scale-development workflow with `semantica_run()`. Use `semantica_full_pipeline()` when you need additional configuration or participant-response validation.
+**Current build: 0.2.** Start a scale-development workflow with `semantica_run()`. Use `semantica_run_custom()` when you need additional configuration or participant-response validation.
 
 > **Evidence boundary.** Sample-free semantic, PFA, ESEM, HTMT-like, and DFI outputs are pre-data proxy diagnostics derived from item representations. They do not establish reliability, construct validity, measurement invariance, DIF, criterion validity, or the factor structure that will occur in participant responses. When participant data are supplied, participant-based results are reported separately and should take precedence for response-data claims.
 
@@ -36,7 +36,7 @@ type = "source")`.
 ### Upgrading from the early public 0.1.0 repository
 
 The recommended ordinary entry point is now `semantica_run()`. The established
-`semantica_full_pipeline()` and lower-level analytical functions remain available
+`semantica_run_custom()` and lower-level analytical functions remain available
 for advanced workflows; the compact `semantica_run()` result is a presentation
 façade and retains the canonical result under `advanced` rather than replacing
 or recalculating it. Review `NEWS.md` for the development history and use the
@@ -118,7 +118,7 @@ result <- semantica_run(
 )
 ```
 
-`semantica_run()` provides the main workflow with commonly used settings. `semantica_full_pipeline()` exposes the same pipeline with additional configuration.
+`semantica_run()` provides the main workflow with commonly used settings. `semantica_run_custom()` exposes the same pipeline with additional configuration.
 
 Console progress is concise by default. Use `progress = "detailed"` for component-level telemetry or `progress = "quiet"` for scripting.
 
@@ -146,7 +146,7 @@ semantica_view(result, view = "raw")  # identical to result$advanced
 `semantica_run()` returns a genuinely compact six-part surface, so RStudio's Environment pane no longer asks regular users to start from dozens of top-level fields. The added `plots` group keeps the five core report graphics immediately available without asking users to regenerate them. No analytical information is discarded: the complete canonical result is retained under `result$advanced`. Historical direct access such as `result$optimization` or `result$fit_indices` is also preserved through compatibility accessors, while `semantica_items()`, `summary()`, diagnostics, validation, and bundle helpers continue to accept the compact object.
 Accordingly, `length(result)` is 6 and `names(result)` reports those six user-facing groups. Researchers who explicitly need the canonical inventory can use `length(result$advanced)` and `names(result$advanced)`.
 
-Direct `semantica_full_pipeline()` calls remain intentionally advanced and return the complete canonical object directly. With the default plot configuration, their canonical `$plots` field contains the same five core report plots; `semantica_plot_config(level = "full")` retains the complete plot suite. `semantica_view(result)` therefore defaults to the nine-section component map for direct full-pipeline results, while `semantica_run()` users normally work from the six visible groups above.
+`semantica_run_custom()` uses the same six-group result surface as `semantica_run()` while retaining its complete canonical object under `$advanced`. With the default plot configuration, `$plots` contains the same five core report plots; `semantica_plot_config(level = "full")` retains the complete plot suite.
 
 To see the resolved settings and model identities:
 
@@ -174,7 +174,7 @@ plots <- semantica_plot_all(result, which = "all", progress = FALSE)
 attr(plots, "semantica_plot_manifest")
 ```
 
-The default BEFORE path view intentionally uses SEMANTICA's established sample-free proxy representation, so simply retaining the plot does not trigger a new full-pool ESEM estimation. Advanced users can opt into the existing refit behavior through `semantica_plot_config(level = "full", before_path_model = "refit")` when using `semantica_full_pipeline()`.
+The default BEFORE path view intentionally uses SEMANTICA's established sample-free proxy representation, so simply retaining the plot does not trigger a new full-pool ESEM estimation. Advanced users can opt into the existing refit behavior through `semantica_plot_config(level = "full", before_path_model = "refit")` when using `semantica_run_custom()`.
 
 Optional plot failures are reported at the end without discarding plots that were generated successfully.
 
@@ -280,7 +280,14 @@ Provider model identifiers are passed through as supplied. Because provider cata
 
 These presets change search effort and diagnostic cadence.
 
-`"full"` refers to the **ACO preset**, not to `semantica_full_pipeline()`.
+The easy interface records an automatic seed by default and holds its generated
+candidate pool fixed while comparing optimizer starts: one for `"fast"`, three
+for `"standard"`, and five for `"full"`. It reports restart agreement as
+optimizer sensitivity only; it does not turn agreement into a validity claim.
+For repeatable planning, use `semantica_run_plan()` and execute the recorded
+seed, or pass an explicit `seed` and `restarts` value.
+
+`"full"` refers to the **ACO preset**, not to `semantica_run_custom()`.
 
 ## Factors and facets
 
@@ -370,12 +377,12 @@ SEMANTICA does not guess positional embedding/item alignment; IDs must match exp
 
 ## Participant-response validation after a pilot
 
-Participant-response validation is configured through `semantica_full_pipeline()`.
+Participant-response validation is configured through `semantica_run_custom()`.
 
 Participant data should be a data frame whose selected-item columns are named with the item IDs used by SEMANTICA. After collecting a pilot sample, rerun the pipeline with `validation_data` (and `validation_ordered` when appropriate).
 
 ```r
-result_with_responses <- semantica_full_pipeline(
+result_with_responses <- semantica_run_custom(
   scale_name = "Academic Self-Regulation Scale",
   scale_description = "...",
   factors = factors,
@@ -509,7 +516,7 @@ semantica_save_bundle() / semantica_load_bundle()
 Use when a setting is not available directly in `semantica_run()`:
 
 ```text
-semantica_full_pipeline()
+semantica_run_custom()
 semantica_llm_config()
 semantica_generation_config()
 semantica_item_count_config()

@@ -47,3 +47,4 @@ Sessions/results are sanitized before serialization. Schema-4 verification
 uses the stable canonical checksum; schema-3 and earlier bundles retain the
 legacy exact-MD5/canonical-fallback behavior.
 }
+

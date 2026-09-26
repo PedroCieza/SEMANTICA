@@ -583,9 +583,21 @@ SEMANTICA_BACKENDS <- list(
                    auth_header = "x-api-key", auth_env = "ANTHROPIC_API_KEY", extra_headers = list("anthropic-version" = "2023-06-01"),
                    has_embed = FALSE, supports_structured_output = FALSE),
   groq = list(label = "Groq API", protocol = "openai_compat", chat_url = "https://api.groq.com/openai/v1/chat/completions",
-              embed_url = NULL, default_chat_model = "llama-3.3-70b-versatile",
+              embed_url = NULL, default_chat_model = "openai/gpt-oss-120b",
               default_embed_model = NULL, embed_dim = NA_integer_, auth_header = "Bearer", auth_env = "GROQ_API_KEY",
               extra_headers = NULL, has_embed = FALSE, supports_structured_output = TRUE),
+  gemini = list(label = "Google Gemini API", protocol = "openai_compat", chat_url = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                embed_url = "https://generativelanguage.googleapis.com/v1beta/openai/embeddings", default_chat_model = "gemini-3.8-flash",
+                default_embed_model = "gemini-embedding-2-preview", embed_dim = NA_integer_, auth_header = "Bearer", auth_env = "GEMINI_API_KEY",
+                extra_headers = NULL, has_embed = TRUE, supports_structured_output = TRUE),
+  nvidia_nim = list(label = "NVIDIA NIM API", protocol = "openai_compat", chat_url = "https://integrate.api.nvidia.com/v1/chat/completions",
+                    embed_url = "https://ai.api.nvidia.com/v1/retrieval/nvidia/embeddings", default_chat_model = "nvidia/llama-3.3-nemotron-super-49b-v1",
+                    default_embed_model = "NV-Embed-QA-passage", embed_dim = NA_integer_, auth_header = "Bearer", auth_env = "NVIDIA_API_KEY",
+                    extra_headers = NULL, has_embed = TRUE, supports_structured_output = FALSE),
+  huggingface = list(label = "Hugging Face Inference Providers", protocol = "openai_compat", chat_url = "https://router.huggingface.co/v1/chat/completions",
+                     embed_url = NULL, default_chat_model = "openai/gpt-oss-120b:fastest", default_embed_model = NULL,
+                     embed_dim = NA_integer_, auth_header = "Bearer", auth_env = "HF_TOKEN", extra_headers = NULL,
+                     has_embed = FALSE, supports_structured_output = TRUE),
   ollama = list(label = "Ollama (local)", protocol = "ollama", chat_url = "http://localhost:11434/api/chat",
                 embed_url = "http://localhost:11434/api/embed", default_chat_model = "llama3.2", default_embed_model = "nomic-embed-text",
                 embed_dim = NA_integer_, auth_header = NULL, auth_env = NULL, extra_headers = NULL,
@@ -724,6 +736,151 @@ semantica_backend_spec <- function(
   )
 }
 
+.expected_embedding_dim_for_session <- function(session) {
+  model_dim <- .expected_embedding_dim(session$embed_model)
+  if (is.finite(model_dim)) {
+    return(list(dim = as.integer(model_dim), source = "model_registry"))
+  }
+  backend_dim <- suppressWarnings(as.integer(session$embed_dim[1L]))
+  if (length(backend_dim) == 1L && is.finite(backend_dim) && backend_dim > 0L) {
+    return(list(dim = backend_dim, source = "backend_spec"))
+  }
+  list(dim = NA_integer_, source = "unknown")
+}
+
+.semantica_parse_http_url <- function(url) {
+  if (is.null(url) || length(url) != 1L || is.na(url) || !nzchar(url)) return(NULL)
+  raw <- trimws(as.character(url))
+  m <- regexec(
+    "^([A-Za-z][A-Za-z0-9+.-]*)://([^/?#]+)",
+    raw, perl = TRUE
+  )
+  hit <- regmatches(raw, m)[[1L]]
+  if (length(hit) == 0L) return(NULL)
+  scheme <- tolower(hit[[2L]])
+  authority <- hit[[3L]]
+
+  # RFC-style userinfo precedes the final '@'. It must never be mistaken for
+  # the destination host when deciding whether a provider key is crossing an
+  # origin boundary (e.g. https://api.openai.com:443@evil.example/...).
+  if (grepl("@", authority, fixed = TRUE)) {
+    authority <- sub("^.*@", "", authority)
+  }
+  if (!nzchar(authority)) return(NULL)
+
+  host <- NULL
+  port <- ""
+  if (startsWith(authority, "[")) {
+    close <- regexpr("]", authority, fixed = TRUE)[1L]
+    if (is.na(close) || close < 2L) return(NULL)
+    host <- substr(authority, 2L, close - 1L)
+    remainder <- substr(authority, close + 1L, nchar(authority))
+    if (nzchar(remainder)) {
+      if (!grepl("^:[0-9]+$", remainder)) return(NULL)
+      port <- substring(remainder, 2L)
+    }
+  } else {
+    # A non-bracketed authority may contain at most one ':' separator. IPv6
+    # literals must be bracketed in URLs and are rejected here if malformed.
+    colon_count <- lengths(regmatches(authority, gregexpr(":", authority, fixed = TRUE)))
+    if (colon_count > 1L) return(NULL)
+    if (colon_count == 1L) {
+      parts <- strsplit(authority, ":", fixed = TRUE)[[1L]]
+      if (length(parts) != 2L || !nzchar(parts[[1L]]) || !grepl("^[0-9]+$", parts[[2L]])) return(NULL)
+      host <- parts[[1L]]
+      port <- parts[[2L]]
+    } else {
+      host <- authority
+    }
+  }
+
+  host <- tolower(sub("\\.$", "", host))
+  if (!nzchar(host)) return(NULL)
+  if (!nzchar(port)) {
+    port <- if (identical(scheme, "https")) "443" else if (identical(scheme, "http")) "80" else ""
+  }
+  list(
+    scheme = scheme, host = host, port = port,
+    origin = paste0(scheme, "://", host, if (nzchar(port)) paste0(":", port) else "")
+  )
+}
+
+.semantica_is_loopback_host <- function(host) {
+  host <- tolower(as.character(host %||% ""))
+  host %in% c("localhost", "::1", "0:0:0:0:0:0:0:1") || grepl("^127\\.", host)
+}
+
+.semantica_validate_credential_destination <- function(
+    backend, spec, chat_url, embed_url, credential,
+    purpose = c("both", "chat", "embed"),
+    allow_provider_key_forwarding = FALSE,
+    allow_insecure_auth = FALSE) {
+  purpose <- match.arg(purpose)
+  has_credential <- !is.null(credential) && length(credential) == 1L &&
+    !is.na(credential) && nzchar(trimws(as.character(credential)))
+  if (!has_credential || is.null(spec$auth_header)) {
+    return(list(provider_origin_changed = FALSE, insecure_destination = FALSE))
+  }
+
+  endpoints <- character(0L)
+  if (purpose %in% c("both", "chat") && !is.null(chat_url)) endpoints <- c(endpoints, chat_url)
+  if (purpose %in% c("both", "embed") && !is.null(embed_url)) endpoints <- c(endpoints, embed_url)
+  parsed_raw <- lapply(endpoints, .semantica_parse_http_url)
+  if (length(endpoints) > 0L && any(vapply(parsed_raw, is.null, logical(1L)))) {
+    stop(
+      "Unable to validate the credential destination URL. Use an absolute http:// or https:// endpoint without malformed authority syntax.",
+      call. = FALSE
+    )
+  }
+  parsed <- Filter(Negate(is.null), parsed_raw)
+  if (length(parsed) == 0L) return(list(provider_origin_changed = FALSE, insecure_destination = FALSE))
+  schemes <- vapply(parsed, `[[`, character(1L), "scheme")
+  if (any(!schemes %in% c("http", "https"))) {
+    stop("Credential-bearing HTTP backends require an http:// or https:// endpoint.", call. = FALSE)
+  }
+
+  insecure <- vapply(parsed, function(x) {
+    identical(x$scheme, "http") && !.semantica_is_loopback_host(x$host)
+  }, logical(1L))
+  if (any(insecure) && !isTRUE(allow_insecure_auth)) {
+    stop(
+      "Refusing to send an API credential over non-loopback HTTP. Use HTTPS or a loopback local service. ",
+      "If this insecure transport is intentional, set allow_insecure_auth = TRUE explicitly.",
+      call. = FALSE
+    )
+  }
+
+  provider_origin_changed <- FALSE
+  public_provider <- backend %in% c("openai", "anthropic", "groq", "gemini", "nvidia_nim", "huggingface") &&
+    !isTRUE(spec$explicit_custom_contract)
+  if (public_provider) {
+    original_endpoints <- character(0L)
+    if (purpose %in% c("both", "chat") && !is.null(spec$chat_url)) original_endpoints <- c(original_endpoints, spec$chat_url)
+    if (purpose %in% c("both", "embed") && !is.null(spec$embed_url)) original_endpoints <- c(original_endpoints, spec$embed_url)
+    original_parsed <- Filter(Negate(is.null), lapply(original_endpoints, .semantica_parse_http_url))
+    original_origins <- unique(vapply(original_parsed, `[[`, character(1L), "origin"))
+    actual_origins <- unique(vapply(parsed, `[[`, character(1L), "origin"))
+    provider_origin_changed <- length(actual_origins) > 0L &&
+      any(!actual_origins %in% original_origins)
+    if (provider_origin_changed && !isTRUE(allow_provider_key_forwarding)) {
+      stop(
+        sprintf(
+          "Refusing to forward the registered %s provider credential to a different host. ",
+          backend
+        ),
+        "Use an explicit custom backend contract with its own auth_env, or set ",
+        "allow_provider_key_forwarding = TRUE if forwarding this provider credential is intentional.",
+        call. = FALSE
+      )
+    }
+  }
+
+  list(
+    provider_origin_changed = provider_origin_changed,
+    insecure_destination = any(insecure)
+  )
+}
+
 # =================================================================
 # P2  CONNECT
 # =================================================================
@@ -742,6 +899,15 @@ semantica_backend_spec <- function(
 #' @param chat_model   Override default chat model name.
 #' @param embed_model  Override default embedding model name.
 #' @param base_url     Override host:port (required for `generic_openai`).
+#' @param allow_provider_key_forwarding Logical; permit a credential associated
+#'   with a registered cloud provider to be
+#'   sent to a different endpoint origin after `base_url` override. Defaults to
+#'   `FALSE` so an accidental proxy/host override cannot exfiltrate a provider
+#'   key. Explicit custom backend contracts are not treated as provider-key
+#'   forwarding because their `auth_env` is intentionally bound to that service.
+#' @param allow_insecure_auth Logical; permit credentials over non-loopback
+#'   plain HTTP. Defaults to `FALSE`. Loopback HTTP remains allowed for local
+#'   Ollama/llama.cpp/OpenAI-compatible servers.
 #' @param gguf_path    Path to a `.gguf` model file (`python_llamacpp` only).
 #' @param hf_token     HuggingFace token for gated models (`python_hf` only).
 #' @param embedding_device Device requested for local Python embedding models:
@@ -771,7 +937,8 @@ semantica_backend_spec <- function(
 #'
 #' @usage semantica_connect(
 #'   backend = c(
-#'     "openai", "anthropic", "groq", "ollama", "unsloth", "llamacpp",
+#'     "openai", "anthropic", "groq", "gemini", "nvidia_nim", "huggingface",
+#'     "ollama", "unsloth", "llamacpp",
 #'     "generic_openai", "python_hf", "python_llamacpp"
 #'   ),
 #'   api_key = NULL,
@@ -794,7 +961,9 @@ semantica_backend_spec <- function(
 #'   embedding_task = "auto",
 #'   embedding_instruction = NULL,
 #'   embedding_spec = NULL,
-#'   backend_spec = NULL
+#'   backend_spec = NULL,
+#'   allow_provider_key_forwarding = FALSE,
+#'   allow_insecure_auth = FALSE
 #' )
 #' @section Side effects:
 #' Reads provider credentials from environment variables when explicit keys are
@@ -820,7 +989,7 @@ semantica_backend_spec <- function(
 #'   verbose = FALSE
 #' )
 #' }
-semantica_connect <- function(backend = c("openai", "anthropic", "groq", "ollama", "unsloth", "llamacpp", "generic_openai", "python_hf", "python_llamacpp"),
+semantica_connect <- function(backend = c("openai", "anthropic", "groq", "gemini", "nvidia_nim", "huggingface", "ollama", "unsloth", "llamacpp", "generic_openai", "python_hf", "python_llamacpp"),
                               api_key = NULL, chat_model = NULL, embed_model = NULL, base_url = NULL, gguf_path = NULL,
                               hf_token = NULL,
                               embedding_device = "auto", chat_device = "auto",
@@ -832,7 +1001,9 @@ semantica_connect <- function(backend = c("openai", "anthropic", "groq", "ollama
                               purpose = c("auto", "both", "chat", "embed"),
                               embedding_task = "auto", embedding_instruction = NULL,
                               embedding_spec = NULL,
-                              backend_spec = NULL) {
+                              backend_spec = NULL,
+                              allow_provider_key_forwarding = FALSE,
+                              allow_insecure_auth = FALSE) {
   if (length(backend) != 1L) backend <- backend[[1L]]
   backend <- as.character(backend)
   if (!nzchar(backend)) stop("'backend' must be a non-empty string.")
@@ -878,6 +1049,14 @@ semantica_connect <- function(backend = c("openai", "anthropic", "groq", "ollama
   }
   retry_on_failure <- isTRUE(retry_on_failure)
   preflight <- isTRUE(preflight)
+  allow_provider_key_forwarding <- .semantica_assert_flag(
+    allow_provider_key_forwarding, "allow_provider_key_forwarding",
+    condition_class = "semantica_error_config"
+  )
+  allow_insecure_auth <- .semantica_assert_flag(
+    allow_insecure_auth, "allow_insecure_auth",
+    condition_class = "semantica_error_config"
+  )
   purpose_requested <- match.arg(purpose)
   if (!is.null(embedding_spec) && !inherits(embedding_spec, "semantica_embedding_spec")) {
     stop("'embedding_spec' must be NULL or created by semantica_embedding_spec().")
@@ -924,12 +1103,19 @@ semantica_connect <- function(backend = c("openai", "anthropic", "groq", "ollama
   if (is.null(key) && !is.null(spec$auth_env) && nchar(spec$auth_env) > 0L) {
     key <- Sys.getenv(spec$auth_env, unset = NA_character_)
     if (is.na(key) || nchar(trimws(key)) == 0L) {
-      if (backend %in% c("openai", "anthropic", "groq")) {
+      if (backend %in% c("openai", "anthropic", "groq", "gemini", "nvidia_nim", "huggingface")) {
         stop("No API key found for backend '", backend, "'.\n  Set environment variable ", spec$auth_env, "\n  or pass api_key= directly.")
       }
       key <- NULL
     }
   }
+  credential_policy <- .semantica_validate_credential_destination(
+    backend = backend, spec = spec,
+    chat_url = chat_url, embed_url = embed_url, credential = key,
+    purpose = purpose,
+    allow_provider_key_forwarding = allow_provider_key_forwarding,
+    allow_insecure_auth = allow_insecure_auth
+  )
 
   hf_tok <- hf_token %||% Sys.getenv("HF_TOKEN", unset = NA_character_)
   if (is.na(hf_tok)) hf_tok <- NULL
@@ -981,6 +1167,14 @@ semantica_connect <- function(backend = c("openai", "anthropic", "groq", "ollama
                   py_available = py_available, purpose = purpose,
                   embedding_task = embedding_task, embedding_instruction = embedding_instruction,
                   embedding_spec = embedding_spec,
+                  credential_policy = c(
+                    credential_policy,
+                    list(
+                      allow_provider_key_forwarding = allow_provider_key_forwarding,
+                      allow_insecure_auth = allow_insecure_auth
+                    )
+                  ),
+                  rate_limit_state = .semantica_new_rate_limit_state(),
                   verbose = verbose)
   class(session) <- c("semantica_session", "list")
 
@@ -1052,6 +1246,20 @@ print.semantica_session <- function(x, ...) {
       retry_on_failure = isTRUE(session$retry_on_failure %||% TRUE),
       is_transient = function(resp) {
         httr2::resp_status(resp) %in% c(408L, 425L, 429L, 500L, 502L, 503L, 504L)
+      },
+      after = function(resp) {
+        .semantica_update_rate_limit_state(session, resp)
+        wait <- tryCatch(httr2::resp_retry_after(resp), error = function(e) NA_real_)
+        if (is.finite(wait)) return(wait)
+        if (identical(httr2::resp_status(resp), 429L)) {
+          waits <- c(
+            .semantica_header_wait(resp, "x-ratelimit-reset-tokens"),
+            .semantica_header_wait(resp, "x-ratelimit-reset-requests")
+          )
+          waits <- waits[is.finite(waits) & waits >= 0]
+          if (length(waits)) return(max(waits))
+        }
+        NA_real_
       }
     )
   if (!is.null(body_list)) req <- httr2::req_body_json(req, body_list)
@@ -1181,16 +1389,28 @@ print.semantica_session <- function(x, ...) {
 }
 
 #' @keywords internal
+.semantica_anthropic_chat_body <- function(session, messages, max_tokens, temperature, system_prompt = NULL) {
+  body <- list(
+    model = session$chat_model,
+    max_tokens = max_tokens,
+    messages = messages,
+    temperature = temperature
+  )
+  if (!is.null(system_prompt)) body$system <- system_prompt
+  body
+}
+
+#' @keywords internal
 .call_chat <- function(session, messages, max_tokens = 2048L, temperature = 0.7, system_prompt = NULL, response_format = NULL, seed = NULL) {
-  proto <- session$protocol
+  proto <- as.character(session$protocol %||% "openai_compat")
   seed <- .semantica_normalize_generation_seed(seed)
   if (proto == "python_hf") return(.py_hf_chat(session, messages, max_tokens, temperature, system_prompt))
   if (proto == "python_llamacpp") return(.py_llamacpp_chat(session, messages, max_tokens, temperature, system_prompt))
 
   if (proto == "anthropic") {
-    body <- list(model = session$chat_model, max_tokens = max_tokens, messages = messages)
-    if (!is.null(system_prompt)) body$system <- system_prompt
+    body <- .semantica_anthropic_chat_body(session, messages, max_tokens, temperature, system_prompt)
     resp <- .build_request(session, session$chat_url, body) |> httr2::req_error(is_error = function(r) FALSE) |> httr2::req_perform()
+    .semantica_update_rate_limit_state(session, resp)
     parsed <- httr2::resp_body_json(resp, simplifyVector = FALSE)
     if (httr2::resp_status(resp) >= 400L) stop("Anthropic error: ", parsed$error$message %||% httr2::resp_status(resp))
     txt <- parsed$content[[1L]]$text
@@ -1198,25 +1418,81 @@ print.semantica_session <- function(x, ...) {
     return(as.character(txt))
   }
 
-  msgs <- messages
-  if (!is.null(system_prompt)) msgs <- c(list(list(role = "system", content = system_prompt)), msgs)
-  body <- list(model = session$chat_model, messages = msgs, max_tokens = max_tokens, temperature = temperature)
-  if (identical(response_format, "json") && isTRUE(session$supports_structured_output)) {
-    if (proto == "ollama") body$format <- "json" else body$response_format <- list(type = "json_object")
+  body <- .semantica_openai_chat_body(
+    session = session,
+    messages = messages,
+    max_tokens = max_tokens,
+    temperature = temperature,
+    system_prompt = system_prompt,
+    response_format = response_format,
+    seed = seed
+  )
+  profile <- .semantica_reasoning_model_profile(session)
+  msgs <- body$messages %||% messages
+  completion_budget <- if (identical(proto, "ollama")) {
+    suppressWarnings(as.integer(body$options$num_predict %||% max_tokens))
+  } else {
+    suppressWarnings(as.integer(body[[profile$completion_field %||% "max_tokens"]] %||% max_tokens))
   }
-  if (proto == "ollama") {
-    body$stream <- FALSE
-    body$options <- list(temperature = temperature, num_predict = max_tokens)
-    if (!is.null(seed)) body$options$seed <- seed
-    body$max_tokens <- NULL
-  }
+  if (!is.finite(completion_budget) || completion_budget < 1L) completion_budget <- 1L
+
+  request_chars <- sum(vapply(msgs, function(x) nchar(as.character(x$content %||% ""), type = "chars"), numeric(1L)), na.rm = TRUE)
+  estimated_tokens <- .semantica_estimate_chat_request_tokens(session, msgs, completion_budget)
+  .semantica_rate_limit_guard(session, estimated_tokens = estimated_tokens, verbose = isTRUE(session$verbose))
 
   resp <- .build_request(session, session$chat_url, body) |> httr2::req_error(is_error = function(r) FALSE) |> httr2::req_perform()
+  .semantica_update_rate_limit_state(session, resp)
   parsed <- httr2::resp_body_json(resp, simplifyVector = FALSE)
+  usage <- parsed$usage %||% list()
+  .semantica_update_usage_state(session, usage, request_chars = request_chars)
   if (httr2::resp_status(resp) >= 400L) stop("LLM API error: ", parsed$error$message %||% parsed$error %||% httr2::resp_status(resp))
-  txt <- if (proto == "ollama") parsed$message$content else parsed$choices[[1L]]$message$content
-  if (is.null(txt) || length(txt) == 0L) stop("Empty response from backend '", session$backend, "'.")
+
+  if (identical(proto, "ollama")) {
+    txt <- parsed$message$content
+    if (is.null(txt) || length(txt) == 0L || all(!nzchar(trimws(as.character(txt))))) {
+      stop("Empty response from backend '", session$backend, "'.")
+    }
+    return(as.character(txt))
+  }
+
+  choice <- if (is.list(parsed$choices) && length(parsed$choices)) parsed$choices[[1L]] else list()
+  txt <- choice$message$content
+  finish_reason <- as.character(choice$finish_reason %||% NA_character_)
+  finish_reason <- if (length(finish_reason)) finish_reason[[1L]] else NA_character_
+  reasoning_tokens <- .semantica_reasoning_tokens_from_usage(usage)
+  empty_visible <- is.null(txt) || length(txt) == 0L || all(is.na(txt) | !nzchar(trimws(as.character(txt))))
+
+  # Reasoning models can consume the whole completion allowance before emitting
+  # visible content. Preserve this as a typed condition so the generation layer
+  # can retry with exactly the observed reasoning cost as reserve rather than
+  # misclassifying the event as an opaque backend failure.
+  if (isTRUE(empty_visible) && is.finite(reasoning_tokens) && reasoning_tokens > 0 &&
+      (identical(finish_reason, "length") || reasoning_tokens >= completion_budget)) {
+    .semantica_record_reasoning_evidence(session, reasoning_tokens)
+    .semantica_abort(
+      sprintf(
+        "Reasoning exhausted the completion budget before visible content was produced (reasoning tokens: %d, completion budget: %d).",
+        as.integer(round(reasoning_tokens)), as.integer(completion_budget)
+      ),
+      subclass = "semantica_error_reasoning_budget",
+      finish_reason = finish_reason,
+      reasoning_tokens = as.numeric(reasoning_tokens),
+      max_completion_tokens = as.integer(completion_budget),
+      completion_budget = as.integer(completion_budget),
+      backend = as.character(session$backend %||% NA_character_),
+      model = as.character(session$chat_model %||% NA_character_)
+    )
+  }
+
+  if (isTRUE(empty_visible)) stop("Empty response from backend '", session$backend, "'.")
   as.character(txt)
+}
+
+#' @keywords internal
+.semantica_bind_embedding_rows <- function(rows) {
+  mat <- do.call(rbind, rows)
+  rownames(mat) <- NULL
+  mat
 }
 
 #' @keywords internal
@@ -1235,9 +1511,10 @@ print.semantica_session <- function(x, ...) {
     status <- httr2::resp_status(resp)
     parsed <- tryCatch(httr2::resp_body_json(resp, simplifyVector = FALSE), error = function(e) NULL)
     if (status < 400L && !is.null(parsed$embeddings)) {
-      mat <- do.call(rbind, lapply(parsed$embeddings, function(x) as.numeric(unlist(x, use.names = FALSE))))
-      rownames(mat) <- NULL
-      return(mat)
+      return(.semantica_bind_embedding_rows(lapply(
+        parsed$embeddings,
+        function(x) as.numeric(unlist(x, use.names = FALSE))
+      )))
     }
     # Backward-compatible fallback for older Ollama versions using /api/embeddings.
     if (status %in% c(404L, 405L)) {
@@ -1250,7 +1527,7 @@ print.semantica_session <- function(x, ...) {
         if (httr2::resp_status(legacy_resp) >= 400L) stop("Ollama legacy embed error: ", httr2::resp_status(legacy_resp))
         as.numeric(unlist(httr2::resp_body_json(legacy_resp, simplifyVector = FALSE)$embedding, use.names = FALSE))
       })
-      mat <- do.call(rbind, rows); rownames(mat) <- NULL; return(mat)
+      return(.semantica_bind_embedding_rows(rows))
     }
     stop("Ollama embed error: ", status)
   }
@@ -1266,11 +1543,10 @@ print.semantica_session <- function(x, ...) {
     ord <- order(vapply(parsed$data, function(d) as.integer(d$index), integer(1L)))
     parsed$data <- parsed$data[ord]
   }
-  mat <- do.call(rbind, lapply(parsed$data, function(d) {
+  .semantica_bind_embedding_rows(lapply(parsed$data, function(d) {
     if (is.null(d$embedding)) stop("Embedding API row missing `embedding` field.")
     as.numeric(unlist(d$embedding, use.names = FALSE))
   }))
-  rownames(mat) <- NULL; mat
 }
 
 .py_modules <- new.env(parent = emptyenv())
@@ -1519,7 +1795,7 @@ print.semantica_session <- function(x, ...) {
     out <- llm$embed(txt)
     if (inherits(out, "python.builtin.list")) unlist(reticulate::py_to_r(out)) else as.numeric(reticulate::py_to_r(out))
   })
-  mat <- do.call(rbind, rows); rownames(mat) <- NULL; mat
+  .semantica_bind_embedding_rows(rows)
 }
 
 # =================================================================
@@ -1777,6 +2053,376 @@ print.semantica_session <- function(x, ...) {
 }
 
 #' @keywords internal
+.semantica_pool_topup_nonnegative_int <- function(x, what) {
+  out <- suppressWarnings(as.integer(x[1L]))
+  if (length(out) != 1L || is.na(out) || out < 0L) {
+    stop(sprintf("'%s' must be a non-negative integer.", what), call. = FALSE)
+  }
+  out
+}
+
+#' @keywords internal
+.semantica_pool_topup_probability <- function(x, what) {
+  out <- suppressWarnings(as.numeric(x[1L]))
+  if (length(out) != 1L || is.na(out) || !is.finite(out) || out < 0 || out > 1) {
+    stop(sprintf("'%s' must be a finite number in [0, 1].", what), call. = FALSE)
+  }
+  out
+}
+
+#' @keywords internal
+.semantica_pool_topup_factor_units <- function(factor_spec) {
+  if (!is.list(factor_spec)) return(1L)
+  facets <- factor_spec$facets %||% factor_spec$Facets %||% NULL
+  if (is.null(facets) || !length(facets)) return(1L)
+  as.integer(length(facets))
+}
+
+#' @keywords internal
+.semantica_pool_topup_selected_targets <- function(i_per_f, factors) {
+  if (is.null(i_per_f)) return(NULL)
+  factor_names <- names(factors)
+  if (is.null(factor_names) || any(!nzchar(factor_names))) {
+    stop("'factors' must be a named list.", call. = FALSE)
+  }
+  targets <- suppressWarnings(as.integer(i_per_f))
+  if (length(targets) == 1L) {
+    targets <- stats::setNames(rep(targets, length(factor_names)), factor_names)
+  } else {
+    if (length(targets) != length(factor_names)) {
+      stop("'pool_topup_i_per_f' must be a scalar or have one value per factor.", call. = FALSE)
+    }
+    if (is.null(names(targets)) || any(!nzchar(names(targets)))) {
+      names(targets) <- factor_names
+    } else {
+      missing_names <- setdiff(factor_names, names(targets))
+      extra_names <- setdiff(names(targets), factor_names)
+      if (length(missing_names) || length(extra_names)) {
+        stop("'pool_topup_i_per_f' names must match the names in 'factors'.", call. = FALSE)
+      }
+      targets <- targets[factor_names]
+    }
+  }
+  if (anyNA(targets) || any(targets < 1L)) {
+    stop("'pool_topup_i_per_f' values must be positive integers.", call. = FALSE)
+  }
+  targets
+}
+
+#' @keywords internal
+.semantica_pool_topup_base_targets <- function(factors, n_per_factor = NULL,
+                                               n_per_factor_override = FALSE) {
+  factor_names <- names(factors)
+  plan <- tryCatch(
+    .expand_generation_plan(factors, n_per_factor, n_per_factor_override),
+    error = function(e) NULL
+  )
+  if (is.null(plan) || !length(plan)) {
+    out <- rep(NA_integer_, length(factor_names))
+    names(out) <- factor_names
+    return(out)
+  }
+  dims <- vapply(plan, `[[`, character(1L), "dimension")
+  counts <- vapply(plan, function(x) as.integer(x$n_items), integer(1L))
+  out <- stats::setNames(rep(NA_integer_, length(factor_names)), factor_names)
+  sums <- tapply(counts, dims, sum)
+  out[names(sums)] <- as.integer(sums)
+  out
+}
+
+#' @keywords internal
+.semantica_pool_topup_diagnostics <- function(items_tbl, factors, selected_targets,
+                                              n_per_factor = NULL,
+                                              n_per_factor_override = FALSE,
+                                              min_slack = 2L,
+                                              content_alignment_mode = c("diagnostic", "guard", "off"),
+                                              polarity_action = c("diagnostic", "guard", "off"),
+                                              relaxation_level = "strict",
+                                              alignment_refresh_done = character(0L)) {
+  if (is.null(selected_targets)) {
+    return(data.frame())
+  }
+  content_alignment_mode <- match.arg(content_alignment_mode)
+  polarity_action <- match.arg(polarity_action)
+  min_slack <- .semantica_pool_topup_nonnegative_int(min_slack, "pool_topup_min_slack")
+  x <- as.data.frame(items_tbl, stringsAsFactors = FALSE)
+  factor_col <- if ("factor" %in% names(x)) "factor" else if ("Dimension" %in% names(x)) "Dimension" else NULL
+  if (is.null(factor_col)) stop("Item pool has no factor/Dimension column.", call. = FALSE)
+  factor_names <- names(factors)
+  alignment_refresh_done <- intersect(as.character(alignment_refresh_done), factor_names)
+  relaxation_level <- .semantica_normalize_relaxation_policy(
+    relaxation_level, factor_names, arg = "relaxation_level"
+  )
+  base_targets <- .semantica_pool_topup_base_targets(
+    factors, n_per_factor, n_per_factor_override
+  )
+  rows <- lapply(factor_names, function(f) {
+    ii <- which(as.character(x[[factor_col]]) == f)
+    generated_n <- length(ii)
+    selected_target <- as.integer(selected_targets[[f]])
+    base_target <- suppressWarnings(as.integer(base_targets[[f]]))
+    if (!is.finite(base_target)) base_target <- generated_n
+    # The top-up layer repairs *search feasibility*, not the original raw pool
+    # size. Provider-yield replenishment already handles failure to create the
+    # requested raw pool. After screening, the correct recovery target is the
+    # selected count plus declared slack.
+    desired_usable <- selected_target + min_slack
+
+    status_available <- "semantica_factor_alignment_status" %in% names(x)
+    aligned_available <- "semantica_factor_aligned" %in% names(x)
+    status <- if (status_available) as.character(x$semantica_factor_alignment_status[ii]) else rep(NA_character_, generated_n)
+    aligned_flag <- if (aligned_available) as.logical(x$semantica_factor_aligned[ii]) else rep(NA, generated_n)
+    aligned_n <- if (status_available) {
+      sum(status == "aligned", na.rm = TRUE)
+    } else if (aligned_available) {
+      sum(!is.na(aligned_flag) & aligned_flag)
+    } else {
+      NA_integer_
+    }
+    ambiguous_n <- if (status_available) sum(status == "ambiguous", na.rm = TRUE) else NA_integer_
+    unresolved_n <- if (status_available) sum(status == "alignment_unresolved", na.rm = TRUE) else NA_integer_
+    mismatch_n <- if (status_available) sum(status == "clear_mismatch", na.rm = TRUE) else NA_integer_
+
+    usable <- rep(TRUE, generated_n)
+    if (exists(".semantica_preaco_guard_mask", mode = "function")) {
+      id_col <- intersect(c("ID", "item_id", "id", "item_name", "Item", "item"), names(x))
+      ids_all <- if (length(id_col)) as.character(x[[id_col[[1L]]]]) else as.character(seq_len(nrow(x)))
+      guard_policy <- .semantica_preaco_guard_mask(
+        df = x,
+        item_ids = ids_all,
+        content_alignment_mode = content_alignment_mode,
+        polarity_action = polarity_action,
+        relaxation_level = relaxation_level
+      )
+      usable <- as.logical(guard_policy$pass[ii])
+    } else {
+      if (!identical(content_alignment_mode, "off")) {
+        if ("semantica_content_guard_pass" %in% names(x)) {
+          gp <- as.logical(x$semantica_content_guard_pass[ii])
+          usable <- usable & (is.na(gp) | gp)
+        } else if (status_available) {
+          usable <- usable & (is.na(status) | status != "clear_mismatch")
+        } else if (aligned_available) {
+          usable <- usable & (is.na(aligned_flag) | aligned_flag)
+        }
+      }
+      if (identical(polarity_action, "guard") && "semantica_polarity_flag" %in% names(x)) {
+        pf <- as.logical(x$semantica_polarity_flag[ii])
+        usable <- usable & (is.na(pf) | !pf)
+      }
+    }
+    usable_n <- sum(usable, na.rm = TRUE)
+    usable_deficit <- max(0L, desired_usable - usable_n)
+    aligned_deficit <- if (is.finite(aligned_n)) max(0L, selected_target - aligned_n) else 0L
+    # Ordinary ambiguity is retained. If calibration is unresolved, request one
+    # bounded factor-level refresh, then keep the state as diagnostic evidence
+    # rather than repeatedly generating against the same reference geometry.
+    alignment_recovery_deficit <- as.integer(
+      identical(content_alignment_mode, "guard") && is.finite(unresolved_n) && unresolved_n > 0L &&
+        !f %in% alignment_refresh_done
+    )
+    recommended <- as.integer(max(usable_deficit, alignment_recovery_deficit))
+    data.frame(
+      factor = f,
+      generated_n = as.integer(generated_n),
+      selected_target = selected_target,
+      base_target = as.integer(base_target),
+      min_slack = as.integer(min_slack),
+      desired_usable = as.integer(desired_usable),
+      usable_n = as.integer(usable_n),
+      aligned_n = as.integer(aligned_n),
+      ambiguous_n = as.integer(ambiguous_n),
+      alignment_unresolved_n = as.integer(unresolved_n),
+      clear_mismatch_n = as.integer(mismatch_n),
+      usable_deficit = as.integer(usable_deficit),
+      aligned_deficit = as.integer(aligned_deficit),
+      alignment_recovery_deficit = alignment_recovery_deficit,
+      recommended_additional = recommended,
+      selection_pressure_usable = if (usable_n > 0L) selected_target / usable_n else Inf,
+      evidence_basis = if (status_available) "definition_alignment_status" else if (aligned_available) "definition_alignment_rank" else "count_only",
+      constraint_level = relaxation_level[[f]],
+      operational_status = if (recommended > 0L) "topup_recommended" else "sufficient",
+      stringsAsFactors = FALSE
+    )
+  })
+  out <- do.call(rbind, rows)
+  rownames(out) <- NULL
+  out
+}
+
+#' @keywords internal
+.semantica_pool_topup_combined_diagnostics <- function(
+    items_tbl, cosine_sim_matrix, factors, selected_targets,
+    n_per_factor = NULL, n_per_factor_override = FALSE,
+    min_slack = 2L,
+    content_alignment_mode = c("diagnostic", "guard", "off"),
+    polarity_action = c("diagnostic", "guard", "off"),
+    structural_gate = TRUE,
+    cohesion_retention = 0.75,
+    within_similarity_target = NULL,
+    within_similarity_band = 0.08,
+    semantic_objective_mode = c("relative_conservative", "legacy_target_burden"),
+    redundancy_threshold = 0.85,
+    dup_threshold = 0.90,
+    relaxation_level = "strict",
+    alignment_refresh_done = character(0L)) {
+  content_alignment_mode <- match.arg(content_alignment_mode)
+  polarity_action <- match.arg(polarity_action)
+  semantic_objective_mode <- match.arg(semantic_objective_mode)
+  relaxation_level <- .semantica_normalize_relaxation_policy(
+    relaxation_level, names(factors), arg = "relaxation_level"
+  )
+  basic <- .semantica_pool_topup_diagnostics(
+    items_tbl, factors, selected_targets,
+    n_per_factor = n_per_factor,
+    n_per_factor_override = n_per_factor_override,
+    min_slack = min_slack,
+    content_alignment_mode = content_alignment_mode,
+    polarity_action = polarity_action,
+    relaxation_level = relaxation_level,
+    alignment_refresh_done = alignment_refresh_done
+  )
+  if (!isTRUE(structural_gate) || !nrow(basic) || is.null(cosine_sim_matrix) ||
+      !exists(".semantica_preaco_pool_gate", mode = "function")) {
+    basic$constraint_level <- unname(relaxation_level[basic$factor])
+    return(basic)
+  }
+  gate <- tryCatch(
+    .semantica_preaco_pool_gate(
+      cosine_sim_matrix = cosine_sim_matrix,
+      df = as.data.frame(items_tbl, stringsAsFactors = FALSE),
+      i.per.f = selected_targets,
+      min_slack = min_slack,
+      cohesion_retention = cohesion_retention,
+      within_similarity_target = within_similarity_target,
+      within_similarity_band = within_similarity_band,
+      semantic_objective_mode = semantic_objective_mode,
+      redundancy_threshold = redundancy_threshold,
+      dup_threshold = dup_threshold,
+      content_alignment_mode = content_alignment_mode,
+      polarity_action = polarity_action,
+      relaxation_level = relaxation_level
+    ),
+    error = function(e) structure(NULL, error = conditionMessage(e))
+  )
+  if (is.null(gate) || !is.data.frame(gate$table)) {
+    basic$constraint_level <- unname(relaxation_level[basic$factor])
+    attr(basic, "structural_gate_error") <- attr(gate, "error") %||% "unavailable"
+    return(basic)
+  }
+  gt <- gate$table
+  idx <- match(basic$factor, gt$factor)
+  basic$semantic_eligible_n <- gt$eligible_n[idx]
+  basic$required_with_slack <- gt$required_with_slack[idx]
+  basic$independent_duplicate_units <- gt$independent_duplicate_units[idx]
+  basic$eligible_slack_deficit <- gt$eligible_slack_deficit[idx]
+  basic$duplicate_unit_deficit <- gt$duplicate_unit_deficit[idx]
+  structural_recommended <- gt$recommended_additional[idx]
+  structural_recommended[!is.finite(structural_recommended)] <- 0L
+  # Once the shared structural gate is available it is the single source of
+  # truth for recovery. Do not let a stricter legacy/basic count override an
+  # explicitly relaxed gate and create top-up/ACO policy drift.
+  matched_structural <- !is.na(idx)
+  basic$recommended_additional[matched_structural] <- as.integer(pmax(
+    structural_recommended[matched_structural],
+    basic$alignment_recovery_deficit[matched_structural],
+    na.rm = TRUE
+  ))
+  basic$structural_feasible <- gt$feasible[idx]
+  basic$constraint_level <- unname(relaxation_level[basic$factor])
+  basic$operational_status <- ifelse(
+    basic$recommended_additional > 0L,
+    ifelse(!is.na(basic$structural_feasible) & !basic$structural_feasible,
+           "topup_recommended_structural", "topup_recommended"),
+    "sufficient"
+  )
+  attr(basic, "preaco_gate") <- gate
+  basic
+}
+
+#' @keywords internal
+.semantica_pool_topup_reindex <- function(existing_items, topup_items) {
+  top <- as.data.frame(topup_items, stringsAsFactors = FALSE)
+  if (!nrow(top)) return(tibble::as_tibble(top))
+  existing <- as.data.frame(existing_items, stringsAsFactors = FALSE)
+  existing_id <- if ("item_id" %in% names(existing)) existing$item_id else if ("ID" %in% names(existing)) existing$ID else character(0L)
+  suffix <- regmatches(as.character(existing_id), regexpr("[0-9]+$", as.character(existing_id), perl = TRUE))
+  nums <- suppressWarnings(as.integer(suffix))
+  next_id <- if (length(nums) && any(is.finite(nums))) max(nums, na.rm = TRUE) + 1L else nrow(existing) + 1L
+  new_ids <- sprintf("item%03d", seq.int(next_id, length.out = nrow(top)))
+  if ("ID" %in% names(top)) top$ID <- new_ids
+  if ("item_id" %in% names(top)) top$item_id <- new_ids
+  if (!"ID" %in% names(top)) top$ID <- new_ids
+  if (!"item_id" %in% names(top)) top$item_id <- new_ids
+  tibble::as_tibble(top)
+}
+
+#' @keywords internal
+.semantica_pool_topup_distinct <- function(existing_items, topup_items, threshold = 0.92) {
+  threshold <- .semantica_pool_topup_probability(threshold, "pool_topup_duplicate_threshold")
+  top <- as.data.frame(topup_items, stringsAsFactors = FALSE)
+  if (!nrow(top)) return(tibble::as_tibble(top))
+  existing <- as.data.frame(existing_items, stringsAsFactors = FALSE)
+  pick_text <- function(x) {
+    col <- intersect(c("item_text", "item", "text", "wording", "label"), names(x))
+    if (!length(col)) stop("Item pool has no item text column.", call. = FALSE)
+    col[[1L]]
+  }
+  existing_text <- as.character(existing[[pick_text(existing)]])
+  top_text_col <- pick_text(top)
+  seen_text <- existing_text[!is.na(existing_text) & nzchar(trimws(existing_text))]
+  seen_norm <- .semantica_normalize_item_text(seen_text)
+  keep <- rep(FALSE, nrow(top))
+  for (i in seq_len(nrow(top))) {
+    txt <- as.character(top[[top_text_col]][i])
+    norm <- .semantica_normalize_item_text(txt)
+    dup <- norm %in% seen_norm
+    if (!dup && length(seen_text)) {
+      dup <- any(vapply(seen_text, function(prev) {
+        .semantica_lexical_jaccard(txt, prev) >= threshold
+      }, logical(1L)))
+    }
+    if (!dup) {
+      keep[i] <- TRUE
+      seen_text <- c(seen_text, txt)
+      seen_norm <- c(seen_norm, norm)
+    }
+  }
+  out <- tibble::as_tibble(top[keep, , drop = FALSE])
+  attr(out, "rejected_duplicates") <- sum(!keep)
+  out
+}
+
+#' @keywords internal
+.semantica_bind_item_rows <- function(...) {
+  dfs <- lapply(list(...), function(x) as.data.frame(x, stringsAsFactors = FALSE))
+  dfs <- dfs[vapply(dfs, nrow, integer(1L)) > 0L]
+  if (!length(dfs)) return(tibble::tibble())
+  cols <- unique(unlist(lapply(dfs, names), use.names = FALSE))
+  dfs <- lapply(dfs, function(x) {
+    missing <- setdiff(cols, names(x))
+    for (cc in missing) x[[cc]] <- NA
+    x[, cols, drop = FALSE]
+  })
+  tibble::as_tibble(do.call(rbind, dfs))
+}
+
+#' @keywords internal
+.semantica_pool_topup_fingerprint <- function(items_tbl) {
+  x <- as.data.frame(items_tbl, stringsAsFactors = FALSE)
+  id_col <- if ("item_id" %in% names(x)) "item_id" else if ("ID" %in% names(x)) "ID" else NULL
+  factor_col <- if ("factor" %in% names(x)) "factor" else if ("Dimension" %in% names(x)) "Dimension" else NULL
+  text_col <- intersect(c("item_text", "item", "text", "wording", "label"), names(x))
+  if (is.null(id_col) || is.null(factor_col) || !length(text_col)) return(NA_character_)
+  .semantica_object_md5(data.frame(
+    item_id = as.character(x[[id_col]]),
+    factor = as.character(x[[factor_col]]),
+    item_text = enc2utf8(as.character(x[[text_col[[1L]]]])),
+    stringsAsFactors = FALSE
+  ))
+}
+
+#' @keywords internal
 .semantica_select_diverse_generated_items <- function(items, n_target) {
   items <- as.character(items)
   n_target <- .as_positive_int(n_target, "'n_target'")
@@ -1827,7 +2473,7 @@ print.semantica_session <- function(x, ...) {
     stop("'successful_new_retained' must be a non-negative integer.")
   }
 
-  observed_yield <- if (successful_requested > 0L && successful_new_retained > 0L) {
+  observed_yield <- if (successful_requested > 0L) {
     min(1, successful_new_retained / successful_requested)
   } else {
     NA_real_
@@ -2143,6 +2789,7 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
   generation_attempts <- list()
   diversity_curation <- list()
   for (unit in generation_plan) {
+    unit_attempt_start <- length(generation_attempts) + 1L
     n_target <- unit$n_items
     n_request <- ceiling(n_target * overgenerate)
     if (verbose) cat(sprintf("\n  [%s / %s] Requesting %d items...\n", unit$dimension, unit$facet, n_request))
@@ -2164,6 +2811,7 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
       output_mode = output_mode
     )
     collected <- character(0L); attempt <- 1L; request_n <- n_request; last_error <- NULL
+    reasoning_reserve <- 0L
     successful_requested <- 0L
     successful_new_retained <- 0L
     while (length(collected) < n_target && attempt <= max_retries) {
@@ -2179,13 +2827,37 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
         output_mode = output_mode,
         request_n = as.integer(request_n)
       ))
+      visible_token_budget <- max(256L, request_n * 90L)
+      completion_budget <- .semantica_generation_visible_token_budget(
+        visible_tokens = visible_token_budget,
+        reasoning_tokens = reasoning_reserve,
+        reasoning_model = isTRUE(.semantica_reasoning_model_profile(session)$reasoning_model)
+      )
+      last_condition <- NULL
       raw <- tryCatch(
         .call_chat(session, messages = list(list(role="user", content=user_prompt)),
-                   max_tokens = max(256L, request_n * 90L), temperature = temperature,
+                   max_tokens = completion_budget, temperature = temperature,
                    system_prompt = system_prompt,
                    response_format = if (output_mode == "json") "json" else NULL,
                    seed = if (is.finite(task_seed)) task_seed else NULL),
+        semantica_error_reasoning_budget = function(e) {
+          last_condition <<- e
+          last_error <<- conditionMessage(e)
+          observed_reasoning <- suppressWarnings(as.numeric(e$reasoning_tokens %||% NA_real_))
+          if (is.finite(observed_reasoning) && observed_reasoning > 0) {
+            reasoning_reserve <<- as.integer(min(
+              ceiling(max(as.numeric(reasoning_reserve), observed_reasoning)),
+              .Machine$integer.max
+            ))
+          }
+          if (verbose) message(sprintf(
+            "    Attempt %d exhausted the reasoning budget for %s/%s: %s",
+            attempt, unit$dimension, unit$facet, last_error
+          ))
+          NULL
+        },
         error = function(e) {
+          last_condition <<- e
           last_error <<- conditionMessage(e)
           if (verbose) message(sprintf("    Attempt %d failed for %s/%s: %s", attempt, unit$dimension, unit$facet, last_error))
           NULL
@@ -2206,6 +2878,9 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
         attempt_meta$facet <- unit$facet
         attempt_meta$attempt <- attempt
         attempt_meta$retried <- attempt > 1L
+        attempt_meta$visible_token_budget <- as.integer(visible_token_budget)
+        attempt_meta$reasoning_reserve <- as.integer(reasoning_reserve)
+        attempt_meta$completion_budget <- as.integer(completion_budget)
         attempt_meta$prompt_fingerprint <- prompt_fingerprint
         attempt_meta$generation_seed_master <- if (is.null(seed)) NA_integer_ else seed
         attempt_meta$generation_task_seed <- if (is.finite(task_seed)) as.integer(task_seed) else NA_integer_
@@ -2222,9 +2897,16 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
       if (is.null(raw)) {
         generation_attempts[[length(generation_attempts) + 1L]] <- list(
           requested = as.integer(request_n), received = 0L, parsed = 0L, rejected = 0L,
-          duplicate = 0L, retained = 0L, rejection_reasons = "backend_error",
+          duplicate = 0L, retained = 0L,
+          rejection_reasons = if (inherits(last_condition, "semantica_error_reasoning_budget")) "reasoning_budget_exhausted" else "backend_error",
           output_mode = output_mode, dimension = unit$dimension, facet = unit$facet,
-          attempt = attempt, retried = attempt > 1L, prompt_fingerprint = prompt_fingerprint,
+          attempt = attempt, retried = attempt > 1L,
+          visible_token_budget = as.integer(visible_token_budget),
+          reasoning_reserve = as.integer(reasoning_reserve),
+          completion_budget = as.integer(completion_budget),
+          finish_reason = if (inherits(last_condition, "semantica_error_reasoning_budget")) as.character(last_condition$finish_reason %||% NA_character_) else NA_character_,
+          reasoning_tokens = if (inherits(last_condition, "semantica_error_reasoning_budget")) as.numeric(last_condition$reasoning_tokens %||% NA_real_) else NA_real_,
+          prompt_fingerprint = prompt_fingerprint,
           generation_seed_master = if (is.null(seed)) NA_integer_ else seed,
           generation_task_seed = if (is.finite(task_seed)) as.integer(task_seed) else NA_integer_,
           generation_seed_supported = isTRUE(seed_capability$supported),
@@ -2285,9 +2967,16 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
     }
     if (length(collected) < n_target) {
       # Continuing with too few items breaks the downstream ACO/ESEM constraints.
-      err_suffix <- if (!is.null(last_error)) paste0(" Last backend error: ", last_error) else ""
+      unit_attempt_end <- length(generation_attempts)
+      unit_attempts <- if (unit_attempt_end >= unit_attempt_start) {
+        generation_attempts[seq.int(unit_attempt_start, unit_attempt_end)]
+      } else {
+        list()
+      }
+      diag_txt <- .semantica_generation_failure_summary(unit_attempts)
+      diag_suffix <- if (nzchar(diag_txt)) paste0(" Attempt diagnostics: ", diag_txt, ".") else ""
       stop(sprintf("Facet '%s' in dimension '%s': generated only %d/%d usable items after %d attempt(s).%s",
-                   unit$facet, unit$dimension, length(collected), n_target, max_retries, err_suffix))
+                   unit$facet, unit$dimension, length(collected), n_target, max_retries, diag_suffix))
     }
     if (verbose) cat(sprintf("    --> Retained %d generated candidates (pre-alignment)\n", length(collected)))
     for (txt in collected) {
@@ -2388,6 +3077,9 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
     generation_backend = as.character(session$backend %||% NA_character_),
     generation_protocol = as.character(session$protocol %||% NA_character_),
     generation_chat_model = as.character(session$chat_model %||% NA_character_),
+    generation_model_profile = .semantica_model_generation_profile(session)$name,
+    generation_reasoning_model = isTRUE(.semantica_model_generation_profile(session)$reasoning_model),
+    generation_rate_limit = .semantica_rate_limit_snapshot(session),
     generation_temperature = as.numeric(temperature),
     generation_output_mode = output_mode,
     generation_seed_master = if (is.null(seed)) NA_integer_ else seed,
@@ -2453,6 +3145,8 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
 #' @param cache Use the persistent content-addressed embedding cache.
 #' @param cache_dir Cache directory; `NULL` uses an OS-appropriate SEMANTICA cache.
 #' @param cache_namespace Optional analyst-defined namespace included in cache keys.
+#' @param embedding_dimension_action Whether a mismatch with the declared/model
+#'   embedding dimension warns (default) or stops before analysis.
 #' @param verbose       Print progress.
 #' @usage semantica_embed(
 #'   items_tbl,
@@ -2465,6 +3159,7 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
 #'   cache = TRUE,
 #'   cache_dir = NULL,
 #'   cache_namespace = NULL,
+#'   embedding_dimension_action = c("warn", "error"),
 #'   verbose = TRUE
 #' )
 #' @section Side effects:
@@ -2491,8 +3186,13 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
 #' }
 semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col = "item_text", id_col = "item_id", batch_size = 64L,
                              normalize = TRUE, cache = TRUE, cache_dir = NULL,
-                             cache_namespace = NULL, verbose = TRUE) {
+                             cache_namespace = NULL,
+                             embedding_dimension_action = c("warn", "error"),
+                             verbose = TRUE) {
   esess <- embed_session %||% session
+  embedding_dimension_action <- match.arg(embedding_dimension_action)
+  expected_dim_info <- .expected_embedding_dim_for_session(esess)
+  expected_dim <- expected_dim_info$dim
   if (is.null(esess$embed_url) && !esess$protocol %in% c("python_hf", "python_llamacpp")) stop("Backend has no embedding endpoint. Pass embed_session.")
   if (!is.data.frame(items_tbl)) stop("'items_tbl' must be a data.frame or tibble.")
   if (!text_col %in% names(items_tbl) && "item" %in% names(items_tbl)) text_col <- "item"
@@ -2522,7 +3222,11 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
                               session = esess, normalize = normalize,
                               cache_namespace = cache_namespace) else rep(NA_character_, length(idx))
     cached_rows <- if (cache) lapply(keys, .semantica_embedding_cache_get, cache_dir = cache_dir) else vector("list", length(idx))
-    hit <- vapply(cached_rows, function(x) is.numeric(x) && length(x) > 0L && all(is.finite(x)), logical(1L))
+    hit <- vapply(cached_rows, function(x) {
+      valid <- is.numeric(x) && length(x) > 0L && all(is.finite(x))
+      if (valid && is.finite(expected_dim)) valid <- length(x) == expected_dim
+      valid
+    }, logical(1L))
     cache_hits <- cache_hits + sum(hit)
     cache_misses <- cache_misses + sum(!hit)
     fresh <- NULL
@@ -2598,13 +3302,27 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
   if (any(!is.finite(raw_norms) | raw_norms <= .Machine$double.eps)) {
     stop("Embedding backend returned at least one zero or invalid vector.")
   }
-  expected_dim <- .expected_embedding_dim(esess$embed_model)
   dim_warning <- character(0L)
   if (is.finite(expected_dim) && ncol(emb_matrix) != expected_dim) {
     dim_warning <- sprintf(
-      "Embedding dimension %d differs from expected %d for model '%s'.",
-      ncol(emb_matrix), expected_dim, esess$embed_model %||% "unknown"
+      "Embedding dimension %d differs from expected %d for model '%s' (%s).",
+      ncol(emb_matrix), expected_dim, esess$embed_model %||% "unknown",
+      expected_dim_info$source %||% "unknown"
     )
+    if (identical(embedding_dimension_action, "error")) {
+      cond <- structure(
+        list(
+          message = paste0(dim_warning, " Correct the backend contract or explicitly use embedding_dimension_action='warn'."),
+          call = NULL,
+          expected_dim = expected_dim,
+          observed_dim = ncol(emb_matrix),
+          expected_dim_source = expected_dim_info$source %||% "unknown",
+          embed_model = esess$embed_model %||% "unknown"
+        ),
+        class = c("semantica_error_embedding_dimension_mismatch", "error", "condition")
+      )
+      stop(cond)
+    }
     warning(dim_warning, call. = FALSE)
   }
   if (normalize) {
@@ -2661,6 +3379,8 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
     n_items = nrow(emb_matrix),
     embed_dim = ncol(emb_matrix),
     expected_dim = expected_dim,
+    expected_dim_source = expected_dim_info$source,
+    embedding_dimension_action = embedding_dimension_action,
     normalized = isTRUE(normalize),
     raw_norm_min = min(raw_norms),
     raw_norm_median = stats::median(raw_norms),
@@ -3427,6 +4147,11 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
 #'   embeddings respectively.
 #' @param base_url         Override host:port for generation.
 #' @param embed_base_url   Override host:port for embedding.
+#' @param allow_provider_key_forwarding Logical; allow registered public-provider
+#'   credentials to follow a `base_url`/`embed_base_url` override to a different
+#'   origin. Defaults to `FALSE`.
+#' @param allow_insecure_auth Logical; allow credentials over non-loopback HTTP.
+#'   Defaults to `FALSE`; loopback HTTP remains supported for local servers.
 #' @param api_key          Generation API key.
 #' @param embed_api_key    Embedding API key.
 #' @param hf_token,embed_hf_token Hugging Face tokens for local generation and
@@ -3474,11 +4199,48 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
 #' @param preflight Logical; run provider/model preflight checks.
 #' @param embedding_task Embedding-task policy. `"auto"` applies documented model-specific task instructions only when the configured embedding model requires them.
 #' @param embedding_instruction Optional explicit embedding prefix/instruction overriding the automatic model policy.
+#' @param embedding_dimension_action Whether a mismatch with the declared/model
+#'   embedding dimension warns (default) or stops before representation analysis.
 #' @param content_alignment Logical; compute item-to-factor/facet definition
 #'   alignment when usable definitions and embeddings are available.
 #' @param content_exclusions Optional named list of factor-specific concepts
 #'   that should not define each construct. The high-level full pipeline derives
 #'   this automatically from a construct blueprint or factor `forbidden` fields.
+#' @param pool_topup Logical; after embedding-derived definition alignment,
+#'   make a bounded factor-specific top-up generation pass when the realized
+#'   candidate pool has too little usable/aligned slack for the requested
+#'   selection targets. This adds candidates; it never changes item scores or
+#'   alignment labels.
+#' @param pool_topup_i_per_f Optional selected-item target per factor used to
+#'   assess pool slack. The high-level full pipeline supplies this from `i.per.f`.
+#' @param pool_topup_min_slack Minimum usable same-factor candidates to keep
+#'   beyond the selected target before ACO starts.
+#' @param pool_topup_max_rounds Maximum bounded top-up rounds. `0` disables
+#'   top-up attempts while retaining diagnostics.
+#' @param pool_topup_overgenerate Optional overgeneration multiplier for top-up
+#'   calls. `NULL` inherits the generation call's `overgenerate` setting.
+#' @param pool_topup_duplicate_threshold Lexical near-duplicate threshold used
+#'   only to reject newly generated top-up items that repeat the existing pool.
+#' @param pool_topup_relaxation_ladder Logical; if the strict top-up round is
+#'   still infeasible, permit one explicit wording/forbidden-conflict relaxation
+#'   round while retaining factor-definition alignment and polarity guards.
+#'   Every relaxation is recorded in generation provenance.
+#' @param pool_topup_structural_gate Logical; include the same pre-ACO semantic
+#'   eligibility/slack and network redundancy invariants used by the optimizer
+#'   when deciding whether more factor-specific candidates are required.
+#' @param pool_topup_cohesion_retention,pool_topup_within_similarity_target,pool_topup_within_similarity_band
+#'   Semantic-eligibility controls used by the structural top-up gate; the
+#'   high-level full pipeline forwards the same values used by ACO.
+#' @param pool_topup_semantic_objective_mode Semantic eligibility mode mirrored
+#'   from ACO for pre-search feasibility accounting.
+#' @param pool_topup_redundancy_threshold,pool_topup_dup_threshold Redundancy
+#'   thresholds mirrored from ACO. `pool_topup_dup_threshold` feeds the
+#'   factor-local weighted-topological-overlap redundancy graph.
+#' @param pool_topup_polarity_language Language hint for conservative polarity
+#'   diagnostics when top-up feasibility uses a polarity guard.
+#' @param pool_topup_content_alignment_mode,pool_topup_polarity_action Internal
+#'   policies mirroring the downstream selection guard modes for top-up
+#'   feasibility accounting.
 #' @param generation_seed Optional nonnegative generation master seed forwarded
 #'   to [semantica_generate_items()]. In the high-level pipeline this inherits
 #'   the run master seed. Seed control is backend-specific and is recorded in
@@ -3526,8 +4288,12 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
 #'   verbose = FALSE
 #' )
 #' }
-semantica_pipeline <- function(backend = "openai", embed_backend = NULL, base_url = NULL, embed_base_url = NULL, api_key = NULL,
-                               embed_api_key = NULL, chat_model = NULL, embed_model = NULL, embed_batch_size = 64L,
+semantica_pipeline <- function(
+                               backend = "openai", embed_backend = NULL,
+                               base_url = NULL, embed_base_url = NULL,
+                               api_key = NULL, embed_api_key = NULL,
+                               chat_model = NULL, embed_model = NULL,
+                               embed_batch_size = 64L,
                                hf_token = NULL, embed_hf_token = NULL,
                                embedding_device = "auto", chat_device = "auto",
                                device_map = NULL, gpu_layers = "auto",
@@ -3551,14 +4317,71 @@ semantica_pipeline <- function(backend = "openai", embed_backend = NULL, base_ur
                                embedding_cache = TRUE,
                                embedding_cache_dir = NULL,
                                embedding_cache_namespace = NULL,
+                               embedding_dimension_action = c("warn", "error"),
                                embedding_spec = NULL,
                                verbose = TRUE,
                                embedding_task = "auto", embedding_instruction = NULL,
-                               content_alignment = TRUE, content_exclusions = NULL, ...,
+                               content_alignment = TRUE, content_exclusions = NULL,
+                               pool_topup = TRUE, pool_topup_i_per_f = NULL,
+                               pool_topup_min_slack = 2L, pool_topup_max_rounds = 2L,
+                               pool_topup_overgenerate = NULL,
+                               pool_topup_duplicate_threshold = 0.92,
+                               pool_topup_relaxation_ladder = TRUE,
+                               pool_topup_structural_gate = TRUE,
+                               pool_topup_cohesion_retention = 0.75,
+                               pool_topup_within_similarity_target = NULL,
+                               pool_topup_within_similarity_band = 0.08,
+                               pool_topup_semantic_objective_mode = c(
+                                 "relative_conservative", "legacy_target_burden"
+                               ),
+                               pool_topup_redundancy_threshold = 0.85,
+                               pool_topup_dup_threshold = 0.90,
+                               pool_topup_content_alignment_mode = c(
+                                 "diagnostic", "guard", "off"
+                               ),
+                               pool_topup_polarity_action = c(
+                                 "diagnostic", "guard", "off"
+                               ),
+                               pool_topup_polarity_language = "auto",
+                               ...,
                                backend_spec = NULL, embed_backend_spec = NULL,
-                               generation_seed = NULL) {
+                               generation_seed = NULL,
+                               allow_provider_key_forwarding = FALSE,
+                               allow_insecure_auth = FALSE) {
   pipeline_started <- proc.time()[["elapsed"]]
   cosine_adjustment <- match.arg(cosine_adjustment)
+  pool_topup <- isTRUE(pool_topup)
+  pool_topup_min_slack <- .semantica_pool_topup_nonnegative_int(
+    pool_topup_min_slack, "pool_topup_min_slack"
+  )
+  pool_topup_max_rounds <- .semantica_pool_topup_nonnegative_int(
+    pool_topup_max_rounds, "pool_topup_max_rounds"
+  )
+  pool_topup_duplicate_threshold <- .semantica_pool_topup_probability(
+    pool_topup_duplicate_threshold, "pool_topup_duplicate_threshold"
+  )
+  if (!is.null(pool_topup_overgenerate)) {
+    pool_topup_overgenerate <- suppressWarnings(as.numeric(pool_topup_overgenerate[1L]))
+    if (length(pool_topup_overgenerate) != 1L || is.na(pool_topup_overgenerate) ||
+        !is.finite(pool_topup_overgenerate) || pool_topup_overgenerate <= 0) {
+      stop("'pool_topup_overgenerate' must be NULL or a positive finite number.", call. = FALSE)
+    }
+  }
+  pool_topup_content_alignment_mode <- match.arg(pool_topup_content_alignment_mode)
+  pool_topup_polarity_action <- match.arg(pool_topup_polarity_action)
+  pool_topup_relaxation_ladder <- isTRUE(pool_topup_relaxation_ladder)
+  pool_topup_structural_gate <- isTRUE(pool_topup_structural_gate)
+  pool_topup_semantic_objective_mode <- match.arg(pool_topup_semantic_objective_mode)
+  if (!is.null(pool_topup_i_per_f)) {
+    pool_topup_i_per_f <- .semantica_validate_i_per_f(
+      pool_topup_i_per_f, arg = "pool_topup_i_per_f"
+    )
+  }
+  generation_dots <- list(...)
+  generation_dots[c(
+    "session", "scale_name", "scale_description", "factors",
+    "n_per_factor", "n_per_factor_override", "verbose", "seed"
+  )] <- NULL
   embed_backend_eff <- embed_backend %||% backend
   generation_spec <- if (!is.null(backend_spec)) backend_spec else SEMANTICA_BACKENDS[[backend]]
   generation_caps <- if (!is.null(generation_spec)) .semantica_backend_capabilities(generation_spec) else NULL
@@ -3584,7 +4407,9 @@ semantica_pipeline <- function(backend = "openai", embed_backend = NULL, base_ur
     preflight = preflight, purpose = if (separate_embed) "chat" else "both",
     embedding_task = embedding_task, embedding_instruction = embedding_instruction,
     embedding_spec = if (separate_embed) NULL else embedding_spec,
-    backend_spec = backend_spec, verbose = verbose
+    backend_spec = backend_spec, verbose = verbose,
+    allow_provider_key_forwarding = allow_provider_key_forwarding,
+    allow_insecure_auth = allow_insecure_auth
   )
 
   embed_key <- if (!is.null(embed_api_key)) embed_api_key else if (identical(embed_backend_eff, backend)) api_key else NULL
@@ -3602,50 +4427,471 @@ semantica_pipeline <- function(backend = "openai", embed_backend = NULL, base_ur
       preflight = preflight, purpose = "embed",
       embedding_task = embedding_task, embedding_instruction = embedding_instruction,
       embedding_spec = embedding_spec,
-      backend_spec = embed_backend_spec, verbose = verbose
+      backend_spec = embed_backend_spec, verbose = verbose,
+      allow_provider_key_forwarding = allow_provider_key_forwarding,
+      allow_insecure_auth = allow_insecure_auth
     )
   } else NULL
   generation_started <- proc.time()[["elapsed"]]
-  items_tbl <- semantica_generate_items(
-    session, scale_name, scale_description, factors,
-    n_per_factor = n_per_factor,
-    n_per_factor_override = n_per_factor_override,
-    verbose = verbose, seed = generation_seed, ...
+  items_tbl <- do.call(
+    semantica_generate_items,
+    c(
+      list(
+        session = session, scale_name = scale_name,
+        scale_description = scale_description, factors = factors,
+        n_per_factor = n_per_factor,
+        n_per_factor_override = n_per_factor_override,
+        verbose = verbose, seed = generation_seed
+      ),
+      generation_dots
+    )
   )
   generation_seconds <- proc.time()[["elapsed"]] - generation_started
   generation_provenance <- attr(items_tbl, "semantica_generation_metadata") %||% list(
     schema = "semantica-generation-provenance-unavailable",
     content_screening_status = "unknown"
   )
-  generated_item_metadata <- semantica_standardize_item_metadata(items_tbl)
-  embedding_started <- proc.time()[["elapsed"]]
-  embed_result <- semantica_embed(
-    items_tbl, session, embed_session,
-    batch_size = embed_batch_size,
-    cache = embedding_cache,
-    cache_dir = embedding_cache_dir,
-    cache_namespace = embedding_cache_namespace,
-    verbose = verbose
-  )
-  embedding_seconds <- proc.time()[["elapsed"]] - embedding_started
-  content_alignment_result <- NULL
-  if (isTRUE(content_alignment)) {
-    content_alignment_result <- tryCatch(
-      .semantica_definition_alignment(
-        items_tbl, embed_result$embeddings, factors, embed_session %||% session,
-        cache = embedding_cache, cache_dir = embedding_cache_dir,
-        cache_namespace = embedding_cache_namespace, batch_size = embed_batch_size,
-        exclusions = content_exclusions
-      ), error = function(e) list(available = FALSE, note = conditionMessage(e), table = NULL)
+  run_representation_stages <- function(items_tbl_current) {
+    generated_item_metadata_current <- semantica_standardize_item_metadata(items_tbl_current)
+    embedding_started <- proc.time()[["elapsed"]]
+    embed_result_current <- semantica_embed(
+      items_tbl_current, session, embed_session,
+      batch_size = embed_batch_size,
+      cache = embedding_cache,
+      cache_dir = embedding_cache_dir,
+      cache_namespace = embedding_cache_namespace,
+      embedding_dimension_action = embedding_dimension_action,
+      verbose = verbose
     )
-    if (isTRUE(content_alignment_result$available) && !is.null(content_alignment_result$table)) {
-      at <- content_alignment_result$table
-      idxa <- match(as.character(items_tbl$item_id %||% items_tbl$ID), at$item_id)
-      addcols <- setdiff(names(at), "item_id")
-      for (cc in addcols) items_tbl[[cc]] <- at[[cc]][idxa]
-      generated_item_metadata <- semantica_standardize_item_metadata(items_tbl)
+    embedding_elapsed <- proc.time()[["elapsed"]] - embedding_started
+    content_alignment_result_current <- NULL
+    if (isTRUE(content_alignment)) {
+      content_alignment_result_current <- tryCatch(
+        .semantica_definition_alignment(
+          items_tbl_current, embed_result_current$embeddings, factors,
+          embed_session %||% session,
+          cache = embedding_cache, cache_dir = embedding_cache_dir,
+          cache_namespace = embedding_cache_namespace, batch_size = embed_batch_size,
+          exclusions = content_exclusions
+        ), error = function(e) list(
+          available = FALSE,
+          note = conditionMessage(e),
+          table = NULL,
+          error_class = class(e)
+        )
+      )
+      if (identical(pool_topup_content_alignment_mode, "guard") &&
+          !isTRUE(content_alignment_result_current$available)) {
+        detail <- as.character(content_alignment_result_current$note %||% "unknown alignment failure")
+        cond <- structure(
+          list(
+            message = paste0(
+              "Content alignment was requested as a selection guard, but the ",
+              "definition-alignment evidence could not be computed. Guard mode ",
+              "is fail-closed to prevent unverified items from entering ACO. ",
+              "Underlying error: ", detail
+            ),
+            call = NULL,
+            content_alignment_mode = "guard",
+            alignment_note = detail
+          ),
+          class = c(
+            "semantica_error_content_guard_unavailable",
+            "semantica_error_input",
+            "error",
+            "condition"
+          )
+        )
+        stop(cond)
+      }
+      if (isTRUE(content_alignment_result_current$available) &&
+          !is.null(content_alignment_result_current$table)) {
+        at <- content_alignment_result_current$table
+        idxa <- match(as.character(items_tbl_current$item_id %||% items_tbl_current$ID), at$item_id)
+        addcols <- setdiff(names(at), "item_id")
+        for (cc in addcols) items_tbl_current[[cc]] <- at[[cc]][idxa]
+        generated_item_metadata_current <- semantica_standardize_item_metadata(items_tbl_current)
+      }
+    }
+    if (identical(pool_topup_polarity_action, "guard") &&
+        exists("semantica_polarity_diagnostics", mode = "function")) {
+      pol <- tryCatch(
+        semantica_polarity_diagnostics(
+          items_tbl_current,
+          language = pool_topup_polarity_language
+        ),
+        error = function(e) NULL
+      )
+      if (is.data.frame(pol) && nrow(pol) == nrow(items_tbl_current)) {
+        items_tbl_current$semantica_polarity_flag <- as.logical(pol$explicit_negation)
+        generated_item_metadata_current <- semantica_standardize_item_metadata(items_tbl_current)
+      }
+    }
+    cosine_started <- proc.time()[["elapsed"]]
+    wrapped_current <- semantica_wrap(
+      embed_result_current, items_tbl = items_tbl_current,
+      cosine_adjustment = cosine_adjustment,
+      semantic_calibration = semantic_calibration,
+      compute_cosine_sensitivity = compute_cosine_sensitivity,
+      cosine_sensitivity_max_items = cosine_sensitivity_max_items,
+      cosine_sensitivity_seed = cosine_sensitivity_seed,
+      compute_device = compute_device,
+      gpu_fallback = gpu_fallback,
+      gpu_precision = gpu_precision,
+      compute_memory_limit = compute_memory_limit,
+      verbose = verbose
+    )
+    cosine_elapsed <- proc.time()[["elapsed"]] - cosine_started
+    align_cols <- grep("^semantica_", names(items_tbl_current), value = TRUE)
+    if (length(align_cols) && !is.null(wrapped_current$df)) {
+      mid <- if ("item_id" %in% names(items_tbl_current)) as.character(items_tbl_current$item_id) else as.character(items_tbl_current$ID)
+      wi <- match(as.character(wrapped_current$df$item), mid)
+      for (cc in align_cols) wrapped_current$df[[cc]] <- items_tbl_current[[cc]][wi]
+      wi2 <- match(wrapped_current$item_metadata$ID, mid)
+      for (cc in align_cols) wrapped_current$item_metadata[[cc]] <- items_tbl_current[[cc]][wi2]
+      wrapped_current$generated_item_metadata <- wrapped_current$item_metadata
+    }
+    list(
+      items_tbl = items_tbl_current,
+      generated_item_metadata = generated_item_metadata_current,
+      embed_result = embed_result_current,
+      content_alignment = content_alignment_result_current,
+      wrapped = wrapped_current,
+      embedding_seconds = embedding_elapsed,
+      cosine_seconds = cosine_elapsed
+    )
+  }
+
+  stage <- run_representation_stages(items_tbl)
+  items_tbl <- stage$items_tbl
+  generated_item_metadata <- stage$generated_item_metadata
+  embed_result <- stage$embed_result
+  content_alignment_result <- stage$content_alignment
+  wrapped <- stage$wrapped
+  embedding_seconds <- stage$embedding_seconds
+  cosine_seconds <- stage$cosine_seconds
+  initial_embedding_seconds <- embedding_seconds
+  initial_cosine_seconds <- cosine_seconds
+  topup_generation_seconds <- 0
+  topup_embedding_seconds <- 0
+  topup_cosine_seconds <- 0
+
+  topup_actions <- list()
+  constraint_policy <- stats::setNames(rep("strict", length(factors)), names(factors))
+  alignment_refresh_done <- stats::setNames(rep(FALSE, length(factors)), names(factors))
+  previous_deficit_factors <- character(0L)
+  pool_topup_diagnostics <- list(
+    enabled = pool_topup,
+    attempted = FALSE,
+    min_slack = as.integer(pool_topup_min_slack),
+    max_rounds = as.integer(pool_topup_max_rounds),
+    structural_gate = pool_topup_structural_gate,
+    relaxation_ladder = pool_topup_relaxation_ladder,
+    overgenerate = pool_topup_overgenerate %||% generation_dots$overgenerate %||% NA_real_,
+    duplicate_threshold = pool_topup_duplicate_threshold,
+    selected_targets = NULL,
+    diagnostics_before = NULL,
+    diagnostics_after = NULL,
+    effective_constraint_level = constraint_policy,
+    final_feasible = NA,
+    added_items = 0L,
+    rejected_duplicates = 0L,
+    reason = if (pool_topup) "not_attempted" else "disabled",
+    policy = paste(
+      "bounded_generation_topup_v4:",
+      "adds same-factor candidates when semantic-slack/network-redundancy diagnostics are infeasible or once when factor-alignment calibration is unresolved;",
+      "persistent unresolved calibration remains diagnostic rather than item-ineligibility; wording/forbidden-conflict relaxation is explicit and factor-specific"
+    )
+  )
+
+  selected_targets <- tryCatch(
+    .semantica_pool_topup_selected_targets(pool_topup_i_per_f, factors),
+    error = function(e) {
+      pool_topup_diagnostics$reason <<- "invalid_selected_targets"
+      pool_topup_diagnostics$note <<- conditionMessage(e)
+      NULL
+    }
+  )
+  pool_topup_diagnostics$selected_targets <- selected_targets
+
+  make_topup_factor <- function(factor_name, current_items,
+                                constraint_level = c("strict", "wording_forbidden_relaxed")) {
+    constraint_level <- match.arg(constraint_level)
+    spec <- factors[[factor_name]]
+    if (!is.list(spec)) spec <- list(description = as.character(spec))
+    factor_col <- if ("factor" %in% names(current_items)) "factor" else "Dimension"
+    text_col <- intersect(c("item_text", "item", "text", "wording", "label"), names(current_items))[[1L]]
+    same_factor_text <- as.character(current_items[[text_col]][as.character(current_items[[factor_col]]) == factor_name])
+    analyst_forbidden <- unique(as.character(spec$forbidden %||% character(0L)))
+    analyst_forbidden <- analyst_forbidden[!is.na(analyst_forbidden) & nzchar(trimws(analyst_forbidden))]
+    if (identical(constraint_level, "strict")) {
+      spec$forbidden <- unique(c(analyst_forbidden, same_factor_text))
+    } else {
+      # The second rung deliberately relaxes forbidden-concept conflicts. The
+      # concepts remain soft guidance in the prompt/provenance, while robust
+      # factor-definition mismatch and polarity remain hard downstream.
+      spec$forbidden <- character(0L)
+    }
+    spec$extra_instructions <- paste(
+      c(
+        spec$extra_instructions,
+        if (identical(constraint_level, "strict")) {
+          paste(
+            "Top-up generation: write additional candidates for this same factor.",
+            "Avoid paraphrases of any listed prior items, strengthen direct fit to",
+            "the declared factor definition, and keep wording behaviorally concrete."
+          )
+        } else {
+          paste(
+            "Top-up generation under the explicit wording-relaxation ladder:",
+            "prior generated-item wording and forbidden-concept conflicts are no longer",
+            "hard rejection constraints for this recovery round, but close paraphrases",
+            "and the following discouraged concepts should still be avoided when possible:",
+            if (length(analyst_forbidden)) paste(analyst_forbidden, collapse = "; ") else "(none)",
+            "Direct construct alignment and the requested item polarity remain mandatory."
+          )
+        }
+      ),
+      collapse = "\n"
+    )
+    stats::setNames(list(spec), factor_name)
+  }
+
+  if (isTRUE(pool_topup) && is.null(selected_targets)) {
+    pool_topup_diagnostics$reason <- "selected_targets_unavailable"
+  } else if (isTRUE(pool_topup) && pool_topup_max_rounds < 1L) {
+    pool_topup_diagnostics$reason <- "round_budget_zero"
+  } else if (isTRUE(pool_topup)) {
+    for (round_idx in seq_len(pool_topup_max_rounds)) {
+      if (isTRUE(pool_topup_relaxation_ladder) && round_idx > 1L && length(previous_deficit_factors)) {
+        constraint_policy[intersect(previous_deficit_factors, names(constraint_policy))] <-
+          "wording_forbidden_relaxed"
+      }
+      current_diag <- tryCatch(
+        .semantica_pool_topup_combined_diagnostics(
+          items_tbl, wrapped$cosine_sim_matrix, factors, selected_targets,
+          n_per_factor = n_per_factor,
+          n_per_factor_override = n_per_factor_override,
+          min_slack = pool_topup_min_slack,
+          content_alignment_mode = pool_topup_content_alignment_mode,
+          polarity_action = pool_topup_polarity_action,
+          structural_gate = pool_topup_structural_gate,
+          cohesion_retention = pool_topup_cohesion_retention,
+          within_similarity_target = pool_topup_within_similarity_target,
+          within_similarity_band = pool_topup_within_similarity_band,
+          semantic_objective_mode = pool_topup_semantic_objective_mode,
+          redundancy_threshold = pool_topup_redundancy_threshold,
+          dup_threshold = pool_topup_dup_threshold,
+          relaxation_level = constraint_policy,
+          alignment_refresh_done = names(alignment_refresh_done)[alignment_refresh_done]
+        ),
+        error = function(e) {
+          pool_topup_diagnostics$reason <<- "diagnostics_unavailable"
+          pool_topup_diagnostics$note <<- conditionMessage(e)
+          data.frame()
+        }
+      )
+      if (is.null(pool_topup_diagnostics$diagnostics_before)) {
+        pool_topup_diagnostics$diagnostics_before <- current_diag
+      }
+      if (!nrow(current_diag)) break
+      deficits <- current_diag[current_diag$recommended_additional > 0L, , drop = FALSE]
+      previous_deficit_factors <- as.character(deficits$factor)
+      if (!nrow(deficits)) {
+        pool_topup_diagnostics$reason <- if (round_idx == 1L) "sufficient_pool" else "sufficient_after_topup"
+        break
+      }
+
+      pool_topup_diagnostics$attempted <- TRUE
+      round_added <- 0L
+      for (rr in seq_len(nrow(deficits))) {
+        f <- as.character(deficits$factor[rr])
+        constraint_level <- constraint_policy[[f]]
+        if ("alignment_recovery_deficit" %in% names(deficits) &&
+            isTRUE(deficits$alignment_recovery_deficit[rr] > 0L)) {
+          alignment_refresh_done[[f]] <- TRUE
+        }
+        request_n <- as.integer(deficits$recommended_additional[rr])
+        request_n <- max(request_n, .semantica_pool_topup_factor_units(factors[[f]]))
+        topup_dots <- generation_dots
+        if (!is.null(pool_topup_overgenerate)) topup_dots$overgenerate <- pool_topup_overgenerate
+        topup_seed <- if (is.null(generation_seed)) {
+          NULL
+        } else {
+          as.integer((as.double(generation_seed) + 10007 * round_idx) %% .Machine$integer.max)
+        }
+        topup_started <- proc.time()[["elapsed"]]
+        raw_topup <- tryCatch(
+          do.call(
+            semantica_generate_items,
+            c(
+              list(
+                session = session,
+                scale_name = scale_name,
+                scale_description = scale_description,
+                factors = make_topup_factor(f, items_tbl, constraint_level),
+                n_per_factor = request_n,
+                n_per_factor_override = TRUE,
+                verbose = verbose,
+                seed = topup_seed
+              ),
+              topup_dots
+            )
+          ),
+          error = function(e) {
+            topup_actions[[length(topup_actions) + 1L]] <<- data.frame(
+              round = round_idx, factor = f, requested_n = request_n,
+              generated_n = 0L, added_n = 0L, rejected_duplicates = 0L,
+              constraint_level = constraint_level,
+              relaxation_applied = !identical(constraint_level, "strict"),
+              relaxed_forbidden_conflicts = !identical(constraint_level, "strict"),
+              status = "generation_failed", note = conditionMessage(e),
+              stringsAsFactors = FALSE
+            )
+            NULL
+          }
+        )
+        topup_generation_seconds <- topup_generation_seconds +
+          (proc.time()[["elapsed"]] - topup_started)
+        if (is.null(raw_topup)) next
+
+        topup_tbl <- .semantica_pool_topup_reindex(items_tbl, raw_topup)
+        topup_tbl <- .semantica_pool_topup_distinct(
+          items_tbl, topup_tbl, threshold = pool_topup_duplicate_threshold
+        )
+        rejected <- attr(topup_tbl, "rejected_duplicates") %||% 0L
+        pool_topup_diagnostics$rejected_duplicates <-
+          pool_topup_diagnostics$rejected_duplicates + as.integer(rejected)
+        added <- nrow(topup_tbl)
+        if (added > 0L) {
+          items_tbl <- .semantica_bind_item_rows(items_tbl, topup_tbl)
+          round_added <- round_added + added
+          pool_topup_diagnostics$added_items <- pool_topup_diagnostics$added_items + added
+        }
+        topup_actions[[length(topup_actions) + 1L]] <- data.frame(
+          round = round_idx, factor = f, requested_n = request_n,
+          generated_n = nrow(raw_topup), added_n = added,
+          rejected_duplicates = as.integer(rejected),
+          constraint_level = constraint_level,
+          relaxation_applied = !identical(constraint_level, "strict"),
+          relaxed_forbidden_conflicts = !identical(constraint_level, "strict"),
+          status = if (added > 0L) "added" else "no_distinct_items",
+          note = NA_character_,
+          stringsAsFactors = FALSE
+        )
+      }
+
+      if (round_added <= 0L) {
+        pool_topup_diagnostics$reason <- "topup_produced_no_new_distinct_items"
+        break
+      }
+      stage <- run_representation_stages(items_tbl)
+      items_tbl <- stage$items_tbl
+      generated_item_metadata <- stage$generated_item_metadata
+      embed_result <- stage$embed_result
+      content_alignment_result <- stage$content_alignment
+      wrapped <- stage$wrapped
+      embedding_seconds <- embedding_seconds + stage$embedding_seconds
+      cosine_seconds <- cosine_seconds + stage$cosine_seconds
+      topup_embedding_seconds <- topup_embedding_seconds + stage$embedding_seconds
+      topup_cosine_seconds <- topup_cosine_seconds + stage$cosine_seconds
+
+      final_diag_round <- .semantica_pool_topup_combined_diagnostics(
+        items_tbl, wrapped$cosine_sim_matrix, factors, selected_targets,
+        n_per_factor = n_per_factor,
+        n_per_factor_override = n_per_factor_override,
+        min_slack = pool_topup_min_slack,
+        content_alignment_mode = pool_topup_content_alignment_mode,
+        polarity_action = pool_topup_polarity_action,
+        structural_gate = pool_topup_structural_gate,
+        cohesion_retention = pool_topup_cohesion_retention,
+        within_similarity_target = pool_topup_within_similarity_target,
+        within_similarity_band = pool_topup_within_similarity_band,
+        semantic_objective_mode = pool_topup_semantic_objective_mode,
+        redundancy_threshold = pool_topup_redundancy_threshold,
+        dup_threshold = pool_topup_dup_threshold,
+        relaxation_level = constraint_policy,
+        alignment_refresh_done = names(alignment_refresh_done)[alignment_refresh_done]
+      )
+      previous_deficit_factors <- as.character(
+        final_diag_round$factor[final_diag_round$recommended_additional > 0L]
+      )
+      if (!length(previous_deficit_factors)) {
+        pool_topup_diagnostics$reason <- "sufficient_after_topup"
+        break
+      }
+      if (round_idx == pool_topup_max_rounds) {
+        pool_topup_diagnostics$reason <- "round_budget_exhausted_with_remaining_deficits"
+      }
     }
   }
+
+  pool_topup_diagnostics$diagnostics_after <- tryCatch(
+    if (!is.null(selected_targets)) {
+      .semantica_pool_topup_combined_diagnostics(
+        items_tbl, wrapped$cosine_sim_matrix, factors, selected_targets,
+        n_per_factor = n_per_factor,
+        n_per_factor_override = n_per_factor_override,
+        min_slack = pool_topup_min_slack,
+        content_alignment_mode = pool_topup_content_alignment_mode,
+        polarity_action = pool_topup_polarity_action,
+        structural_gate = pool_topup_structural_gate,
+        cohesion_retention = pool_topup_cohesion_retention,
+        within_similarity_target = pool_topup_within_similarity_target,
+        within_similarity_band = pool_topup_within_similarity_band,
+        semantic_objective_mode = pool_topup_semantic_objective_mode,
+        redundancy_threshold = pool_topup_redundancy_threshold,
+        dup_threshold = pool_topup_dup_threshold,
+        relaxation_level = constraint_policy,
+        alignment_refresh_done = names(alignment_refresh_done)[alignment_refresh_done]
+      )
+    } else data.frame(),
+    error = function(e) data.frame()
+  )
+  final_diag <- pool_topup_diagnostics$diagnostics_after
+  final_feasible <- is.data.frame(final_diag) && nrow(final_diag) > 0L &&
+    !any(final_diag$recommended_additional > 0L, na.rm = TRUE) &&
+    (!"structural_feasible" %in% names(final_diag) ||
+       all(is.na(final_diag$structural_feasible) | final_diag$structural_feasible))
+  pool_topup_diagnostics$final_feasible <- isTRUE(final_feasible)
+  if (isTRUE(final_feasible) && any(alignment_refresh_done) &&
+      pool_topup_diagnostics$reason %in% c(
+        "topup_produced_no_new_distinct_items",
+        "round_budget_exhausted_with_remaining_deficits",
+        "post_topup_feasibility_unresolved"
+      )) {
+    pool_topup_diagnostics$reason <- "structurally_sufficient_after_alignment_refresh_attempt"
+  }
+  pool_topup_diagnostics$effective_constraint_level <- constraint_policy
+  pool_topup_diagnostics$alignment_refresh_factors <- names(alignment_refresh_done)[alignment_refresh_done]
+  if (is.data.frame(final_diag) && "alignment_unresolved_n" %in% names(final_diag)) {
+    pool_topup_diagnostics$persistent_alignment_unresolved <- stats::setNames(
+      as.integer(final_diag$alignment_unresolved_n), as.character(final_diag$factor)
+    )
+  }
+  pool_topup_diagnostics$relaxed_factors <- names(constraint_policy)[
+    constraint_policy == "wording_forbidden_relaxed"
+  ]
+  pool_topup_diagnostics$forbidden_conflicts_relaxed <-
+    length(pool_topup_diagnostics$relaxed_factors) > 0L
+  if (isTRUE(pool_topup) && !isTRUE(final_feasible) &&
+      identical(pool_topup_diagnostics$reason, "sufficient_after_topup")) {
+    pool_topup_diagnostics$reason <- "post_topup_feasibility_unresolved"
+  }
+  pool_topup_diagnostics$actions <- if (length(topup_actions)) {
+    do.call(rbind, topup_actions)
+  } else {
+    data.frame(
+      round = integer(0L), factor = character(0L), requested_n = integer(0L),
+      generated_n = integer(0L), added_n = integer(0L),
+      rejected_duplicates = integer(0L), status = character(0L),
+      constraint_level = character(0L), relaxation_applied = logical(0L),
+      relaxed_forbidden_conflicts = logical(0L),
+      note = character(0L), stringsAsFactors = FALSE
+    )
+  }
+
+  generation_seconds <- generation_seconds + topup_generation_seconds
   generation_provenance$content_screening_status <- if (isTRUE(content_alignment_result$available) && !is.null(content_alignment_result$table)) {
     "definition_alignment_performed_downstream"
   } else if (isTRUE(content_alignment)) {
@@ -3654,37 +4900,17 @@ semantica_pipeline <- function(backend = "openai", embed_backend = NULL, base_ur
     "definition_alignment_not_requested"
   }
   generation_provenance$content_screening_note <- if (identical(generation_provenance$content_screening_status, "definition_alignment_performed_downstream")) {
-    "Generation/lexical curation was followed by embedding-derived construct-definition alignment; later ACO guards remain feasibility-aware."
+    "Generation/lexical curation was followed by embedding-derived construct-definition alignment; the effective top-up guard policy is propagated unchanged into the pre-ACO gate and ACO."
   } else {
     "Generated candidates were not construct-qualified by a successful definition-alignment stage in this pipeline call."
   }
-  cosine_started <- proc.time()[["elapsed"]]
-  wrapped <- semantica_wrap(
-    embed_result, items_tbl = items_tbl,
-    cosine_adjustment = cosine_adjustment,
-    semantic_calibration = semantic_calibration,
-    compute_cosine_sensitivity = compute_cosine_sensitivity,
-    cosine_sensitivity_max_items = cosine_sensitivity_max_items,
-    cosine_sensitivity_seed = cosine_sensitivity_seed,
-    compute_device = compute_device,
-    gpu_fallback = gpu_fallback,
-    gpu_precision = gpu_precision,
-    compute_memory_limit = compute_memory_limit,
-    verbose = verbose
-  )
-  cosine_seconds <- proc.time()[["elapsed"]] - cosine_started
-  align_cols <- grep("^semantica_", names(items_tbl), value = TRUE)
-  if (length(align_cols) && !is.null(wrapped$df)) {
-    mid <- if ("item_id" %in% names(items_tbl)) as.character(items_tbl$item_id) else as.character(items_tbl$ID)
-    wi <- match(as.character(wrapped$df$item), mid)
-    for (cc in align_cols) wrapped$df[[cc]] <- items_tbl[[cc]][wi]
-    wi2 <- match(wrapped$item_metadata$ID, mid)
-    for (cc in align_cols) wrapped$item_metadata[[cc]] <- items_tbl[[cc]][wi2]
-    wrapped$generated_item_metadata <- wrapped$item_metadata
-  }
+  generation_provenance$retained_total <- nrow(items_tbl)
+  generation_provenance$item_pool_fingerprint <- .semantica_pool_topup_fingerprint(items_tbl)
+  generation_provenance$pool_topup <- pool_topup_diagnostics
   result <- c(wrapped, list(session = sanitize_session_for_result(session),
                             embed_session = sanitize_session_for_result(embed_session), items_tbl_raw = items_tbl,
                             generation_provenance = generation_provenance,
+                            pool_topup = pool_topup_diagnostics,
                             generated_item_metadata = wrapped$generated_item_metadata %||% generated_item_metadata,
                             item_metadata = wrapped$item_metadata %||% generated_item_metadata,
                             embed_result = embed_result, content_alignment = content_alignment_result,
@@ -3696,8 +4922,14 @@ semantica_pipeline <- function(backend = "openai", embed_backend = NULL, base_ur
                             ),
                             performance = list(
                               generation_seconds = unname(generation_seconds),
+                              initial_generation_seconds = unname(generation_seconds - topup_generation_seconds),
+                              topup_generation_seconds = unname(topup_generation_seconds),
                               embedding_seconds = unname(embedding_seconds),
+                              initial_embedding_seconds = unname(initial_embedding_seconds),
+                              topup_embedding_seconds = unname(topup_embedding_seconds),
                               cosine_seconds = unname(cosine_seconds),
+                              initial_cosine_seconds = unname(initial_cosine_seconds),
+                              topup_cosine_seconds = unname(topup_cosine_seconds),
                               total_seconds = unname(proc.time()[["elapsed"]] - pipeline_started),
                               compute = wrapped$compute_telemetry
                             )))
@@ -3740,7 +4972,7 @@ semantica_print_items <- function(items_tbl, max_chars = 80L) {
 
 #' Export SEMANTICA results for human-readable/interchange use
 #'
-#' For a high-level [semantica_run()] or [semantica_full_pipeline()] result,
+#' For a high-level [semantica_run()] or [semantica_run_custom()] result,
 #' writes the selected final scale, evidence status, readable summary, and
 #' sanitized resolved configuration. For legacy component results from
 #' [semantica_pipeline()] or [semantica_wrap()], preserves the historical
@@ -3755,7 +4987,8 @@ semantica_print_items <- function(items_tbl, max_chars = 80L) {
 #' @param quiet Logical; suppress completion messages while still returning written paths.
 #' @section Side effects:
 #' High-level results write `_selected_items.csv`, `_evidence_status.csv`,
-#' `_summary.txt`, and `_config.json`, plus an optional `_candidate_items.csv`.
+#' `_quality_status.csv`, `_summary.txt`, and `_config.json`, plus an optional
+#' `_candidate_items.csv`.
 #' Legacy component results retain the existing `_items.csv`, `_df.csv`, and
 #' `_cosine_matrix.csv` files consumed by [semantica_reload()].
 #'
@@ -3792,7 +5025,7 @@ semantica_export <- function(pipeline_result, prefix = "SEMANTICA", include_cand
   quiet <- .semantica_assert_flag(quiet, "quiet")
   format <- match.arg(format)
   is_high_level <- inherits(pipeline_result, "semantica_full_pipeline_result")
-  if (identical(format, "report") && !is_high_level) stop("format = 'report' requires a semantica_run()/semantica_full_pipeline() result.", call. = FALSE)
+  if (identical(format, "report") && !is_high_level) stop("format = 'report' requires a semantica_run()/semantica_run_custom() result.", call. = FALSE)
   if (identical(format, "optimizer") && is_high_level) stop("format = 'optimizer' expects a semantica_wrap()/semantica_pipeline() component result. Use format = 'report' for a completed high-level analysis, or semantica_save_bundle() for exact replay.", call. = FALSE)
 
   # High-level results get a user-oriented export: the final selected scale,
@@ -3805,6 +5038,7 @@ semantica_export <- function(pipeline_result, prefix = "SEMANTICA", include_cand
     paths <- list(
       selected_items = paste0(prefix, "_selected_items.csv"),
       evidence_status = paste0(prefix, "_evidence_status.csv"),
+      quality_status = paste0(prefix, "_quality_status.csv"),
       summary = paste0(prefix, "_summary.txt"),
       config = paste0(prefix, "_config.json")
     )
@@ -3815,6 +5049,25 @@ semantica_export <- function(pipeline_result, prefix = "SEMANTICA", include_cand
     } else {
       utils::write.csv(data.frame(status = "Evidence status unavailable.", stringsAsFactors = FALSE), paths$evidence_status, row.names = FALSE)
     }
+    quality <- pipeline_result$proxy_quality %||% pipeline_result$optimization$proxy_quality %||% list()
+    evidence_profile <- pipeline_result$evidence_profile %||%
+      pipeline_result$optimization$evidence_profile %||% list()
+    validity_dimensions <- evidence_profile$validity_dimensions %||% list()
+    legacy_status <- pipeline_result$quality_status %||%
+      pipeline_result$optimization$quality_status %||% quality$status %||% "unknown"
+    utils::write.csv(
+      data.frame(
+        quality_status = legacy_status,
+        legacy_proxy_status = legacy_status,
+        structural_evidence = validity_dimensions$structural$status %||% "not_established",
+        content_evidence = validity_dimensions$content$status %||% "not_established",
+        global_validity_inferred = FALSE,
+        reasons = paste(unique(quality$reasons %||% character(0L)), collapse = "; "),
+        participant_based = isTRUE(quality$participant_based),
+        stringsAsFactors = FALSE
+      ),
+      paths$quality_status, row.names = FALSE
+    )
     writeLines(utils::capture.output(print(summary(pipeline_result))), paths$summary, useBytes = TRUE)
     cfg <- tryCatch(semantica_config(pipeline_result), error = function(e) list(note = conditionMessage(e)))
     jsonlite::write_json(cfg, paths$config, pretty = TRUE, auto_unbox = TRUE, null = "null", na = "null")

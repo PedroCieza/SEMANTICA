@@ -6,7 +6,7 @@
 semantica_items(result, details = FALSE)
 }
 \arguments{
-\item{result}{A high-level result returned by \code{semantica_run()} or \code{semantica_full_pipeline()}, or a compatible result containing selected-item metadata.}
+\item{result}{A high-level result returned by \code{semantica_run()} or \code{semantica_run_custom()}, or a compatible result containing selected-item metadata.}
 \item{details}{Logical; append original selected-item diagnostic columns after the stable user-facing columns.}
 }
 \value{A data frame ordered to match the selected form when selection order is available. The stable leading columns are \code{item_id}, \code{factor}, \code{facet}, and \code{item_text}.}

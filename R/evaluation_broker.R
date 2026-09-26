@@ -32,6 +32,21 @@
   force(expr)
 }
 
+.semantica_preserve_caller_rng <- function(expr) {
+  old_kind <- RNGkind()
+  had_seed <- exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  if (had_seed) old_seed <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  on.exit({
+    do.call(RNGkind, as.list(old_kind))
+    if (had_seed) {
+      assign(".Random.seed", old_seed, envir = .GlobalEnv)
+    } else if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) {
+      rm(".Random.seed", envir = .GlobalEnv)
+    }
+  }, add = TRUE)
+  force(expr)
+}
+
 .semantica_new_evaluation_broker <- function(max_esem_fits = Inf) {
   max_esem_fits <- suppressWarnings(as.numeric(max_esem_fits[1L]))
   if (!is.finite(max_esem_fits)) max_esem_fits <- Inf
@@ -49,6 +64,10 @@
   broker$esem_fits_admissible <- 0L
   broker$esem_fits_failed <- 0L
   broker$esem_solver_attempts_observed <- 0L
+  broker$esem_full_retries_started <- 0L
+  broker$esem_full_retries_converged <- 0L
+  broker$esem_full_retries_admissible <- 0L
+  broker$esem_full_retries_failed <- 0L
   broker$dfi_fits_started <- 0L
   broker$archive_esem_fits_started <- 0L
   broker$final_esem_fits_started <- 0L
@@ -214,6 +233,32 @@
   invisible(broker)
 }
 
+.semantica_record_esem_retry_payloads <- function(broker, payloads, keys = NULL,
+                                                  stage = "search_full_retry") {
+  if (!inherits(broker, "semantica_evaluation_broker")) {
+    stop("'broker' must be a SEMANTICA evaluation broker.")
+  }
+  if (is.null(keys)) keys <- vapply(payloads, function(x) x$key %||% NA_character_, character(1L))
+  for (i in seq_along(payloads)) {
+    payload <- payloads[[i]] %||% list()
+    fit_result <- payload$cache_entry$fit_result %||% list()
+    converged <- isTRUE(fit_result$converged)
+    admissible <- converged && isTRUE(fit_result$admissible)
+    broker$esem_full_retries_started <- broker$esem_full_retries_started + 1L
+    broker$esem_full_retries_converged <- broker$esem_full_retries_converged + as.integer(converged)
+    broker$esem_full_retries_admissible <- broker$esem_full_retries_admissible + as.integer(admissible)
+    broker$esem_full_retries_failed <- broker$esem_full_retries_failed + as.integer(!admissible)
+    .semantica_append_esem_event(
+      broker, stage = stage, candidate_key = keys[[i]],
+      cache_hit = FALSE, coalesced_requests = 0L,
+      elapsed_seconds = payload$elapsed_seconds %||% NA_real_,
+      fit_result = fit_result, error = payload$error %||% NA_character_,
+      fallback_used = payload$cache_entry$fallback_used %||% fit_result$fallback_used %||% NA
+    )
+  }
+  invisible(broker)
+}
+
 .semantica_record_dfi_fits <- function(broker, n) {
   n <- suppressWarnings(as.integer(n[1L]))
   if (inherits(broker, "semantica_evaluation_broker") &&
@@ -259,6 +304,10 @@
     esem_fits_admissible = broker$esem_fits_admissible,
     esem_fits_failed = broker$esem_fits_failed,
     esem_solver_attempts_observed = broker$esem_solver_attempts_observed,
+    esem_full_retries_started = broker$esem_full_retries_started,
+    esem_full_retries_converged = broker$esem_full_retries_converged,
+    esem_full_retries_admissible = broker$esem_full_retries_admissible,
+    esem_full_retries_failed = broker$esem_full_retries_failed,
     dfi_fits_started = broker$dfi_fits_started,
     archive_esem_fits_started = broker$archive_esem_fits_started,
     final_esem_fits_started = broker$final_esem_fits_started,

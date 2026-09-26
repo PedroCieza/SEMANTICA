@@ -28,5 +28,10 @@ local consistency checksum and performs no network I/O.
 Verification detects accidental analysis-content drift relative to the
 stored manifest; it is not a signature/authenticity check. Runtime-only state
 inside fitted S4 objects is excluded from schema-4 checksum construction.
-Legacy bundles remain supported.
+Legacy bundles remain supported. RDS deserialization occurs before the
+internal checksum can be inspected, so \code{verify = TRUE} does \strong{not} make an
+untrusted serialized R object safe to open. Load bundles only from trusted
+sources; authenticate an externally supplied file before calling this
+function when origin is uncertain.
 }
+

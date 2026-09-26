@@ -14,7 +14,7 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 # Start with `semantica_run()`
 
 Start a new scale-development workflow with `semantica_run()`. When you need
-settings beyond its arguments, use `semantica_full_pipeline()`. Both interfaces
+settings beyond its arguments, use `semantica_run_custom()`. Both interfaces
 use the same analysis pipeline.
 
 A typical workflow is:
@@ -128,7 +128,7 @@ semantica_factor_review(result)
 
 `semantica_run()` returns a six-part object surface: `scale`, `items`, `diagnostics`, `plots`, `provenance`, and `advanced`. The first five are regular-user entry points; `plots` retains the core report graphics and `advanced` contains the complete canonical result unchanged. Historical direct access to canonical fields (for example `result$optimization`) remains supported.
 
-Direct `semantica_full_pipeline()` results remain the complete advanced object. `semantica_view(result, view = "advanced", section = "structural")` provides the same grouped navigation for either interface without recomputation. Use `semantica_items()` for the normalized wording table and `summary(result)` for the detailed diagnostics and evidence boundary.
+`semantica_run_custom()` uses the same compact result surface while retaining the complete canonical object under `$advanced`. `semantica_view(result, view = "advanced", section = "structural")` provides grouped advanced navigation without recomputation. Use `semantica_items()` for the normalized wording table and `summary(result)` for the detailed diagnostics and evidence boundary.
 
 # 6. Plot and save
 
@@ -149,9 +149,9 @@ semantica_save_bundle(result, "academic_self_regulation_bundle.rds")
 
 `semantica_export()` is readable report/interchange output. It is not the inverse of `semantica_reload()`, which reads the component-level optimizer-interchange format. `semantica_save_bundle()` is the provenance-preserving analysis bundle.
 
-# 7. When to use `semantica_full_pipeline()`
+# 7. When to use `semantica_run_custom()`
 
-Use `semantica_full_pipeline()` for participant-response validation, custom
+Use `semantica_run_custom()` for participant-response validation, custom
 quality policies, detailed ESEM/PFA controls, specialized compute settings, or
 additional diagnostics.
 

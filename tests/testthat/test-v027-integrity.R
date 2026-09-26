@@ -167,10 +167,10 @@ test_that("semantic fallback keeps trying later ESEM checkpoints and final archi
     .package = "SEMANTICA"
   )
 
-  ids <- paste0("item_", seq_len(10L))
-  intended <- rep(c("F1", "F2"), each = 5L)
-  lambda <- matrix(0.08, nrow = 10L, ncol = 2L)
-  lambda[cbind(seq_len(10L), rep(seq_len(2L), each = 5L))] <- 0.68
+  ids <- paste0("item_", seq_len(12L))
+  intended <- rep(c("F1", "F2"), each = 6L)
+  lambda <- matrix(0.08, nrow = 12L, ncol = 2L)
+  lambda[cbind(seq_len(12L), rep(seq_len(2L), each = 6L))] <- 0.68
   phi <- matrix(c(1, .25, .25, 1), 2L)
   similarity <- lambda %*% phi %*% t(lambda)
   diag(similarity) <- 1
@@ -217,12 +217,13 @@ test_that("alignment guard requires a pool-relative positive reference before ex
   expect_identical(z$status[4], "clear_mismatch")
   expect_equal(z$scale[1], .25)
 
-  # With too little positively separated evidence, negative ranks stay
-  # diagnostic rather than becoming automatic exclusions.
+  # With too little positively separated evidence, negative ranks are
+  # explicitly unresolved so the recovery layer can request one bounded refresh
+  # without treating those items as established mismatches.
   z2 <- SEMANTICA:::.semantica_classify_alignment_margins(
     c(.01, -.02, -.03),
     rep("F1", 3L)
   )
   expect_false(any(z2$clear_mismatch))
-  expect_true(all(z2$status[2:3] == "ambiguous"))
+  expect_true(all(z2$status[2:3] == "alignment_unresolved"))
 })

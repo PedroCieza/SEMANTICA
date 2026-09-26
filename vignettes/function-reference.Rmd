@@ -34,7 +34,7 @@ Start here:
 
 Use these when you need additional control:
 
-- `semantica_full_pipeline()`
+- `semantica_run_custom()`
 - `semantica_llm_config()`
 - `semantica_item_count_config()`
 - `semantica_generation_config()`
@@ -49,7 +49,7 @@ Use these when you need additional control:
 - `semantica_construct_blueprint()`
 
 An explicitly supplied top-level ESEM search option in
-`semantica_full_pipeline()` takes precedence over the same convenience value
+`semantica_run_custom()` takes precedence over the same convenience value
 stored inside `semantica_esem_config()`.
 
 # Existing item pools
@@ -82,7 +82,6 @@ Use these to build or inspect individual stages:
 - `semantica_generate_items()` / `semantica_embed()` / `semantica_wrap()`
 - `semantica_pipeline()`
 - `ACO_with_ESEM()`
-- `semantica_full_pipeline_custom()`
 - `run_multi_seed_semantica()`
 - archive/solution-history inspection functions
 

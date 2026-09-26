@@ -53,7 +53,7 @@ reference:
     Use these when semantica_run() does not expose a required applied setting,
     such as participant validation or specialist proxy/compute controls.
   contents:
-  - semantica_full_pipeline
+  - semantica_run_custom
   - semantica_validate
   - semantica_aco_config
   - semantica_llm_config
@@ -99,7 +99,6 @@ reference:
   contents:
   - semantica_generate_items
   - semantica_pipeline
-  - semantica_full_pipeline_custom
   - run_multi_seed_semantica
   - inspect_elite_archive
   - inspect_solution_history

@@ -49,7 +49,7 @@ five core report plots; \code{"full"} requests the complete visualization set.}
 \item{progress}{Print per-plot progress; \code{NULL} follows \code{verbose}.}
 }
 \value{
-A configuration list for \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}.
+A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.
 }
 \description{
 Controls how high-level diagnostic plots are produced or saved. The default

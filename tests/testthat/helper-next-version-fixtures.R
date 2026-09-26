@@ -76,31 +76,34 @@ semantica_test_run_aco <- function(seed = 123L, history_mode = "summary",
 # Shared deterministic control used by directional PFA/ESEM regression tests.
 make_semantica_control_fixture <- function(kind = c("separable", "overlapping", "shuffled")) {
   kind <- match.arg(kind)
-  ids <- paste0(rep(c("A", "B", "C"), each = 4L), rep(1:4, 3L))
-  factors <- rep(c("A", "B", "C"), each = 4L)
-  # Deterministic unit-vector geometry: clean controls concentrate on one axis;
-  # overlapping controls share a strong common component.
-  clean <- rbind(
-    c(1.00, .05, .05, .10, .00, .00), c(.96, .08, .04, -.08, .02, .00),
-    c(.94, .04, .08, .00, -.08, .03), c(.92, .06, .05, .04, .05, -.08),
-    c(.05, 1.00, .05, .00, .10, .00), c(.08, .96, .04, .02, -.08, .00),
-    c(.04, .94, .08, -.08, .00, .03), c(.06, .92, .05, .05, .04, -.08),
-    c(.05, .05, 1.00, .00, .00, .10), c(.08, .04, .96, -.08, .02, .00),
-    c(.04, .08, .94, .00, -.08, .03), c(.06, .05, .92, .04, .05, -.08)
-  )
-  overlap <- rbind(
-    c(.75,.65,.60,.08,0,0), c(.72,.68,.61,-.06,.02,0), c(.70,.66,.64,0,-.06,.02), c(.69,.64,.62,.03,.04,-.06),
-    c(.64,.75,.61,0,.08,0), c(.68,.72,.60,.02,-.06,0), c(.66,.70,.64,-.06,0,.02), c(.63,.69,.62,.04,.03,-.06),
-    c(.61,.64,.75,0,0,.08), c(.60,.68,.72,-.06,.02,0), c(.64,.66,.70,0,-.06,.02), c(.62,.63,.69,.03,.04,-.06)
-  )
-  emb <- if (kind == "overlapping") overlap else clean
-  emb <- emb / sqrt(rowSums(emb^2))
+  per_factor <- 5L
+  factors <- rep(c("A", "B", "C"), each = per_factor)
+  ids <- paste0(factors, rep(seq_len(per_factor), 3L))
+  n_items <- length(ids)
+
+  # Candidate-pool fixtures used by optimizer tests must themselves satisfy the
+  # production pre-ACO contract. Give each item a shared construct direction
+  # plus its own orthogonal local-information component. This preserves clear
+  # within-factor structure without manufacturing near-duplicate items simply
+  # to make the test numerically easy.
+  emb <- matrix(0, nrow = n_items, ncol = 3L + n_items + 1L)
   rownames(emb) <- ids
+  primary <- if (kind == "overlapping") 0.55 else 0.78
+  common <- if (kind == "overlapping") 0.55 else 0
+  unique_weight <- sqrt(max(0, 1 - primary^2 - common^2))
+  for (i in seq_len(n_items)) {
+    f_idx <- match(factors[[i]], c("A", "B", "C"))
+    emb[i, f_idx] <- primary
+    if (common > 0) emb[i, 4L] <- common
+    emb[i, 4L + i] <- unique_weight
+  }
+  emb <- emb / sqrt(rowSums(emb^2))
   cosine <- tcrossprod(emb)
   dimnames(cosine) <- list(ids, ids)
+
   assignment <- stats::setNames(factors, ids)
   if (kind == "shuffled") {
-    assignment <- stats::setNames(rep(c("A", "B", "C"), times = 4L), ids)
+    assignment <- stats::setNames(rep(c("A", "B", "C"), length.out = n_items), ids)
   }
   list(
     ids = ids,

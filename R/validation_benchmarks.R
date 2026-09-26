@@ -8,8 +8,17 @@
 .semantica_align_square_matrices <- function(matrices) {
   if (!is.list(matrices) || length(matrices) < 1L) stop("'matrices' must be a non-empty list.")
   mats <- lapply(matrices, as.matrix)
-  ids <- Reduce(intersect, lapply(mats, rownames))
+  has_row_names <- vapply(mats, function(m) !is.null(rownames(m)), logical(1L))
+  has_col_names <- vapply(mats, function(m) !is.null(colnames(m)), logical(1L))
+  if (any(xor(has_row_names, has_col_names))) {
+    stop("Matrices with item IDs must provide both row and column names.")
+  }
+  explicitly_named <- any(has_row_names | has_col_names)
+  ids <- Reduce(intersect, lapply(mats, function(m) rownames(m) %||% character(0L)))
   if (is.null(ids) || length(ids) < 2L) {
+    if (isTRUE(explicitly_named)) {
+      stop("Named matrices must share at least two common item IDs; SEMANTICA will not align conflicting item identities by position.")
+    }
     dims <- unique(vapply(mats, nrow, integer(1L)))
     if (length(dims) != 1L || any(vapply(mats, ncol, integer(1L)) != dims[[1L]])) {
       stop("Matrices need common row names or identical dimensions.")
@@ -52,6 +61,7 @@ semantica_ensemble_similarity <- function(matrices,
   weights <- weights / sum(weights)
   idx <- lower.tri(mats[[1L]])
   vals <- vapply(mats, function(m) as.numeric(m[idx]), numeric(sum(idx)))
+  if (is.null(dim(vals))) vals <- matrix(vals, nrow = sum(idx), ncol = n)
   if (method == "rank_mean") {
     vals <- apply(vals, 2L, function(x) rank(x, ties.method = "average", na.last = "keep"))
     if (is.null(dim(vals))) vals <- matrix(vals, ncol = n)

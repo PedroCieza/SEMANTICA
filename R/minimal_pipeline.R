@@ -2,7 +2,7 @@
 # SEMANTICA main workflow entry point
 # ============================================================================
 # This file contains interface/configuration logic. The
-# analytical engine remains semantica_full_pipeline(); semantica_run() delegates
+# analytical engine remains semantica_run_custom(); semantica_run() delegates
 # to it so the main and extended interfaces remain on the same pipeline.
 
 .semantica_run_normalize_factors <- function(factors) {
@@ -18,7 +18,7 @@
   for (i in seq_along(out)) {
     x <- out[[i]]
     # semantica_run() accepts the shorthand Factor = "definition" while
-    # semantica_full_pipeline() retains its historical list contract.
+    # semantica_run_custom() accepts the same factor-list contract.
     if (is.character(x) && length(x) == 1L && !is.na(x)) {
       x <- list(description = x)
     }
@@ -47,6 +47,76 @@
   if (length(factors) == 1L) "unidimensional" else "multidimensional"
 }
 
+# The easy interface always records an actual analysis seed.  This makes a
+# default run replayable at the optimizer level without claiming that a remote
+# LLM will reproduce byte-identical wording.
+.semantica_run_resolve_seed <- function(seed) {
+  automatic <- is.null(seed) || (is.character(seed) && length(seed) == 1L &&
+    !is.na(seed) && identical(tolower(trimws(seed)), "auto"))
+  if (automatic) {
+    return(list(seed = sample.int(.Machine$integer.max, 1L), source = "auto_generated"))
+  }
+  list(
+    seed = .semantica_assert_nonnegative_integer(seed, "seed"),
+    source = "user_supplied"
+  )
+}
+
+.semantica_run_restart_seeds <- function(seed, restarts, mode) {
+  automatic <- is.null(restarts) || (is.character(restarts) && length(restarts) == 1L &&
+    !is.na(restarts) && identical(tolower(trimws(restarts)), "auto"))
+  n <- if (automatic) switch(mode, fast = 1L, standard = 3L, full = 5L) else {
+    .semantica_assert_positive_integer(restarts, "restarts")
+  }
+  # A fixed stride makes all restart seeds deterministic children of the
+  # recorded master seed, without consuming additional global RNG draws.
+  seeds <- as.integer((as.double(seed) + 104729 * seq.int(0L, n - 1L)) %% .Machine$integer.max)
+  list(seeds = unique(seeds), source = if (automatic) "mode_default" else "user_supplied")
+}
+
+.semantica_run_search_space_log10 <- function(pool_items, selected_items, n_factors) {
+  selected <- if (length(selected_items) == 1L) rep(selected_items, n_factors) else selected_items
+  sum(vapply(selected, function(n) lchoose(pool_items, n) / log(10), numeric(1L)))
+}
+
+.semantica_run_adapt_aco_budget <- function(aco_cfg, pool_items, selected_items, n_factors) {
+  selected_reference <- if (length(selected_items) == 1L) {
+    rep.int(as.integer(selected_items), n_factors)
+  } else {
+    as.integer(selected_items)
+  }
+  reference <- list(
+    pool_items = as.integer(pool_items), selected_items = unname(selected_reference),
+    n_factors = as.integer(n_factors)
+  )
+  if (isTRUE(aco_cfg$budget_adapted) && identical(aco_cfg$budget_reference, reference)) {
+    return(aco_cfg)
+  }
+  log10_space <- .semantica_run_search_space_log10(pool_items, selected_reference, n_factors)
+  # The documented preset remains the floor.  Larger declared form spaces get
+  # bounded additional exploration unless the caller explicitly overrode that
+  # control.  This is a budget policy, not a claim to exhaustive coverage.
+  extra <- max(0L, ceiling(log10_space) - 4L)
+  override <- aco_cfg$overrides %||% list()
+  if (extra > 0L && !identical(aco_cfg$mode, "fast")) {
+    if (!isTRUE(override$ants)) aco_cfg$ants <- as.integer(min(120L, aco_cfg$ants + 5L * extra))
+    if (!isTRUE(override$search_patience)) aco_cfg$search_patience <- as.integer(min(80L, aco_cfg$search_patience + 3L * extra))
+    if (!isTRUE(override$max_total_iter)) aco_cfg$max_total_iter <- as.integer(min(120L, aco_cfg$max_total_iter + 5L * extra))
+  }
+  aco_cfg$evaporation <- semantica_evaporation_config(
+    mode = "adaptive", rho_start = 0.20, rho_end = 0.05, horizon = aco_cfg$max_total_iter
+  )
+  aco_cfg$search_space_log10 <- log10_space
+  aco_cfg$budget_adaptation <- if (extra > 0L && !identical(aco_cfg$mode, "fast")) "bounded_space_scaled" else "preset_floor"
+  aco_cfg$budget_adapted <- TRUE
+  aco_cfg$budget_reference <- reference
+  aco_cfg
+}
+
+.semantica_run_pool_slack <- function(selected_items) {
+  as.integer(max(2L, ceiling(max(selected_items) / 2)))
+}
+
 .semantica_run_adapt_unidimensional_aco <- function(aco_cfg) {
   out <- aco_cfg
   # PFA factor-recovery/partition objectives are intrinsically comparative and
@@ -60,8 +130,8 @@
   out$description <- switch(
     out$mode %||% "standard",
     fast = "One-factor target-centered semantic + ESEM-guided ACO; PFA partition recovery is not applicable.",
-    full = "One-factor target-centered semantic + ESEM-guided ACO every 5 iterations with strict ESEM-parametric DFI; PFA partition recovery is not applicable.",
-    "One-factor target-centered semantic + ESEM-guided ACO every 10 iterations; PFA partition recovery is not applicable."
+    full = "One-factor target-centered semantic + entropy-responsive ESEM from a 5-iteration base cadence with strict ESEM-parametric DFI; PFA partition recovery is not applicable.",
+    "One-factor target-centered semantic + entropy-responsive ESEM from a 10-iteration base cadence; PFA partition recovery is not applicable."
   )
   out
 }
@@ -196,14 +266,14 @@
       min_successful_esem_checkpoints = 2L,
       esem_eval_top_k = 3L,
       esem_every = 10L,
-      esem_cadence_mode = "fixed",
+      esem_cadence_mode = "adaptive",
       pfa_mode = "objective",
       pfa_during_search = TRUE,
       pfa_every = 5L,
       fit_calibration_mode = "fast",
       pfa_weight = 0.20,
       esem_weight = 0.30,
-      description = "Semantic + PFA-guided ACO every 5 iterations + ESEM-guided ACO every 10 iterations."
+      description = "Semantic + PFA-guided ACO every 5 iterations + entropy-responsive ESEM from a 10-iteration base cadence."
     ),
     full = list(
       mode = "full",
@@ -220,14 +290,14 @@
       min_successful_esem_checkpoints = 2L,
       esem_eval_top_k = 3L,
       esem_every = 5L,
-      esem_cadence_mode = "fixed",
+      esem_cadence_mode = "adaptive",
       pfa_mode = "objective",
       pfa_during_search = TRUE,
       pfa_every = 5L,
       fit_calibration_mode = "strict",
       pfa_weight = 0.20,
       esem_weight = 0.30,
-      description = "Semantic + PFA/ESEM-guided ACO every 5 iterations with strict ESEM-parametric DFI calibration."
+      description = "Semantic + PFA-guided ACO + entropy-responsive ESEM from a 5-iteration base cadence with strict ESEM-parametric DFI calibration."
     )
   )
 }
@@ -236,12 +306,12 @@
 #'
 #' `semantica_aco_config()` defines the `fast`, `standard`, and `full` search
 #' presets used by [semantica_run()]. Additional ACO controls are available in
-#' [semantica_full_pipeline()] and [ACO_with_ESEM()].
+#' [semantica_run_custom()] and [ACO_with_ESEM()].
 #'
 #' @param mode One of `"fast"`, `"standard"`, or `"full"`. `"fast"` uses
 #'   semantic and ESEM evidence during ACO while retaining PFA as a final
 #'   diagnostic. `"standard"` adds objective-mode PFA every 5 iterations and
-#'   ESEM at a fixed 10-iteration cadence. `"full"` evaluates PFA and ESEM at a fixed 5-iteration cadence and
+#'   entropy-responsive ESEM from a 10-iteration base cadence. `"full"` evaluates PFA and entropy-responsive ESEM from a 5-iteration base cadence and
 #'   enables strict ESEM-parametric DFI calibration.
 #' @param ants Optional positive integer colony-size override.
 #' @param search_patience Optional positive integer non-improvement patience
@@ -256,7 +326,8 @@
 #' tutorial practice, while bounding total work at 60 iterations. The fast
 #' preset uses the 20-ant scale common in the ShortForm implementation. The
 #' full preset retains the same 60-ant base but extends the hard ceiling because
-#' structural/DFI evidence is evaluated more frequently. All presets use the
+#' structural/DFI evidence is evaluated more frequently. Standard and full
+#' adapt checkpoint timing to pheromone entropy; all presets use the
 #' same adaptive .20-to-.05 evaporation-rate schedule (80% to 95% pheromone
 #' retention) so evidence depth is not confounded with a different pheromone
 #' model.
@@ -285,6 +356,11 @@ semantica_aco_config <- function(
     max_total_iter = NULL) {
   mode <- match.arg(mode)
   out <- .semantica_aco_profile_values(mode)
+  out$overrides <- list(
+    ants = !is.null(ants),
+    search_patience = !is.null(search_patience),
+    max_total_iter = !is.null(max_total_iter)
+  )
   if (!is.null(ants)) {
     out$ants <- .semantica_assert_positive_integer(ants, "ants")
   }
@@ -315,7 +391,7 @@ semantica_aco_config <- function(
     unknown <- setdiff(names(aco), allowed)
     if (length(unknown) > 0L) {
       stop(sprintf(
-        "Unknown ACO override(s): %s. For additional ACO controls use semantica_full_pipeline().",
+        "Unknown ACO override(s): %s. For additional ACO controls use semantica_run_custom().",
         paste(unknown, collapse = ", ")
       ), call. = FALSE)
     }
@@ -362,17 +438,44 @@ semantica_aco_config <- function(
   list(config = cfg, chat_model = chat_model, embed_model = embed_model)
 }
 
+.semantica_run_backend_contract <- function(llm_cfg, resolved, structured_output) {
+  generation_backend <- llm_cfg$backend
+  embedding_backend <- llm_cfg$embed_backend %||% generation_backend
+  generation_spec <- llm_cfg$backend_spec %||% SEMANTICA_BACKENDS[[generation_backend]]
+  embedding_spec <- llm_cfg$embed_backend_spec %||% SEMANTICA_BACKENDS[[embedding_backend]] %||% generation_spec
+  generation_caps <- .semantica_backend_capabilities(generation_spec)
+  embedding_caps <- .semantica_backend_capabilities(embedding_spec)
+  if (!isTRUE(generation_caps$can_chat)) {
+    stop(sprintf("Generation backend '%s' is not chat-capable.", generation_backend), call. = FALSE)
+  }
+  if (!isTRUE(embedding_caps$can_embed)) {
+    stop(sprintf("Embedding backend '%s' is not embedding-capable.", embedding_backend), call. = FALSE)
+  }
+  list(
+    generation_backend = generation_backend,
+    embedding_backend = embedding_backend,
+    chat_model = resolved$chat_model %||% generation_spec$default_chat_model %||% NA_character_,
+    embed_model = resolved$embed_model %||% embedding_spec$default_embed_model %||% NA_character_,
+    output_mode = if (identical(structured_output, "auto")) {
+      if (isTRUE(generation_caps$supports_structured_output)) "json" else "numbered"
+    } else structured_output,
+    structured_output_declared = isTRUE(generation_caps$supports_structured_output),
+    language_status = "prompt_requested_not_runtime_verified",
+    model_revision_status = "recorded_if_provider_exposes_revision"
+  )
+}
+
 #' Run a SEMANTICA scale-development workflow
 #'
 #' `semantica_run()` is the main scale-development interface. It uses the same
-#' analysis pipeline as [semantica_full_pipeline()] with the settings most often
+#' analysis pipeline as [semantica_run_custom()] with the settings most often
 #' needed for a standard run.
 #'
 #' @param scale_name Non-empty scale name.
 #' @param scale_description Substantive description of the overall construct.
 #' @param factors Named factor list. Each factor may be either a single
 #'   description string or the richer list accepted by
-#'   [semantica_full_pipeline()] (for example `description`, `facets`,
+#'   [semantica_run_custom()] (for example `description`, `facets`,
 #'   `forbidden`, and `extra_instructions`).
 #' @param pool_items Positive integer retained candidate items per factor.
 #' @param selected_items Positive integer or factor-specific vector of final
@@ -380,7 +483,7 @@ semantica_aco_config <- function(
 #'   4 items for a one-factor model and 3 items per factor otherwise. A
 #'   one-factor run requires at least 4 selected items so its one-factor ESEM
 #'   proxy is overidentified rather than the vacuously perfect 3-item saturated
-#'   model. [semantica_full_pipeline()] remains available for shorter
+#'   model. [semantica_run_custom()] remains available for shorter
 #'   forms whose global one-factor fit cannot be assessed.
 #' @param overgenerate Positive raw-generation multiplier. `semantica_run()`
 #'   defaults to `2`, matching the established full-pipeline default. The larger
@@ -399,8 +502,12 @@ semantica_aco_config <- function(
 #'   named lists may additionally contain `chat_model` and `embed_model`.
 #' @param chat_model,embed_model Optional explicit model names. These override
 #'   model names nested in an `llm` list.
-#' @param seed Optional non-negative integer seed for SEMANTICA's stochastic
-#'   analysis components.
+#' @param seed Non-negative integer seed, or `"auto"` (default) to generate and
+#'   record one. `NULL` is treated as `"auto"`.
+#' @param restarts `"auto"` (default) uses one frozen-pool optimizer start for
+#'   `"fast"`, three for `"standard"`, and five for `"full"`; alternatively a
+#'   positive integer requests that many starts. Multiple starts are compared
+#'   only when their recorded evidence regimes match.
 #' @param verbose Logical compatibility switch. `FALSE` forces quiet execution.
 #'   With the default `TRUE`, `progress` chooses concise progress or detailed
 #'   component-level messages for troubleshooting.
@@ -417,8 +524,9 @@ semantica_aco_config <- function(
 #'   `"7-point Likert"`.
 #' @param item_style Wording style stated in the existing item-generation prompt
 #'   contract.
-#' @param temperature Non-negative generation sampling temperature passed to the
-#'   existing generation configuration.
+#' @param temperature Non-negative generation sampling temperature. The easy
+#'   interface defaults to `0.4` to prioritize instruction consistency; supply
+#'   a higher value deliberately when more wording variation is needed.
 #' @param structured_output Generation response contract: `"auto"`,
 #'   `"numbered"`, or `"json"`.
 #' @param progress User-facing progress level: `"normal"` (concise high-level
@@ -429,8 +537,8 @@ semantica_aco_config <- function(
 #' SEMANTICA's integrity safeguards:
 #'
 #' * `fast`: semantic + ESEM search; PFA stays enabled for final diagnostics.
-#' * `standard`: semantic + objective PFA every 5 iterations + ESEM at a fixed 10-iteration cadence.
-#' * `full`: semantic + objective PFA and ESEM at a fixed 5-iteration cadence, with strict
+#' * `standard`: semantic + objective PFA every 5 iterations + entropy-responsive ESEM from a 10-iteration base cadence.
+#' * `full`: semantic + objective PFA and entropy-responsive ESEM from a 5-iteration base cadence, with strict
 #'   ESEM-parametric DFI calibration.
 #'
 #' In multidimensional models, final PFA uses ML extraction with oblimin rotation;
@@ -508,13 +616,14 @@ semantica_run <- function(
     llm = "openai",
     chat_model = NULL,
     embed_model = NULL,
-    seed = NULL,
+    seed = "auto",
+    restarts = "auto",
     verbose = TRUE,
     workers = "auto",
     language = "English",
     response_format = "5-point Likert",
     item_style = "first-person declarative sentence",
-    temperature = 0.8,
+    temperature = 0.4,
     structured_output = c("auto", "numbered", "json"),
     progress = c("normal", "detailed", "quiet")) {
 
@@ -541,16 +650,17 @@ semantica_run <- function(
 
   factors <- .semantica_run_normalize_factors(factors)
   dimensionality <- .semantica_run_dimensionality(factors)
+  is_unidimensional <- identical(dimensionality, "unidimensional")
   selected_items_auto <- is.null(selected_items)
   if (selected_items_auto) {
     # Three indicators identify a one-factor covariance model but leave zero
     # degrees of freedom, making global fit perfect by construction. The main
     # interface therefore uses four items for a testable one-factor proxy while
     # retaining the historical three-per-factor default for multidimensional use.
-    selected_items <- if (identical(dimensionality, "unidimensional")) 4L else 3L
+    selected_items <- if (is_unidimensional) 4L else 3L
   }
   selected_items <- .semantica_assert_positive_integer_vector(selected_items, "selected_items")
-  if (identical(dimensionality, "unidimensional")) {
+  if (is_unidimensional) {
     if (length(selected_items) != 1L) {
       stop("A unidimensional semantica_run() requires one scalar 'selected_items' value.", call. = FALSE)
     }
@@ -559,7 +669,7 @@ semantica_run <- function(
         "A unidimensional SEMANTICA run requires at least 4 selected items.",
         "With 3 indicators a one-factor covariance model has zero degrees of freedom,",
         "so CFI/RMSEA/SRMR fit can be perfect by construction rather than evidence of unidimensionality.",
-        "Use selected_items >= 4, or semantica_full_pipeline() when you need a shorter form and accept that global one-factor fit cannot be assessed."
+        "Use selected_items >= 4, or semantica_run_custom() when you need a shorter form and accept that global one-factor fit cannot be assessed."
       ), call. = FALSE)
     }
   }
@@ -571,7 +681,7 @@ semantica_run <- function(
 
   if (length(aco) > 1L && is.character(aco)) aco <- aco[[1L]]
   aco_cfg <- .semantica_run_resolve_aco(aco)
-  if (identical(dimensionality, "unidimensional")) {
+  if (is_unidimensional) {
     aco_cfg <- .semantica_run_adapt_unidimensional_aco(aco_cfg)
     if (!identical(progress, "quiet")) {
       message(
@@ -580,7 +690,15 @@ semantica_run <- function(
       )
     }
   }
+  aco_cfg <- .semantica_run_adapt_aco_budget(
+    aco_cfg, pool_items, selected_items, length(factors)
+  )
+  seed_cfg <- .semantica_run_resolve_seed(seed)
+  restart_cfg <- .semantica_run_restart_seeds(seed_cfg$seed, restarts, aco_cfg$mode)
   llm_resolved <- .semantica_run_resolve_llm(llm, chat_model, embed_model)
+  backend_contract <- .semantica_run_backend_contract(
+    llm_resolved$config, llm_resolved, structured_output
+  )
 
   item_cfg <- semantica_item_count_config(
     pool = pool_items,
@@ -593,7 +711,8 @@ semantica_run <- function(
     language = trimws(language),
     overgenerate = overgenerate,
     temperature = temperature,
-    structured_output = structured_output
+    structured_output = structured_output,
+    pool_topup_min_slack = .semantica_run_pool_slack(selected_items)
   )
   resource_cfg <- semantica_resource_config(cpu_cores = workers)
 
@@ -617,31 +736,39 @@ semantica_run <- function(
     every = 5L,
     extraction = "ml",
     final_extraction = "ml",
-    rotation = if (identical(dimensionality, "unidimensional")) "none" else "oblimin",
-    unit_diagnostics = !identical(dimensionality, "unidimensional")
+    rotation = if (is_unidimensional) "none" else "oblimin",
+    unit_diagnostics = !is_unidimensional
   )
   esem_cfg <- semantica_esem_config(
     proxy_reference_n = "auto",
     cadence_mode = aco_cfg$esem_cadence_mode %||% "fixed",
     # Rotation is indeterminate/irrelevant for a single factor. Avoid imposing
     # geomin on a one-axis solution while preserving the multidimensional default.
-    rotation = if (identical(dimensionality, "unidimensional")) "none" else "geomin",
-    rotation_args = if (identical(dimensionality, "unidimensional")) list() else list(geomin.epsilon = 0.50),
+    rotation = if (is_unidimensional) "none" else "geomin",
+    rotation_args = if (is_unidimensional) list() else list(geomin.epsilon = 0.50),
     score_mode = "structure_weighted"
   )
-  fit_cfg <- semantica_fit_calibration_config(mode = aco_cfg$fit_calibration_mode)
+  fit_cfg <- semantica_fit_calibration_config(
+    mode = aco_cfg$fit_calibration_mode,
+    strategy = if (identical(aco_cfg$mode, "full")) "adaptive" else "fixed",
+    esem_reps = if (identical(aco_cfg$mode, "full")) 500L else NULL,
+    adaptive_min_reps = if (identical(aco_cfg$mode, "full")) 250L else NULL,
+    adaptive_batch_reps = if (identical(aco_cfg$mode, "full")) 100L else 50L,
+    adaptive_tol = if (identical(aco_cfg$mode, "full")) 0.001 else 0.002
+  )
   # The main interface is intended to produce a viable candidate scale from
   # theory definitions without requiring expert configuration.  Use the
-  # existing conservative, feasibility-aware contrastive-definition guard: it
-  # excludes only clear factor mismatches/exclusion conflicts when enough
-  # alternatives remain. The quality-config default remains
+  # existing conservative contrastive-definition guard. Strict recovery excludes
+  # robust factor mismatches/exclusion conflicts; if the factor pool remains
+  # infeasible, the logged top-up ladder may relax forbidden conflicts while
+  # retaining robust construct mismatch and polarity. The quality-config default remains
   # diagnostic for backward compatibility and method-development workflows.
   quality_cfg <- semantica_quality_config(
     content_alignment_mode = "guard",
     semantic_objective_mode = "relative_conservative"
   )
 
-  result <- semantica_full_pipeline(
+  result <- semantica_run_custom(
     scale_name = trimws(scale_name),
     scale_description = trimws(scale_description),
     factors = factors_for_run,
@@ -670,16 +797,17 @@ semantica_run <- function(
     pfa = pfa_cfg,
     fit_calibration = fit_cfg,
     quality = quality_cfg,
-    seed = seed,
+    seed = seed_cfg$seed,
+    restart_seeds = restart_cfg$seeds,
     verbose = pipeline_verbose
   )
 
   run_meta <- list(
     interface = "semantica_run",
-    interface_schema = "semantica-run-v3",
+    interface_schema = "semantica-run-v4",
     dimensionality = dimensionality,
-    unidimensional_adaptation = identical(dimensionality, "unidimensional"),
-    unidimensional_semantic_objective = if (identical(dimensionality, "unidimensional")) "huber_target_centered" else NA_character_,
+    unidimensional_adaptation = is_unidimensional,
+    unidimensional_semantic_objective = if (is_unidimensional) "huber_target_centered" else NA_character_,
     aco_mode = aco_cfg$mode,
     aco_description = aco_cfg$description,
     semantic_objective_mode = quality_cfg$semantic_objective_mode,
@@ -688,34 +816,45 @@ semantica_run <- function(
     ants = aco_cfg$ants,
     search_patience = aco_cfg$search_patience,
     max_total_iter = aco_cfg$max_total_iter,
+    search_space_log10 = aco_cfg$search_space_log10,
+    budget_adaptation = aco_cfg$budget_adaptation,
+    seed = seed_cfg$seed,
+    seed_source = seed_cfg$source,
+    restart_seeds = restart_cfg$seeds,
+    restart_source = restart_cfg$source,
+    restart_status = result$multi_seed_stability$status %||% "unavailable",
+    restart_selected_seed = result$multi_seed_stability$selected_seed %||% seed_cfg$seed,
     pfa_during_search = aco_cfg$pfa_during_search,
-    pfa_every = if (identical(dimensionality, "unidimensional")) NA_integer_ else 5L,
-    pfa_extraction = if (identical(dimensionality, "unidimensional")) NA_character_ else "ml",
-    pfa_rotation = if (identical(dimensionality, "unidimensional")) NA_character_ else "oblimin",
-    pfa_status = if (identical(dimensionality, "unidimensional")) "not_applicable_unidimensional" else aco_cfg$pfa_mode,
+    pfa_every = if (is_unidimensional) NA_integer_ else 5L,
+    pfa_extraction = if (is_unidimensional) NA_character_ else "ml",
+    pfa_rotation = if (is_unidimensional) NA_character_ else "oblimin",
+    pfa_status = if (is_unidimensional) "not_applicable_unidimensional" else aco_cfg$pfa_mode,
     esem_every = aco_cfg$esem_every,
     esem_cadence_mode = aco_cfg$esem_cadence_mode %||% "fixed",
     esem_proxy_reference_n = "auto",
-    esem_rotation = if (identical(dimensionality, "unidimensional")) "none" else "geomin",
+    esem_rotation = if (is_unidimensional) "none" else "geomin",
     esem_score_mode = "structure_weighted",
     dfi_calibration_mode = aco_cfg$fit_calibration_mode,
     pool_items = pool_items,
+    pool_topup_min_slack = generation_cfg$pool_topup_min_slack,
     selected_items = selected_items,
     selected_items_auto = selected_items_auto,
     selected_items_default_rule = if (selected_items_auto) {
-      if (identical(dimensionality, "unidimensional")) "4_for_overidentified_one_factor_proxy" else "3_per_factor"
+      if (is_unidimensional) "4_for_overidentified_one_factor_proxy" else "3_per_factor"
     } else "user_supplied",
     workers_requested = resource_cfg$cpu_cores,
     workers_effective = result$reproducibility$effective_workers %||%
       result$optimization$resource$effective_workers %||%
       result$resource$effective_workers %||% NA_integer_,
     worker_policy = if (identical(resource_cfg$cpu_cores, "auto")) "adaptive_auto_psock_v2" else "explicit_or_serial",
+    worker_reproducibility = "deterministic_task_seeds_with_serial_fallback_when_supported",
     overgenerate = overgenerate,
     language = generation_cfg$language,
     response_format = generation_cfg$response_format,
     item_style = generation_cfg$item_style,
     temperature = generation_cfg$temperature,
     structured_output = generation_cfg$structured_output,
+    backend_contract = backend_contract,
     progress = progress,
     generation_provenance_schema = result$generation_provenance$schema %||% NA_character_,
     generation_seed_controlled = result$generation_provenance$generation_seed_controlled %||% FALSE,
@@ -738,6 +877,11 @@ semantica_run <- function(
   if (identical(progress, "normal")) {
     selected_n <- length(result$best_items %||% result$optimization$best_items %||% character(0L))
     message(sprintf("[SEMANTICA] Complete: %d final item(s) selected.", selected_n))
+    restart_status <- result$multi_seed_stability$status %||% "unavailable"
+    if (length(restart_cfg$seeds) > 1L) {
+      message(sprintf("[SEMANTICA] Optimizer restarts: %s (%d successful start(s)).",
+                      restart_status, length(result$multi_seed_stability$successful_seeds %||% integer(0L))))
+    }
     message("[SEMANTICA] Result surface: $scale | $items | $diagnostics | $plots | $provenance | $advanced")
     message("[SEMANTICA] Next: summary(result) | plot(result) | semantica_save_bundle(result, path)")
   }

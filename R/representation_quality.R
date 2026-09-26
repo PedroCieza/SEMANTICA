@@ -279,16 +279,23 @@ semantica_embedding_spec <- function(
 
   # Guard calibration uses the typical *positive* separation achieved by items
   # that the assigned construct already wins. If a group has too few positively
-  # separated items, SEMANTICA has insufficient evidence to turn a negative
-  # top-rank margin into an automatic exclusion, so it remains ambiguous. This
-  # is intentionally conservative and avoids universal cosine cutoffs.
+  # separated items, negative margins are explicitly "alignment_unresolved"
+  # rather than being silently treated as ordinary ambiguity. This preserves the
+  # no-universal-cosine-cutoff design while allowing the pre-ACO recovery layer
+  # to fail closed when the factor-level alignment reference cannot be calibrated.
   for (g in unique(groups[!is.na(groups)])) {
     ii <- which(groups == g & finite)
     if (!length(ii)) next
     positive <- margins[ii][margins[ii] > sqrt(.Machine$double.eps)]
-    if (length(positive) < as.integer(min_reference)) next
+    if (length(positive) < as.integer(min_reference)) {
+      out$status[ii[margins[ii] < 0]] <- "alignment_unresolved"
+      next
+    }
     scale_g <- stats::median(positive, na.rm = TRUE)
-    if (!is.finite(scale_g) || scale_g <= sqrt(.Machine$double.eps)) next
+    if (!is.finite(scale_g) || scale_g <= sqrt(.Machine$double.eps)) {
+      out$status[ii[margins[ii] < 0]] <- "alignment_unresolved"
+      next
+    }
     out$scale[ii] <- scale_g
     clear <- margins[ii] < -scale_g
     out$clear_mismatch[ii] <- clear
@@ -324,9 +331,36 @@ semantica_embedding_spec <- function(
     return(fail("one or more factor definitions are empty"))
   }
 
+  # Represent each broad factor with its definition plus its declared facet
+  # definitions in one prototype. This keeps one reference per factor (avoiding
+  # a multiple-prototype advantage) while making the reference better match
+  # facet-specific generated items.
+  factor_ref_text <- vapply(f_names, function(f) {
+    z <- factors[[f]]
+    facets <- z$facets %||% z$Facets %||% NULL
+    facet_text <- character(0L)
+    if (is.character(facets)) {
+      fn <- names(facets)
+      facet_text <- if (!is.null(fn) && all(nzchar(fn))) {
+        paste0(fn, ": ", as.character(facets))
+      } else {
+        as.character(facets)
+      }
+    } else if (is.list(facets) && length(facets)) {
+      fn <- names(facets)
+      facet_text <- vapply(seq_along(facets), function(i) {
+        zz <- facets[[i]]
+        desc <- if (is.list(zz)) zz$description %||% zz$Definition %||% zz$definition %||% "" else as.character(zz)
+        nm <- if (!is.null(fn) && !is.na(fn[[i]]) && nzchar(fn[[i]])) paste0(fn[[i]], ": ") else ""
+        paste0(nm, trimws(as.character(desc)))
+      }, character(1L))
+    }
+    facet_text <- facet_text[!is.na(facet_text) & nzchar(trimws(facet_text))]
+    paste(c(paste(f, f_desc[[f]], sep = ". "), if (length(facet_text)) paste("Facets:", paste(facet_text, collapse = "; "))), collapse = ". ")
+  }, character(1L))
   refs <- data.frame(
     ref_id = paste0("factor::", f_names),
-    ref_text = paste(f_names, f_desc, sep = ". "),
+    ref_text = unname(factor_ref_text),
     stringsAsFactors = FALSE
   )
   ref_emb <- semantica_embed(
@@ -397,10 +431,14 @@ semantica_embedding_spec <- function(
     semantica_factor_guard_agreement = NA_character_,
     semantica_exclusion_score = NA_real_,
     semantica_contrast_margin = NA_real_,
+    semantica_exclusion_margin_scale = NA_real_,
     semantica_exclusion_conflict = FALSE,
+    semantica_exclusion_status = NA_character_,
     semantica_exclusion_score_centered = NA_real_,
     semantica_contrast_margin_centered = NA_real_,
+    semantica_exclusion_margin_scale_centered = NA_real_,
     semantica_exclusion_conflict_centered = FALSE,
+    semantica_exclusion_status_centered = NA_character_,
     semantica_content_guard_pass_raw = TRUE,
     semantica_content_guard_pass = TRUE,
     semantica_content_guard_sensitivity = "not_triggered",
@@ -417,8 +455,9 @@ semantica_embedding_spec <- function(
   # Rank-only alignment is useful diagnostically but too brittle for automatic
   # exclusion. Guarding therefore calibrates a negative margin against the
   # typical positive separation achieved by correctly ranked items assigned to
-  # the same factor. If that positive reference is not estimable, the mismatch
-  # stays ambiguous instead of being excluded.
+  # the same factor. If that positive reference is not estimable, the factor
+  # alignment state is explicitly unresolved so the pre-ACO recovery layer can
+  # replenish the pool rather than silently treating uncertainty as validity.
   factor_class <- .semantica_classify_alignment_margins(
     factor_margin, assigned, min_reference = 2L
   )
@@ -443,8 +482,10 @@ semantica_embedding_spec <- function(
 
   # Contrast the assigned construct with concepts the analyst explicitly says
   # should *not* define it. These are embedded as individual negative
-  # prototypes; no universal cosine cutoff is used. A conflict is present only
-  # when an excluded concept is closer than the assigned construct definition.
+  # prototypes. Hard conflicts are calibrated from the factor-specific positive
+  # contrast-margin distribution using the same conservative margin classifier
+  # as factor alignment; a tiny negative contrast is therefore diagnostic rather
+  # than automatically exclusionary, and no universal cosine cutoff is imposed.
   inferred_exclusions <- stats::setNames(vector("list", length(f_names)), f_names)
   for (f in f_names) {
     z <- factors[[f]]
@@ -479,21 +520,33 @@ semantica_embedding_spec <- function(
     if (!length(ii)) next
     es <- .semantica_cosine_cross(item_emb_common[ii, , drop = FALSE], ee)
     ex_score <- apply(es, 1L, max, na.rm = TRUE)
+    contrast_margin <- assigned_score[ii] - ex_score
     out$semantica_exclusion_score[ii] <- ex_score
-    out$semantica_contrast_margin[ii] <- assigned_score[ii] - ex_score
-    out$semantica_exclusion_conflict[ii] <- is.finite(ex_score) &
-      is.finite(assigned_score[ii]) & ex_score > assigned_score[ii]
+    out$semantica_contrast_margin[ii] <- contrast_margin
+    contrast_class <- .semantica_classify_alignment_margins(
+      contrast_margin, rep(f, length(ii)), min_reference = 2L
+    )
+    out$semantica_exclusion_margin_scale[ii] <- contrast_class$scale
+    out$semantica_exclusion_conflict[ii] <- contrast_class$clear_mismatch
+    exclusion_status <- contrast_class$status
+    exclusion_status[exclusion_status == "alignment_unresolved"] <- "contrast_unresolved"
+    out$semantica_exclusion_status[ii] <- exclusion_status
 
     es_centered <- .semantica_centered_cosine_cross(
       item_emb_common[ii, , drop = FALSE], ee, alignment_centroid
     )
     ex_score_centered <- apply(es_centered, 1L, max, na.rm = TRUE)
+    contrast_margin_centered <- assigned_score_centered[ii] - ex_score_centered
     out$semantica_exclusion_score_centered[ii] <- ex_score_centered
-    out$semantica_contrast_margin_centered[ii] <-
-      assigned_score_centered[ii] - ex_score_centered
-    out$semantica_exclusion_conflict_centered[ii] <-
-      is.finite(ex_score_centered) & is.finite(assigned_score_centered[ii]) &
-      ex_score_centered > assigned_score_centered[ii]
+    out$semantica_contrast_margin_centered[ii] <- contrast_margin_centered
+    contrast_class_centered <- .semantica_classify_alignment_margins(
+      contrast_margin_centered, rep(f, length(ii)), min_reference = 2L
+    )
+    out$semantica_exclusion_margin_scale_centered[ii] <- contrast_class_centered$scale
+    out$semantica_exclusion_conflict_centered[ii] <- contrast_class_centered$clear_mismatch
+    exclusion_status_centered <- contrast_class_centered$status
+    exclusion_status_centered[exclusion_status_centered == "alignment_unresolved"] <- "contrast_unresolved"
+    out$semantica_exclusion_status_centered[ii] <- exclusion_status_centered
   }
 
   # Raw alignment remains primary. Automatic exclusion is intentionally more
@@ -506,9 +559,18 @@ semantica_embedding_spec <- function(
     out$semantica_exclusion_conflict,
     out$semantica_exclusion_conflict_centered
   )
+  alignment_unresolved <- out$semantica_factor_alignment_status == "alignment_unresolved"
+  alignment_unresolved[is.na(alignment_unresolved)] <- FALSE
+  # Unresolved calibration means the pool did not provide enough positive-margin
+  # reference items to estimate mismatch severity. It is evidence uncertainty,
+  # not evidence that each affected item is invalid. Keep it diagnostic and let
+  # the bounded top-up state machine request one factor-level refresh; only robust
+  # mismatch/exclusion evidence removes items.
   out$semantica_content_guard_pass_raw <- guard_decision$raw_pass
   out$semantica_content_guard_pass <- guard_decision$robust_pass
-  out$semantica_content_guard_sensitivity <- guard_decision$sensitivity
+  out$semantica_content_guard_sensitivity <- ifelse(
+    alignment_unresolved, "factor_alignment_calibration_unresolved", guard_decision$sensitivity
+  )
 
   if (!is.null(facet_col)) {
     assigned_facet <- as.character(x[[facet_col]][match(common, ids)])
@@ -577,20 +639,21 @@ semantica_embedding_spec <- function(
     table = out,
     factor_similarity = sim,
     evidence_role = "semantic_definition_alignment",
-    reference_policy = "single_declared_factor_name_plus_description",
+    reference_policy = "single_declared_factor_prototype_with_declared_facets",
     reference_texts = stats::setNames(refs$ref_text, f_names),
     reference_dependency_note = paste(
-      "Alignment is conditional on the analyst-declared factor wording and the",
-      "active embedding representation. SEMANTICA does not generate hidden",
-      "paraphrase prototypes or aggregate alternate definitions because doing so",
-      "would introduce an unvalidated reference-construction policy."
+      "Alignment is conditional on the analyst-declared factor wording, declared",
+      "facet definitions, and the active embedding representation. SEMANTICA uses",
+      "one enriched reference per factor and does not generate hidden paraphrase",
+      "prototypes or give factors with more facets extra prototype votes."
     ),
     guard_rule = paste(
-      "Pool-relative conservative guard: retain ambiguous top-rank cases;",
-      "a raw clear factor mismatch or explicit exclusion conflict is automatically",
-      "excluded only when the same exclusionary conclusion survives the mean-centered",
-      "sensitivity view and enough alternatives remain. Centered geometry never enters",
-      "the ACO objective. Facet alignment remains diagnostic/coverage evidence."
+      "Pool-relative conservative guard: retain calibrated ambiguity and unresolved",
+      "calibration as diagnostic evidence after one bounded factor-level refresh.",
+      "Robust factor mismatches and factor-calibrated forbidden-concept conflicts",
+      "are hard only when the same",
+      "exclusionary conclusion survives the mean-centered sensitivity view. Centered",
+      "geometry never enters the ACO objective. Facet alignment remains diagnostic/coverage evidence."
     ),
     note = paste(
       "Alignment is embedding-based content-screening evidence, not content",

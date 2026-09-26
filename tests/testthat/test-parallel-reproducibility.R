@@ -68,6 +68,7 @@ test_that("DFI seed ledgers and caller RNG agree in serial and parallel", {
 
   expect_false(is.null(serial$result))
   expect_false(is.null(load_balanced$result))
+  expect_identical(serial$result$telemetry$simulation_input, "covariance")
   expect_identical(
     serial$result$telemetry$task_seeds,
     load_balanced$result$telemetry$task_seeds

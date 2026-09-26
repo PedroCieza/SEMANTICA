@@ -1,7 +1,7 @@
 test_that("casual interface uses the existing conservative construct-definition guard", {
   captured <- NULL
   local_mocked_bindings(
-    semantica_full_pipeline = function(...) {
+    semantica_run_custom = function(...) {
       captured <<- list(...)
       structure(list(reproducibility = list()), class = c("semantica_full_pipeline_result", "list"))
     },

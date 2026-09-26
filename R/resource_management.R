@@ -718,7 +718,7 @@ print.semantica_resource_plan <- function(x, ...) {
 #'
 #' @param force If `FALSE` (default), clusters that cannot be stopped cleanly
 #'   remain registered. If `TRUE`, SEMANTICA may use `parallelly::killNode()` on
-#'   its own still-live RichSOCK workers after graceful shutdown fails.
+#'   each of its own still-live RichSOCK workers after graceful shutdown fails.
 #' @return Invisibly, a list containing stopped, reaped, and failed pool tokens.
 #' @export
 semantica_reset_resources <- function(force = FALSE) {
@@ -737,16 +737,13 @@ semantica_reset_resources <- function(force = FALSE) {
     }
     cl <- entry$cluster
     ok <- tryCatch({
-      parallel::stopCluster(cl)
+      .semantica_stop_psock_cluster(cl)
       TRUE
     }, error = function(e) FALSE)
     if (!ok && isTRUE(force)) {
-      ok <- tryCatch({
-        parallelly::killNode(cl)
-        TRUE
-      }, error = function(e) FALSE)
+      ok <- .semantica_kill_cluster_nodes(cl)
     }
-    alive <- .semantica_pool_entry_alive(entry)
+    alive <- if (isTRUE(ok)) FALSE else .semantica_pool_entry_alive(entry)
     if (ok || identical(alive, FALSE)) {
       if (exists(token, envir = .semantica_pool_registry$active, inherits = FALSE)) {
         rm(list = token, envir = .semantica_pool_registry$active)
@@ -841,6 +838,18 @@ semantica_reset_resources <- function(force = FALSE) {
 
 .semantica_stop_psock_cluster <- function(cluster) {
   parallel::stopCluster(cluster)
+}
+
+.semantica_kill_cluster_nodes <- function(cluster) {
+  if (is.null(cluster) || length(cluster) == 0L) return(FALSE)
+  if (!requireNamespace("parallelly", quietly = TRUE)) return(FALSE)
+  ok <- vapply(cluster, function(node) {
+    tryCatch({
+      parallelly::killNode(node)
+      TRUE
+    }, error = function(e) FALSE)
+  }, logical(1L))
+  length(ok) > 0L && all(ok)
 }
 
 .semantica_cluster_export_environment <- function(cluster, envir) {

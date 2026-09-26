@@ -1,73 +1,101 @@
-# SEMANTICA 0.2 GitHub release modification plan
+# SEMANTICA 0.2 working-tree validation and release plan
 
-This plan is intentionally constrained to release engineering and user-facing
-presentation. The analytical engine is treated as frozen.
+This document supersedes the earlier release-preparation plan that treated the
+analytical engine as frozen. The current working tree contains intentional
+analytical changes, including the factor-pool/top-up feasibility patch and its
+related ACO/ESEM hardening. It must therefore be validated as a new behavioral
+baseline rather than represented as byte-identical to the earlier 0.2 source.
 
-## Invariants
+## Current invariants
 
-The release-preparation work must not change ACO scoring, pheromone updates,
-elite/archive ranking, semantic objectives, item generation, embedding
-calculations, PFA/ESEM estimation or scoring, DFI mathematics, evidence rules,
-participant-validation calculations, RNG policy, resource-allocation algorithms,
-or serialization semantics.
+The current code is intended to preserve these scientific and engineering
+boundaries:
 
-The sole permitted analytical-source compatibility change is removal of hard
-namespace imports for optional `dynamic::catHB`/`catOne` helpers. When those
-helpers exist, SEMANTICA calls them with the same arguments as before. When they
-do not exist, SEMANTICA enters the simulation fallback that was already present
-in `safe_compute_dfi()`.
+1. Sample-free semantic PFA/ESEM/DFI outputs remain representation-derived
+   proxy diagnostics, not participant-response evidence of construct validity.
+2. ACO must not start from a factor pool that violates the configured eligible
+   slack, independent-redundancy-unit, or factor-alignment-calibration
+   feasibility invariants unless an explicit compatibility/warning mode is
+   requested.
+3. Factor-specific top-up generation may use one explicitly logged
+   wording/forbidden-conflict relaxation after strict recovery fails; only the
+   factors that remain infeasible advance to that rung. Robust construct
+   mismatch, unresolved factor alignment, and polarity remain hard, and the
+   named effective policy must be propagated unchanged into ACO.
+4. Expensive structural repair is bounded and surrogate-first, and is skipped
+   when the candidate pool has no meaningful replacement slack.
+5. Explicit provider/model requests are never silently replaced by a different
+   model. Provider-key forwarding to a changed endpoint origin requires an
+   explicit opt-in.
+6. External item/factor labels are preserved as SEMANTICA identities. Any
+   lavaan-safe transport renaming is private to the modeling boundary and must
+   be mapped back before SEMANTICA scoring/diagnostics.
+7. Bundle checksums detect accidental corruption; they are not signatures and
+   do not make an untrusted RDS object safe to deserialize.
+8. Search-time PSOCK dispatch recovery is condition-message independent: one
+   bounded cluster rebuild is attempted for a dispatch-level failure before the
+   deterministic serial fallback reuses the same task seeds.
 
-## Ordered gates
+## Static validation completed in this working tree
 
-1. Repair the optional `dynamic` dependency contract and add a regression test.
-2. Synchronize software citation, version presentation, GitHub installation, and
-   full repository-license text.
-3. Add a methodological-foundations article that maps calculations and
-   interpretation rules to peer-reviewed sources, while explicitly identifying
-   SEMANTICA-specific policies and semantic-proxy adaptations.
-4. Add GitHub community/security/contribution files, issue/PR templates, and
-   repository ignore/line-ending hygiene.
-5. Harden CI with least-privilege permissions, documentation-drift checks, a
-   release `--as-cran` gate, and dependency-contract checks without weakening
-   existing cross-platform or secret-scan coverage.
-6. Remove stale public version labels and separate historical/maintainer material
-   from current user guidance.
-7. Run final static integrity checks, compare all analytical R files with the
-   baseline, inventory the exact changed files, and package the modified source.
+The current review has performed the following non-R checks on the exact source
+that is to be packaged:
 
-## Release-machine validation still required
+- balanced string/delimiter scanning across all `R/*.R` and
+  `tests/testthat/*.R` files;
+- public function/Rd usage-signature parity checks for the APIs changed by the
+  security/provider hardening;
+- call-path review of ESEM transport-name mapping, including DFI and residual
+  diagnostics that consume model-implied covariance matrices;
+- regression-test additions for factor-specific recovery policy, unresolved
+  alignment recovery, calibrated forbidden-conflict severity, locale-independent
+  PSOCK recovery, pre-ACO/top-up completion, lavaan name transport, early factor
+  validation, credential routing, and provider-default behavior;
+- packaging review to ensure the distributable ZIP excludes `.git`, `.RData`,
+  `.Rhistory`, and R-check output directories.
 
-Because the current execution environment does not contain R, the final tagged
-commit must additionally pass, on a machine/CI runner with R installed:
+These checks are useful but are **not** substitutes for parsing/executing the
+package in R.
+
+## Blocking runtime validation still required
+
+The current analysis environment does not contain `R`/`Rscript`, and package
+installation could not be provisioned because the environment has no working
+package-network resolution. Before tagging or publishing this source, run the
+following on the exact extracted ZIP contents in a supported R environment:
 
 ```r
+# Regenerate documentation from source comments first.
 devtools::document()
+
+# Then exercise the full regression suite.
 devtools::test()
+
+# Build/check the package artifact, not only the working directory.
 rcmdcheck::rcmdcheck(args = c("--as-cran", "--no-manual"))
+
+# Verify the documentation site if it is part of the release surface.
 pkgdown::build_site()
 ```
 
-`devtools::document()` should be run twice; the second run must leave a clean Git
-working tree. The release tag should be created only after those checks pass.
+Run `devtools::document()` a second time and require no unexpected source or
+Rd drift. Any runtime failure must be resolved before creating a release tag.
 
-## Execution status
+## Deliberately deferred changes
 
-Release-preparation gates 1-6 were completed in order, with an integrity check
-between each gate. Static gate 7 passed with the following source invariant:
+The following work is intentionally **not** mixed into this analytical patch:
 
-- the original archive contained 22 `R/*.R` files;
-- 20 remain byte-for-byte identical to the uploaded 0.2 archive;
-- `R/SEMANTICA-package.R` changes only the optional `dynamic` roxygen import;
-- `R/pipeline_core.R` changes only `safe_compute_dfi()` so `catHB`/`catOne` are
-  feature-detected before the already-existing fallback is used;
-- no ACO, ESEM, PFA, semantic-objective, item-generation, embedding, resource,
-  RNG, result-assembly, participant-validation, or serialization calculation was
-  modified;
-- `tests/testthat/fixtures/backend-compatibility.csv` is byte-identical to the
-  uploaded archive and is now trackable because the broad `*.csv` ignore rule
-  was removed.
+- large-scale decomposition of `R/pipeline_core.R` or removal of all
+  `parent.frame()` coupling; that refactor should follow a passing
+  characterization baseline so behavior changes can be attributed cleanly;
+- renumbering the package solely to reconcile historical higher version-like
+  NEWS headings. `DESCRIPTION` remains at 0.2 until the maintainer makes an
+  explicit release-version decision;
+- arbitrary pinning of remote/model dependencies without an approved release
+  dependency policy and a tested lock/snapshot strategy.
 
-The repository is prepared for the R-based release-validation workflow. The
-runtime gate remains intentionally blocking: do not create the release tag until
-that workflow confirms roxygen stability, tests, `R CMD check --as-cran`, and
-pkgdown construction on the exact commit intended for release.
+## Distribution rule
+
+Create distributable source from a clean export/build of the validated tree.
+Do not distribute the development workspace wholesale. In particular, exclude
+Git object history, saved R workspaces/history, and `*.Rcheck` output trees.

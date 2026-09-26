@@ -41,11 +41,11 @@ failed explicit accelerator request, while \code{"cpu"} permits CPU fallback.}
 \item{compute_memory_limit}{Optional working-memory ceiling.}
 
 \item{retain_embeddings}{Retain dense embeddings in the returned object.
-\code{NULL} lets \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}} infer this from requested
+\code{NULL} lets \code{\link[=semantica_run_custom]{semantica_run_custom()}} infer this from requested
 diagnostics.}
 }
 \value{
-A configuration list for \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}}.
+A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.
 }
 \description{
 Advanced controls for cosine preprocessing, device selection, precision, and

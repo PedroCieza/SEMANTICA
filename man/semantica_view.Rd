@@ -40,24 +40,23 @@ canonical full result when \code{view = "raw"}.
 }
 \description{
 \code{semantica_view()} is a read-only presentation layer for completed SEMANTICA
-results. Direct \code{semantica_full_pipeline()} output remains unchanged. For
-\code{semantica_run()}, the canonical full result is retained unchanged under the
-facade's \code{advanced} field, while the top level is intentionally compact.
+results. Both high-level interfaces retain the canonical full result under
+the facade's \code{advanced} field while keeping the top level intentionally
+compact.
 }
 \details{
-With \code{view = "auto"}, results created by \code{\link[=semantica_run]{semantica_run()}} use the compact
-scale-development view, while direct \code{\link[=semantica_full_pipeline]{semantica_full_pipeline()}} results use
-the advanced component map. \code{view = "advanced"} groups all retained
+With \code{view = "auto"}, both high-level interfaces use the compact
+scale-development view. \code{view = "advanced"} groups all retained
 top-level fields into a small set of task-oriented sections. Supplying
 \code{section} returns the original stored components in that section, without
 recomputing or simplifying their values. \code{view = "raw"} returns the
-canonical full result: it is identical to a direct full-pipeline input and to
-\code{result$advanced} for a compact \code{semantica_run()} result.
+canonical full result: it is identical to \code{result$advanced} for either
+high-level interface.
 
-For \code{semantica_run()} results, the Environment pane shows a compact six-part
-facade (\code{scale}, \code{items}, \code{diagnostics}, \code{plots}, \code{provenance}, \code{advanced}). The
-complete canonical result is retained unchanged under \code{advanced}. Direct
-\code{semantica_full_pipeline()} results remain the full advanced object.
+The Environment pane shows a compact six-part facade (\code{scale}, \code{items},
+\code{diagnostics}, \code{plots}, \code{provenance}, \code{advanced}) for both high-level
+interfaces. The complete canonical result is retained unchanged under
+\code{advanced}.
 }
 \examples{
 \dontrun{

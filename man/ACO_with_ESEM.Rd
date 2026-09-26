@@ -60,16 +60,28 @@ ACO_with_ESEM(
   htmt_threshold = 0.85,
   cohesion_quantile = NULL,
   cohesion_retention = 0.75,
+  preaco_min_slack = 2L,
+  preaco_feasibility_action = c("stop", "warn"),
   within_similarity_target = NULL,
   within_similarity_band = 0.08,
   semantic_objective_mode = c("relative_conservative", "legacy_target_burden"),
   expected_factor_relations = NULL,
   nomological_weight = 0,
   facet_coverage_weight = 0.15,
+  facet_constraint_mode = c("soft", "presence", "balanced"),
+  facet_min_per_facet = 1L,
+  facet_max_imbalance = 1L,
   psychometric_guard_weight = 0.5,
+  psychometric_guard_action = c("penalty", "final_constraint"),
+  uncalibrated_esem_policy = c("fail_early", "guard_screen", "semantic_fallback"),
   psychometric_guard_min_ave = 0.3,
   psychometric_guard_min_loading = 0.4,
   psychometric_guard_min_primary_ge_50 = 0.7,
+  psychometric_guard_min_simple_structure = NULL,
+  psychometric_guard_min_dominance = NULL,
+  psychometric_guard_max_cross_loading = NULL,
+  psychometric_guard_include_htmt = NULL,
+  psychometric_guard_ave_warning_action = c("penalty", "final_constraint"),
   pfa_mode = c("diagnostic", "objective", "off"),
   pfa_weight = 0.2,
   pfa_failure_policy = c("semantic_fallback", "penalize", "stop"),
@@ -80,6 +92,7 @@ ACO_with_ESEM(
   pfa_rotation = c("promax", "target_oblique", "oblimin", "varimax", "none"),
   pfa_min_loading = psychometric_guard_min_loading,
   pfa_min_margin = NULL,
+  pfa_max_abs_loading = Inf,
   reference_rmsea_close = 0.05,
   reference_rmsea_poor = 0.06,
   reference_power = 0.8,
@@ -103,7 +116,16 @@ ACO_with_ESEM(
   validation_n_max_factor_cor_error = NULL,
   sigmoid_center = 0.15,
   sigmoid_steepness = 10,
+  final_selection_mode = c("pareto", "scalar"),
   elite_pareto_rerank = NULL,
+  final_structure_repair = FALSE,
+  final_structure_repair_max_swaps = 6L,
+  final_structure_repair_candidates_per_factor = 6L,
+  final_structure_repair_min_delta = 1e-06,
+  final_structure_repair_max_seconds = 60,
+  final_structure_repair_max_evals = 20L,
+  final_structure_repair_prefilter_top_k = 10L,
+  final_structure_repair_auto_skip_infeasible = TRUE,
   validation_data = NULL,
   validation_ordered = NULL,
   heuristic_beta = 0.5,
@@ -120,6 +142,7 @@ ACO_with_ESEM(
   n.cores = 2L,
   reserve.cores = 1L,
   max.cores = NULL,
+  memory_aware = TRUE,
   seed = NULL,
   verbose = TRUE,
   content_alignment_mode = c("diagnostic", "guard", "off"),
@@ -129,6 +152,7 @@ ACO_with_ESEM(
   esem_cadence_mode = c("adaptive", "fixed"),
   htmt_objective_role = c("diagnostic", "penalty"),
   elite_multicriteria_rerank = NULL,
+  preaco_relaxation_level = c("strict", "wording_forbidden_relaxed"),
   ...
 )
 }
@@ -169,7 +193,13 @@ search-job ceiling.}
 \code{\link[=semantica_evaporation_config]{semantica_evaporation_config()}}. The default adaptive schedule depends on
 iteration progress, never on search patience.}
 
-\item{esem_weight}{Weight for the ESEM component in the objective function.}
+\item{esem_weight}{Weight for the ESEM component in the objective function.
+In \code{dfi_mode = "auto"}, ESEM-guided search is disabled when no
+model-matched ESEM DFI calibration is usable; strict-CFA fallback cutoffs
+remain diagnostic rather than being treated as ESEM calibration. During
+an active ESEM search, checkpoint influence is attenuated by the cumulative
+proportion of admissible search-time ESEM fits; archived ESEM scores retain
+the canonical configured weight for cross-checkpoint comparability.}
 
 \item{esem_failure_policy}{Behavior when an ESEM-guided search checkpoint
 produces no usable ESEM solutions. \code{"stop"} terminates rather than select
@@ -181,7 +211,8 @@ each given a full-ESEM refit opportunity.}
 \item{esem_sample_size}{Sample size for DFI simulation and ESEM estimation.
 \code{"auto"} chooses a non-arbitrary reference N by RMSEA power analysis for
 detecting approximate misfit (\code{reference_rmsea_poor}) against close fit
-(\code{reference_rmsea_close}).}
+(\code{reference_rmsea_close}), with a covariance-stability floor for ESEM/DFI
+refits when RMSEA power alone would choose a very small high-df proxy N.}
 
 \item{elite_k}{Number of solutions to retain in the elite archive.}
 
@@ -195,9 +226,15 @@ archive and final clean fits still use full ESEM fitting.}
 
 \item{full_esem_iter_max}{Iteration cap for full final/archive ESEM fits.}
 
-\item{rotation}{Rotation method for ESEM (\code{"geomin"}, \code{"oblimin"}).}
+\item{rotation}{Rotation method for ESEM. In addition to exploratory rotations
+such as \code{"geomin"} and \code{"oblimin"}, \code{"target"} and partial-target \code{"pst"}
+are supported when an intended factor map is available.}
 
-\item{rotation_args}{Named list passed to \code{lavaan::sem(rotation.args)}.}
+\item{rotation_args}{Named list passed to \code{lavaan::sem(rotation.args)}. For
+target/partial-target rotation, a user-supplied \code{target} matrix is preserved;
+otherwise SEMANTICA constructs a zero-cross-loading target with intended
+primary loadings left free. For explicit \code{rotation = "pst"}, a missing
+\code{target.mask} is derived from finite versus \code{NA} target cells.}
 
 \item{data_type}{Data type for DFI (\code{"continuous"}, \code{"categorical"}, etc.).}
 
@@ -215,13 +252,20 @@ archive and final clean fits still use full ESEM fitting.}
 
 \item{dfi_mode}{Cutoff calibration mode. \code{"auto"} first tries semantic-ROC
 ESEM DFI, then semantic-approximate ESEM DFI, then exact ESEM-parametric
-DFI, then strict CFA-style DFI. \code{"semantic_roc_dfi"} calibrates cutoffs
+DFI. A strict CFA-style simulation may still be computed as a fallback
+diagnostic, but it is not substituted as the calibration for ESEM-guided
+search. \code{"semantic_roc_dfi"} calibrates cutoffs
 using acceptable and intentionally misspecified semantic-ESEM proxy
 populations. \code{"semantic_approx_dfi"} calibrates an ESEM approximate-fit
 population from the warm-up semantic residual structure. \code{"esem_parametric_dfi"}
 uses exact-H0 ESEM-parametric calibration, \code{"strict_cfa_dfi"} preserves the
 earlier CFA-style dynamic-fit calibration, and \code{"heuristic_semantic"} skips
-DFI simulation during search.}
+DFI simulation during search. For high-dimensional \code{"auto"} runs with a
+bounded ESEM-DFI budget, SEMANTICA may skip the semantic-ROC prepass.
+Bootstrap ESEM is attempted on up to three distinct high-scoring warm-up
+subsets before SEMANTICA concludes that model-matched ESEM calibration is
+unavailable and continues with diagnostic fallbacks;
+explicitly requesting \code{"semantic_roc_dfi"} preserves the ROC attempt.}
 
 \item{dfi_esem_reps}{Replications for ESEM DFI calibration. \code{NULL} uses a
 bounded value derived from \code{dfi_reps} to avoid excessive ESEM refits.}
@@ -287,6 +331,15 @@ When supplied, retention is computed as \code{1 - cohesion_quantile}.}
 factor's within-similarity target retained as ACO candidates before the
 minimum-pool safeguard is applied. Higher values retain broader content.}
 
+\item{preaco_min_slack}{Nonnegative integer number of semantic-eligible
+same-factor alternatives required beyond the selected count before ACO may
+start. The hard invariant also requires at least \code{selected_n} independent
+network-redundancy units per factor.}
+
+\item{preaco_feasibility_action}{Action when the hard pool invariant fails.
+\code{"stop"} (default) aborts before ACO; \code{"warn"} is retained only for
+compatibility/diagnostic tests and should not be used to bypass pool repair.}
+
 \item{within_similarity_target}{Target within-factor semantic similarity.
 \code{NULL} estimates a dimension-specific target from the generated item pool.}
 
@@ -304,13 +357,48 @@ between-factor discrimination is not defined.}
 \item{nomological_weight}{Optional weight between 0 and 1 for matching \code{expected_factor_relations}; defaults to zero and requires an explicit validation rationale before use.}
 
 \item{facet_coverage_weight}{Soft weight rewarding coverage of distinct facets
-within each dimension.}
+within each dimension after any hard facet blueprint is satisfied.}
 
-\item{psychometric_guard_weight}{Soft penalty/diagnostic strength for ESEM
-solutions with weak loadings, very low AVE, high HTMT, or improper
-standardized parameters; it is not a strict admissibility predicate.}
+\item{facet_constraint_mode}{Hard content-blueprint behavior: \code{"soft"} keeps
+legacy weighting only; \code{"presence"} requires every declared facet to be
+represented; \code{"balanced"} additionally constrains within-factor facet-count
+imbalance.}
+
+\item{facet_min_per_facet}{Minimum selected items required for every declared
+facet under a hard facet constraint.}
+
+\item{facet_max_imbalance}{Maximum allowed difference between the most- and
+least-represented facets under \code{"balanced"}.}
+
+\item{psychometric_guard_weight}{Soft search penalty/diagnostic strength for
+ESEM solutions with weak loadings, very low AVE, high HTMT, or improper
+standardized parameters.}
+
+\item{psychometric_guard_action}{\code{"penalty"} retains the soft-search behavior;
+\code{"final_constraint"} also requires archived final candidates to pass the
+declared guardrails and returns a machine-readable no-solution condition
+when none do.}
+
+\item{uncalibrated_esem_policy}{Handling when automatic DFI calibration
+disables ESEM scoring while final guardrails are hard constraints:
+\code{"fail_early"} (default), \code{"guard_screen"}, or explicit
+\code{"semantic_fallback"}.}
 
 \item{psychometric_guard_min_ave, psychometric_guard_min_loading, psychometric_guard_min_primary_ge_50}{Minimum sample-free proxy-structure diagnostics used by the soft psychometric guard.}
+
+\item{psychometric_guard_min_simple_structure, psychometric_guard_min_dominance, psychometric_guard_max_cross_loading}{Optional ESEM structure guard thresholds. \code{NULL} keeps the legacy soft
+guard unchanged; finite values penalize weak simple structure, weak
+intended-factor dominance, or large cross-loadings without changing the
+fitted loadings themselves.}
+
+\item{psychometric_guard_include_htmt}{Logical or \code{NULL}. \code{NULL} keeps the
+legacy behavior where HTMT enters the guard only when
+\code{htmt_objective_role = "penalty"}; \code{TRUE} lets high HTMT affect the guard
+even when HTMT remains separately reported as a diagnostic tile.}
+
+\item{psychometric_guard_ave_warning_action}{Whether AVE-computation
+warnings remain a soft penalty (default) or become an explicit final
+admissibility constraint.}
 
 \item{pfa_mode}{Sample-free pseudo-factor-analysis mode. \code{"diagnostic"}}
 
@@ -348,13 +436,18 @@ unrotated.}
 \item{pfa_min_loading, pfa_min_margin}{Simple-structure thresholds for PFA.
 \code{pfa_min_margin = NULL} uses half of \code{pfa_min_loading}.}
 
+\item{pfa_max_abs_loading}{Maximum acceptable absolute PFA loading before a
+sample-free boundary-loading penalty is applied. The default \code{Inf}
+preserves historical behavior.}
+
 \item{reference_rmsea_close, reference_rmsea_poor, reference_power, reference_alpha}{RMSEA-power settings used when \code{esem_sample_size = "auto"}.}
 
 \item{reference_max_n}{Optional maximum reference N searched by the
 RMSEA-power solver. The default \code{Inf} lets \code{"auto"} use the calculated
-RMSEA-power solution. Set a finite value to impose a computational ceiling;
-if the requested target is not reachable within that ceiling, the ceiling
-itself is used as the semantic-proxy ESEM anchor rather than a very small
+RMSEA-power solution after applying the ESEM/DFI covariance-stability
+floor. Set a finite value to impose a computational ceiling; if the
+requested target is not reachable within that ceiling, the ceiling itself
+is used as the semantic-proxy ESEM anchor rather than a very small
 positive-definite fallback.}
 
 \item{semantic_n_sensitivity}{Logical; refit the final selected semantic-proxy
@@ -393,9 +486,37 @@ the metric without using it to pass/fail the candidate N.}
 
 \item{sigmoid_steepness}{Sigmoid steepness for semantic scoring.}
 
+\item{final_selection_mode}{Final archive selection rule. \code{"pareto"} (default)
+retains non-dominated admissible finalists across semantic separation,
+primary loading quality, cross-loading control, factor coverage, redundancy,
+and ESEM fit, then applies transparent structural priorities. \code{"scalar"}
+preserves legacy scalar final ranking.}
+
 \item{elite_pareto_rerank}{Deprecated compatibility alias for
 \code{elite_multicriteria_rerank}. Supplying it emits a deprecation warning;
 do not supply both arguments.}
+
+\item{final_structure_repair}{Logical; after archive reranking, try a limited
+same-factor item-swap pass guided by already computed ESEM/PFA structural
+diagnostics. The pass only accepts swaps that improve the full objective.}
+
+\item{final_structure_repair_max_swaps, final_structure_repair_candidates_per_factor, final_structure_repair_min_delta}{Limits for the optional final repair pass: accepted swap count, candidate
+replacements inspected per factor, and minimum objective improvement.}
+
+\item{final_structure_repair_max_seconds, final_structure_repair_max_evals}{Exact-fit launch-time and evaluation budgets for final repair. With a
+finite seconds budget, SEMANTICA checks the deadline before each expensive
+fit and launches those fits sequentially; an already-running fit is allowed
+to finish, so actual elapsed time can exceed the deadline by at most that
+in-flight fit. Defaults are 60 seconds and 20 exact evaluations; \code{Inf}
+explicitly removes a budget.}
+
+\item{final_structure_repair_prefilter_top_k}{Optional cheap surrogate
+prefilter size per repair step before full ESEM objective evaluation. The
+default is 10; \code{Inf} keeps all candidate swaps.}
+
+\item{final_structure_repair_auto_skip_infeasible}{Skip final repair when
+pool-health diagnostics show no semantic-eligible same-factor replacement
+slack or infeasible duplicate constraints.}
 
 \item{validation_data}{Optional item-response dataset for a separate final
 response-data validation fit using the selected items. It does not turn
@@ -443,6 +564,10 @@ system/user only when \code{n.cores = "auto"}.}
 
 \item{max.cores}{Optional user ceiling on effective workers.}
 
+\item{memory_aware}{Whether automatic PSOCK worker planning should cap
+workers using the measured memory budget. Explicit numeric worker requests
+remain user-authoritative.}
+
 \item{seed}{Optional master seed. Ant construction remains serial, while
 expensive task seeds are generated before dispatch so worker scheduling
 does not determine random-number streams.}
@@ -480,6 +605,15 @@ diagnostic rerank/quality bonus to the elite archive. This is a
 multicriteria decision-utility rerank, not Pareto dominance or a
 multiobjective ACO archive. \code{NULL} resolves to \code{TRUE} unless the deprecated
 compatibility alias is supplied.}
+
+\item{preaco_relaxation_level}{Effective content-guard policy inherited from
+factor-pool recovery. Supply one value for all factors or a named value per
+factor. \code{"strict"} retains calibrated forbidden-concept and robust construct-
+mismatch exclusions. \code{"wording_forbidden_relaxed"} relaxes only forbidden-
+concept conflicts for the named recovered factor(s); robust construct
+mismatch and polarity remain hard. Unresolved factor-alignment calibration
+is diagnostic after one bounded top-up refresh rather than an item-level
+exclusion. Direct ACO calls default to \code{"strict"}.}
 
 \item{...}{Additional arguments (unused).}
 }

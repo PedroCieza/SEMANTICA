@@ -19,15 +19,17 @@ semantica_aco_config(
 }
 \description{
 Defines coherent literature-informed ACO search-effort/evidence presets for
-\code{semantica_run()} with additional ACO controls available in \code{semantica_full_pipeline()} and
+\code{semantica_run()} with additional ACO controls available in \code{semantica_run_custom()} and
 \code{ACO_with_ESEM()}.
 }
 \details{
 The standard preset uses 60 ants, 40 non-improvement iterations of patience,
 and a 60-iteration hard ceiling. Fast uses 20 ants and a smaller bounded
-search; full retains the 60-ant base, extends the hard ceiling, and uses a fixed
-five-iteration PFA/ESEM cadence with strict ESEM-parametric DFI. Standard uses a
-fixed ten-iteration ESEM cadence. \code{semantica_full_pipeline()} retains adaptive ESEM scheduling unless explicitly changed.
+search; full retains the 60-ant base, extends the hard ceiling, and uses a
+five-iteration PFA cadence with strict ESEM-parametric DFI. Standard and full
+use entropy-responsive ESEM scheduling from 10- and 5-iteration base cadences,
+respectively. \code{semantica_run_custom()} retains adaptive ESEM scheduling
+unless explicitly changed.
 All modes preserve evidence-stratified archives and canonical reranking.
 }
 \value{A \code{semantica_aco_config} list for \code{semantica_run()}.}

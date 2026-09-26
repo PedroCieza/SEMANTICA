@@ -2,7 +2,7 @@
 #'
 #' SEMANTICA supports semantic-assisted psychometric scale development and
 #' pre-data item screening. Start a scale-development workflow with
-#' [semantica_run()]. Use [semantica_full_pipeline()] when you need finer
+#' [semantica_run()]. Use [semantica_run_custom()] when you need finer
 #' control over configuration or participant-response validation.
 #'
 #' @section Five-minute workflow:
@@ -54,7 +54,7 @@
 #' [semantica_evidence_status()], [semantica_export()], and
 #' [semantica_save_bundle()].
 #'
-#' **Configure further:** [semantica_full_pipeline()] and the
+#' **Configure further:** [semantica_run_custom()] and the
 #' `semantica_*_config()` objects expose additional validation, quality,
 #' compute, and diagnostic settings.
 #'
@@ -71,6 +71,9 @@
 #' [semantica_run()] directly accepts `language`, `response_format`,
 #' `item_style`, `temperature`, and `structured_output`. `aco = "fast"`,
 #' `"standard"`, or `"full"` sets the search effort and evidence cadence.
+#' Its default `seed = "auto"` is recorded in the result; `restarts = "auto"`
+#' compares frozen-pool optimizer starts (1/3/5 for fast/standard/full) and
+#' reports agreement as descriptive optimizer sensitivity, not validation.
 #' `workers = "auto"` uses SEMANTICA's adaptive resource policy.
 #'
 #' @section Backends:
@@ -92,7 +95,7 @@
 #'
 #' @section Participant response data:
 #' Participant-response validation is configured through
-#' [semantica_full_pipeline()] using `validation_data` and, when needed,
+#' [semantica_run_custom()] using `validation_data` and, when needed,
 #' `validation_ordered`. Response-data results are reported as a separate
 #' evidence family. See the user-workflows vignette for the required ID/column
 #' alignment.
@@ -103,7 +106,7 @@
 #' the summary, ACO fitness evolution, BEFORE/AFTER ESEM path views, and PFA
 #' solution plot immediately available. The complete canonical result is
 #' retained under `advanced`, and historical direct component access remains
-#' available for compatibility. Direct [semantica_full_pipeline()] calls keep
+#' available for compatibility. Direct [semantica_run_custom()] calls keep
 #' returning the complete advanced result object. [semantica_view()] provides
 #' grouped navigation over the canonical result, [semantica_items()] returns the
 #' selected scale in a stable table, and `summary(result)` remains the detailed

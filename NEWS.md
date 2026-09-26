@@ -1,4 +1,101 @@
 # SEMANTICA 0.2
+- Refactors final sample-free evidence into explicit validity dimensions: structural reference attainment now comes from the same complete psychometric-guard criteria table used during optimization (including AVE/PFA boundary criteria when active), while content, nomological, criterion, and robustness evidence remain separately labeled. The legacy `proxy_quality$status` is retained for compatibility but no longer implies a global validity verdict.
+- Refactors Pareto finalization and same-factor repair to use one shared selection-objective representation: semantic separation, facet coverage, redundancy control, pool-relative content-breadth preservation, continuous structural-guard attainment, and ESEM fit. The nondominated portfolio is retained; the legacy single choice among nondominated candidates uses the already configured scalar utility instead of a second structural-first hierarchy.
+- Adds pool-relative content-coverage diagnostics that preserve the mean and dispersion of within-factor semantic similarities relative to the actual ACO-eligible pool, alongside facet coverage and duplicate control. No new universal semantic-similarity cutoff or pass/fail content threshold is introduced.
+
+- Fixed the warm-up ESEM archive regression assertion to preserve intentional solution-key names while comparing numeric scores, and reformatted long public signatures so generated Rd usage lines remain portable in PDF manuals.
+
+- Makes automatic ESEM guidance model-matched: when bounded warm-up retries cannot produce a usable ESEM-specific DFI calibration, strict-CFA DFI is retained as a diagnostic only and the ESEM search objective is disabled rather than assigning an arbitrary partial weight.
+- Tries up to three distinct high-scoring warm-up subsets before abandoning bootstrap ESEM calibration, reducing dependence on one nonconvergent warm-up solution.
+- Attenuates active search-time ESEM influence by the cumulative admissible-fit fraction while retaining canonical fixed-weight archive scores for comparability across checkpoints.
+- Allows one bounded PSOCK rebuild per dispatch failure instead of only one rebuild for the entire search; a failed rebuild/retry still falls back serially with unchanged task seeds.
+- Makes final-structure-repair deadlines launch-aware: finite time budgets are checked before every expensive exact fit, preventing a whole parallel batch from starting after the budget is nearly exhausted and reporting actual elapsed time transparently.
+- Elevates representation diagnostics by reporting per-factor raw/centered preprocessing disagreement, robust exclusion rates, within-target provenance, and PFA boundary-loading stability without introducing new validity cutoffs.
+
+- Reclassifies `alignment_unresolved` as factor-level calibration uncertainty rather than item-level invalidity: guard mode now requests at most one targeted refresh per unresolved factor, records persistent uncertainty, and lets the normal slack/redundancy gate decide whether ACO may start.
+- Enriches each broad factor-alignment reference with its declared facet definitions while retaining one prototype per factor, improving facet-specific alignment without creating a multiple-prototype advantage.
+- Fixes pre-ACO recovery errors to render named per-factor policies once instead of vectorizing/concatenating scalar-style policy text.
+- Fixes repeated normalization of named per-factor pre-ACO policies by preserving factor names during coercion; scalar and single-factor compatibility are retained.
+- Restores strict-mode enforcement of the consolidated robust content guard while keeping the documented factor-specific forbidden-conflict relaxation behavior.
+- Excludes `semantica_runs/` and `semantica_embedding_cache/` runtime outputs from source-package builds so running examples from a checkout does not create R CMD check portability/top-level NOTES.
+
+- Makes pre-ACO recovery policy genuinely factor-specific: only factors that
+  remain infeasible after strict top-up advance to the logged forbidden-conflict
+  relaxation rung; healthy factors remain strict throughout ACO and provenance.
+- Adds an explicit `alignment_unresolved` state when a factor has too little
+  positive margin evidence to calibrate mismatch severity. This state is retained
+  as uncertainty metadata and can trigger a bounded targeted refresh without being
+  conflated with a robust item-level mismatch.
+- Calibrates hard forbidden-concept conflicts from factor-specific positive
+  contrast margins instead of treating every negative contrast as equally severe;
+  ordinary small negative contrasts remain diagnostic while robust large conflicts
+  still require raw/centered agreement.
+- Makes search-time PSOCK recovery locale-independent: any dispatch-level error
+  receives one bounded cluster rebuild because ordinary model errors are already
+  captured inside workers; only a failed rebuild/retry falls back serially with
+  unchanged task seeds.
+
+- Unifies factor-pool recovery and ACO under one effective pre-ACO guard
+  policy. A failed strict recovery may now use the documented
+  `wording_forbidden_relaxed` rung, which relaxes forbidden-concept conflicts
+  only; robust construct mismatch and polarity remain hard, and the exact
+  effective policy is propagated into ACO and recorded in provenance.
+- Removes two top-up overgeneration mismatches: recovery now targets
+  `selected + min_slack` rather than rebuilding the entire original raw pool,
+  and ordinary alignment ambiguity no longer triggers regeneration when the
+  same ambiguity is accepted by the robust downstream guard.
+- Removes the default ACO "retain the broader pool" guard fallback. Fail-closed
+  runs use the same guarded candidate set as the pre-ACO invariant; the old
+  broaden-on-shortage behavior remains only behind the explicit compatibility
+  `preaco_feasibility_action = "warn"` path.
+- Full-pipeline runs now preserve the polarity classification already used by
+  top-up, stop before DFI/ACO if bounded recovery is still infeasible, and
+  checkpoint the exact effective constraint level instead of allowing a later
+  strict re-check to contradict the generation-stage decision.
+
+- Corrected the ESEM behavioral-invariant regression so it no longer assumes
+  that uniform between-factor semantic overlap must produce worse item-level
+  ESEM simple structure. With oblique rotation that overlap can be represented
+  by latent-factor correlations. The test now verifies the scorer's guaranteed
+  structural-decomposition invariants, while the existing semantic and PFA
+  controls retain the directional separability checks.
+
+- Corrected the ESEM positive-control regression to test the dedicated structural component rather than requiring the default fit/AVE/loading scalar objective to rank every clean control above every admissible overlapping control. This preserves the production objective and tests the structural property the regression actually names.
+
+## Audit hardening and pre-release safety
+
+- Fix the multidimensional content-coverage regression fixture to assign matrix dimnames after `diag()`, matching base R's API; production selection and evidence calculations are unchanged.
+
+- Adds a deterministic lavaan transport-name adapter for ESEM so external item
+  and factor labels no longer enter lavaan syntax verbatim. Safe existing IDs
+  remain unchanged; unsafe or colliding labels receive private internal names
+  and fitted observed-variable matrices are mapped back before SEMANTICA
+  scoring and diagnostics.
+- Validates `i.per.f` through one shared fail-fast validator at the generation,
+  full-pipeline, and optimizer boundaries, including rejection of duplicate
+  factor names before expensive work begins.
+- Hardens credential routing: registered OpenAI/Anthropic/Groq keys are not
+  forwarded to a changed endpoint origin without explicit opt-in, and
+  credentials are refused over non-loopback HTTP unless explicitly enabled.
+  Loopback HTTP remains supported for local inference services, and explicit
+  custom HTTPS backend contracts remain supported.
+- Updates the built-in Groq developer default to `openai/gpt-oss-120b` while
+  preserving explicitly requested model IDs exactly; SEMANTICA does not
+  silently substitute a different model for an explicit request.
+- Documents that bundle checksum verification occurs after RDS deserialization
+  and therefore does not authenticate an untrusted serialized object.
+- Fixes the `Regime` global-variable declaration used by fitness plots and
+  points the README release badge at the repository's existing release
+  validation workflow.
+- Adds focused regression tests for the transport-name boundary, early factor
+  validation, credential routing, and Groq default/explicit-model behavior.
+- Aligns optimizer/ESEM/resource regression fixtures with the new hard pre-ACO
+  feasibility contract: tests unrelated to pool failure now use overinclusive,
+  non-redundant synthetic pools, while the historical near-duplicate resource
+  fixture is retained specifically to verify that the new gate rejects it.
+- The package version remains `0.2` in this working line. Historical higher
+  version-like NEWS headings are retained unchanged rather than being
+  renumbered without an explicit release-version decision.
 
 ## Development documentation and Unsloth local-provider notes
 
@@ -10,11 +107,13 @@
   embedding endpoint for SEMANTICA to advertise safely. Full workflows should
   pair Unsloth with an embedding backend such as Ollama, OpenAI,
   `generic_openai`, `python_hf`, or `python_llamacpp`.
-- Records the non-destructive follow-up plan from the package review: repair
-  the source-mode installed-help test, align version/release narrative, fix the
-  README pkgdown badge or workflow target, improve optional `torch` runtime
-  diagnostics, and avoid refactoring the large optimizer core without
-  characterization tests.
+- Makes the documentation-alias regression test work in both source and
+  installed-package check contexts by querying the installed help database
+  instead of assuming `DESCRIPTION` and `man/` are present beside the tests.
+- Keeps the remaining non-destructive follow-up plan focused on aligning the
+  release-version narrative when a version decision is made, improving optional
+  `torch` runtime diagnostics, and avoiding a large optimizer-core refactor
+  without characterization tests.
 - No ACO/PFA/ESEM equations, item-selection objective, embedding mathematics,
   RNG policy, resource policy, serialization contract, or participant-response
   validation calculation is changed by these documentation notes.
@@ -37,11 +136,11 @@
 ## Core plots retained in high-level results
 
 - Extends the high-level result surface only: no ACO, ESEM, PFA, embedding, item-selection, scoring, evidence, RNG, resource, or backend calculation is changed.
-- The default `semantica_full_pipeline()` plot level now retains a compact five-plot report set under `$plots`: `plot_summary_of_results`, `plot_fitness_evolution`, `plot_esem_before`, `plot_esem_after`, and `plot_pfa_diagnostics`.
+- The default `semantica_run_custom()` plot level now retains a compact five-plot report set under `$plots`: `plot_summary_of_results`, `plot_fitness_evolution`, `plot_esem_before`, `plot_esem_after`, and `plot_pfa_diagnostics`.
 - Reuses the already-established visualization functions (`plot_fitness_evolution()`, `plot_esem_path_diagrams()`, `plot_pfa_diagnostics()`, and `plot_summary_of_results()`) rather than introducing parallel plotting logic.
 - Keeps the default BEFORE path panel on the established fast sample-free proxy representation. A new full-pool ESEM is not fitted merely to populate the result wrapper; the existing explicit `before_path_model = "refit"` advanced option remains available.
 - `semantica_run()` now exposes a sixth regular-user group, `$plots`, alongside `scale`, `items`, `diagnostics`, `provenance`, and `advanced`. The complete canonical result remains under `$advanced`.
-- Direct `semantica_full_pipeline()` results expose the same five core plots at `$plots` with the default `plots = semantica_plot_config(level = "summary")`; `level = "full"` continues to retain the complete visualization set and `level = "none"` disables plot generation.
+- Direct `semantica_run_custom()` results expose the same five core plots at `$plots` with the default `plots = semantica_plot_config(level = "summary")`; `level = "full"` continues to retain the complete visualization set and `level = "none"` disables plot generation.
 - Saving at the summary plot level now saves the same core report plot set through the existing plot manifest/save machinery.
 
 # SEMANTICA 0.5.8.2
@@ -52,7 +151,7 @@
 - Preserves the complete canonical full-pipeline result unchanged under `$advanced`; no analytical component is deleted, renamed, recomputed, or simplified.
 - Consequently, `names(result)` and `length(result)` intentionally describe the five regular-user groups; use `names(result$advanced)` / `length(result$advanced)` when code needs the canonical top-level inventory.
 - Keeps historical direct access such as `result$optimization`, `result$fit_indices`, `result[["esem_state"]]`, and character-name subsetting through compatibility accessors, reducing breakage for existing scripts.
-- Direct `semantica_full_pipeline()` output is intentionally unchanged and continues to expose the complete advanced result object directly.
+- Direct `semantica_run_custom()` output is intentionally unchanged and continues to expose the complete advanced result object directly.
 - `semantica_view(..., view = "raw")` now explicitly returns the canonical result (`result$advanced` for regular-interface results), while the advanced component map is built from that canonical object rather than from the five facade groups.
 - `semantica_result_info()` distinguishes the visible facade size from the retained canonical component count.
 - Participant-response attachment and bundle save/load unwrap and re-wrap the regular-user facade at their boundaries so validation, serialization integrity, and canonical evidence storage remain unchanged.
@@ -74,7 +173,7 @@ No ACO scoring, pheromone update, archive logic, item generation, embedding, sem
 ## Result-surface quality-of-life release
 
 - Adds `semantica_view()` as a read-only result facade so completed runs no longer require users to navigate dozens of top-level list components for routine interpretation.
-- The default view is interface-aware: results created through `semantica_run()` open as a compact scale/review view, while direct `semantica_full_pipeline()` results open as a nine-section advanced component map.
+- The default view is interface-aware: results created through `semantica_run()` open as a compact scale/review view, while direct `semantica_run_custom()` results open as a nine-section advanced component map.
 - The advanced map groups every retained top-level component into `scale`, `generation`, `content`, `semantic`, `structural`, `optimization`, `evidence`, `outputs`, or `provenance`; requesting a section returns those original stored components without recomputation. No component is removed from or renamed inside the canonical result object.
 - Compact views foreground what a scale developer usually needs first: selected wording, dimensionality, factor count, best observed objective, participant-data status, reporting-level review flags, factor review, evidence status, and model identity.
 - `print(result)` now delegates to the interface-aware facade while `summary(result)` remains the detailed diagnostic report. `semantica_items()`, `semantica_diagnostics()`, `semantica_provenance()`, bundle serialization, and direct `$` access remain unchanged.
@@ -183,7 +282,7 @@ No ACO scoring, pheromone logic, semantic objective, embedding computation, PFA,
 ## Generation reproducibility and provenance hardening
 
 - Adds backend-aware generation seeding without changing SEMANTICA's analysis objectives. A run master seed is now inherited by LLM generation in the high-level pipeline; for Ollama, SEMANTICA derives deterministic per-call task seeds and forwards them through the documented `options$seed` contract. Unsupported generation protocols are explicitly recorded as uncontrolled rather than silently treated as reproducible.
-- Keeps the new lower-level `generation_seed` control name-only after `...`, preserving the complete positional argument order of existing `semantica_pipeline()` and `semantica_full_pipeline_custom()` calls. `semantica_generate_items()` adds `seed` only as a trailing optional argument.
+- Keeps the new lower-level `generation_seed` control name-only after `...`, preserving the complete positional argument order of existing `semantica_pipeline()` calls. `semantica_generate_items()` adds `seed` only as a trailing optional argument.
 - Derives generation task seeds from a stable hash of the master seed and generation-unit identity rather than consuming caller RNG state. This preserves SEMANTICA's existing RNG isolation while giving distinct factors/retries distinct deterministic seeds.
 - Adds `semantica-generation-provenance-v1`: per-call prompt fingerprints, task-seed ledger, generation contract fingerprint, exact retained item-pool fingerprint, backend seed-control mechanism/status, and downstream content-screening state. The provenance record is propagated through `semantica_pipeline()`, full-pipeline reproducibility metadata, and the casual-run configuration.
 - Clarifies the generation stage as candidate production rather than construct validation. Console output now says `Retained ... generated candidates (pre-alignment)` and explicitly records that parsing/lexical curation precede downstream construct-definition screening. No generated item is declared content-valid merely because it survived generation-stage curation.
@@ -310,13 +409,13 @@ No ACO scoring, pheromone logic, semantic objective, embedding computation, PFA,
 - One-factor structural screening now combines loading strength, AVE-like semantic proxy information, residual reproduction, centered residual-dependence summaries, descriptive eigenvalue dominance, and proxy-N sensitivity. These remain sample-free semantic proxies and are not participant-based tests of unidimensionality.
 - Semantic ACO scoring renormalizes over evidence components that actually exist; absence of between-factor pairs no longer dilutes a one-factor semantic objective.
 - Legacy/full result reports now use the same one-factor evidence semantics, avoiding favorable zeros or comparative language for quantities that are undefined in a unidimensional model.
-- Multidimensional `semantica_run()` and advanced `semantica_full_pipeline()` behavior remain unchanged except for additive reporting support needed to represent dimensionality correctly.
+- Multidimensional `semantica_run()` and advanced `semantica_run_custom()` behavior remain unchanged except for additive reporting support needed to represent dimensionality correctly.
 
 # SEMANTICA 0.4.0
 
 ## Casual-user pipeline and literature-informed ACO presets
 
-- Adds `semantica_run()`, a thin progressive-disclosure wrapper around `semantica_full_pipeline()`. The wrapper simplifies configuration only; it delegates all analytical work to the established full pipeline and preserves representation diagnostics, duplicate feasibility, evidence-stratified archives, canonical finalist reranking, PFA/ESEM diagnostics, and evidence/provenance boundaries.
+- Adds `semantica_run()`, a thin progressive-disclosure wrapper around `semantica_run_custom()`. The wrapper simplifies configuration only; it delegates all analytical work to the established full pipeline and preserves representation diagnostics, duplicate feasibility, evidence-stratified archives, canonical finalist reranking, PFA/ESEM diagnostics, and evidence/provenance boundaries.
 - Adds `semantica_aco_config()` with `fast`, `standard`, and `full` evidence/resource profiles. The presets are literature-informed rather than presented as universally optimal: psychometric ACO work commonly uses colony sizes from roughly 20 to 60+ ants, recommends increasing effort with the search space, and illustrates 60 ants with a 40-iteration non-improvement rule.
 - `fast` uses semantic + ESEM evidence during ACO; PFA remains enabled for final diagnostics but does not guide search. `standard` uses objective-mode PFA every 5 iterations and ESEM every 10. `full` uses PFA and ESEM every 5 iterations and enables strict ESEM-parametric DFI calibration.
 - The casual interface fixes PFA search/final extraction at ML, rotation at oblimin, and failure policy at `semantic_fallback`; ESEM uses `proxy_reference_n = "auto"`, geomin rotation, structure-weighted scoring, and semantic fallback. These choices affect only `semantica_run()` presets and do not change advanced API defaults.
@@ -436,7 +535,7 @@ No ACO scoring, pheromone logic, semantic objective, embedding computation, PFA,
 - Skips response-validation-N planning by default when the selected semantic-proxy ESEM is structurally inadmissible; `validation_planning_on_inadmissible = "run"` retains the legacy sensitivity calculation when deliberately requested.
 - Adds finite-pool random-overlap references for raw-vs-mean-centered top-pair sensitivity. Agreement at/below that reference produces an explicit representation-sensitivity warning without automatically changing cosine preprocessing.
 - Keeps pair-sampling stability and representation-preprocessing stability conceptually separate in summaries.
-- Redesigns the package help around the recommended workflow: construct definition -> configuration builders -> `semantica_full_pipeline()` -> interpretation. Lower-level generation, embedding, optimizer, plotting, and research APIs remain documented and exported but are clearly labeled advanced/component interfaces rather than mandatory steps.
+- Redesigns the package help around the recommended workflow: construct definition -> configuration builders -> `semantica_run_custom()` -> interpretation. Lower-level generation, embedding, optimizer, plotting, and research APIs remain documented and exported but are clearly labeled advanced/component interfaces rather than mandatory steps.
 - Adds `_pkgdown.yml` reference groups so website users see the main workflow/configuration functions first and advanced/research helpers separately.
 - Rewrites the main workflow vignette and expands configuration documentation with accepted values, precedence rules, evidence boundaries, and safe defaults.
 - Adds 0.2.7 regression tests covering model-relative cohesion targets, conservative alignment decisions, repeated ESEM checkpoints after fallback, one-refit-per-archive-finalist behavior, adaptive-pool target calibration, validation-N skip policy, and rank-relative representation sensitivity.
@@ -507,3 +606,14 @@ No ACO scoring, pheromone logic, semantic objective, embedding computation, PFA,
 # SEMANTICA 0.1.0
 
 * Initial release.
+
+- Internal provider generation now uses capability-driven reasoning-model handling, strict schema output where declared by the provider, mutable session-local rate-limit telemetry, and explicit zero-yield/failure diagnostics without changing psychometric calculations or public APIs.
+
+## Scientific admissibility hardening (2026-09-22)
+
+* `content_alignment_mode = "guard"` is now fail-closed when definition-alignment evidence cannot be computed or is absent at pre-ACO time.
+* Added hard facet-blueprint constraints (`facet_constraint_mode`, `facet_min_per_facet`, `facet_max_imbalance`) alongside the existing soft facet-coverage objective. Standard quality uses facet presence; strict quality uses balanced facet representation; lenient retains soft-only behavior.
+* Added `psychometric_guard_action`; explicit structural thresholds now resolve to final admissibility under `"auto"`, while `"penalty"` remains available for legacy behavior.
+* Final repair filters swaps that would violate active facet constraints before launching expensive ESEM refits.
+* Embedding cache identity now includes the declared/expected embedding dimension, and incompatible cached vector dimensions are invalidated as misses.
+* Content evidence reporting now distinguishes pool-relative coverage from unavailable item-to-definition alignment.

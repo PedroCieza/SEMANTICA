@@ -130,7 +130,7 @@ test_that("strict-CFA simulation fallback receives the configured workers", {
   local_mocked_bindings(
     safe_compute_dfi = function(...) {
       args <- list(...)
-      captured_workers <<- args[[18L]]
+      captured_workers <<- args$sim_cores
       list(
         cfi = 0.95, tli = 0.94, rmsea = 0.06, srmr = 0.06,
         was_degenerate = FALSE
@@ -245,6 +245,78 @@ test_that("failed cluster shutdown retains the nesting guard", {
   )
 
   expect_false(SEMANTICA:::.semantica_stop_cluster(cluster))
+  expect_true(exists(token, envir = active, inherits = FALSE))
+})
+
+test_that("forced reset kills owned worker nodes before unregistering", {
+  skip_if_not_installed("parallelly")
+  active <- SEMANTICA:::.semantica_pool_registry$active
+  token <- "unit_test_force_reset"
+  had <- exists(token, envir = active, inherits = FALSE)
+  previous <- if (had) get(token, envir = active, inherits = FALSE) else NULL
+  on.exit({
+    if (had) assign(token, previous, envir = active)
+    else if (exists(token, envir = active, inherits = FALSE)) rm(list = token, envir = active)
+  }, add = TRUE)
+  fake_cluster <- structure(
+    list(worker_1 = structure(list(), class = "SOCKnode"),
+         worker_2 = structure(list(), class = "SOCKnode")),
+    class = "cluster"
+  )
+  assign(
+    token,
+    list(cluster = fake_cluster, owner_pid = Sys.getpid(), created_at = Sys.time()),
+    envir = active
+  )
+  killed <- 0L
+  local_mocked_bindings(
+    .semantica_reap_stale_pools = function(timeout = 0.25) character(0L),
+    .semantica_stop_psock_cluster = function(cluster) stop("simulated shutdown failure"),
+    .semantica_kill_cluster_nodes = function(cluster) {
+      killed <<- length(cluster)
+      TRUE
+    },
+    .package = "SEMANTICA"
+  )
+
+  out <- semantica_reset_resources(force = TRUE)
+
+  expect_equal(killed, 2L)
+  expect_true(token %in% out$stopped)
+  expect_false(exists(token, envir = active, inherits = FALSE))
+})
+
+test_that("forced reset keeps the nesting guard when any worker kill fails", {
+  skip_if_not_installed("parallelly")
+  active <- SEMANTICA:::.semantica_pool_registry$active
+  token <- "unit_test_partial_force_reset"
+  had <- exists(token, envir = active, inherits = FALSE)
+  previous <- if (had) get(token, envir = active, inherits = FALSE) else NULL
+  on.exit({
+    if (had) assign(token, previous, envir = active)
+    else if (exists(token, envir = active, inherits = FALSE)) rm(list = token, envir = active)
+  }, add = TRUE)
+  fake_cluster <- structure(
+    list(worker_1 = structure(list(), class = "SOCKnode"),
+         worker_2 = structure(list(), class = "SOCKnode")),
+    class = "cluster"
+  )
+  assign(
+    token,
+    list(cluster = fake_cluster, owner_pid = Sys.getpid(), created_at = Sys.time()),
+    envir = active
+  )
+  local_mocked_bindings(
+    .semantica_reap_stale_pools = function(timeout = 0.25) character(0L),
+    .semantica_stop_psock_cluster = function(cluster) stop("simulated shutdown failure"),
+    .semantica_kill_cluster_nodes = function(cluster) FALSE,
+    .semantica_pool_entry_alive = function(entry, timeout = 0.25) TRUE,
+    .package = "SEMANTICA"
+  )
+
+  out <- semantica_reset_resources(force = TRUE)
+
+  expect_true(token %in% out$failed)
   expect_true(exists(token, envir = active, inherits = FALSE))
 })
 

@@ -47,7 +47,7 @@ test_that("multidimensional semantic target band remains backward compatible", {
   expect_true(is.finite(out$mean_between))
 })
 
-test_that("fixed casual ESEM cadence is exact while advanced adaptive cadence is preserved", {
+test_that("casual standard/full ESEM cadence responds to search entropy", {
   expect_identical(
     SEMANTICA:::.semantica_resolve_esem_interval(10L, 0.80, mode = "fixed"),
     10L
@@ -57,14 +57,14 @@ test_that("fixed casual ESEM cadence is exact while advanced adaptive cadence is
     8L
   )
   expect_identical(semantica_esem_config()$cadence_mode, "adaptive")
-  expect_identical(semantica_aco_config("standard")$esem_cadence_mode, "fixed")
-  expect_identical(semantica_aco_config("full")$esem_cadence_mode, "fixed")
+  expect_identical(semantica_aco_config("standard")$esem_cadence_mode, "adaptive")
+  expect_identical(semantica_aco_config("full")$esem_cadence_mode, "adaptive")
 })
 
-test_that("casual wrapper delegates fixed ESEM cadence and records it", {
+test_that("casual wrapper delegates adaptive ESEM cadence and records it", {
   captured <- NULL
   local_mocked_bindings(
-    semantica_full_pipeline = function(...) {
+    semantica_run_custom = function(...) {
       captured <<- list(...)
       structure(list(reproducibility = list()), class = c("semantica_full_pipeline_result", "list"))
     },
@@ -77,9 +77,9 @@ test_that("casual wrapper delegates fixed ESEM cadence and records it", {
     llm = "ollama", aco = "standard", verbose = FALSE
   )
 
-  expect_identical(captured$esem$cadence_mode, "fixed")
+  expect_identical(captured$esem$cadence_mode, "adaptive")
   expect_identical(captured$esem_every, 10L)
-  expect_identical(result$run_config$esem_cadence_mode, "fixed")
+  expect_identical(result$run_config$esem_cadence_mode, "adaptive")
 })
 
 test_that("one-factor stochastic superiority preserves within-pair provenance", {

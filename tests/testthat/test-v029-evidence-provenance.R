@@ -78,7 +78,7 @@ test_that("model identity provenance does not invent immutable revisions", {
 
 test_that("simplified pipeline records sanitized effective configuration", {
   local_mocked_bindings(
-    semantica_full_pipeline_custom = function(...) {
+    .semantica_execute_pipeline = function(...) {
       list(
         reproducibility = list(
           models = list(
@@ -113,8 +113,15 @@ test_that("simplified pipeline records sanitized effective configuration", {
     plots = semantica_plot_config(level = "none"),
     verbose = FALSE
   )
-  out <- do.call(semantica_full_pipeline, args)
+  out <- do.call(semantica_run_custom, args)
 
+  expect_s3_class(out, "semantica_run_result")
+  expect_identical(
+    names(unclass(out)),
+    c("scale", "items", "diagnostics", "plots", "provenance", "advanced")
+  )
+  expect_true(is.list(out$advanced))
+  expect_identical(SEMANTICA:::.semantica_result_interface(out), "regular")
   expect_identical(out$reproducibility$resolved_config_schema,
                    "semantica-resolved-config-1")
   expect_true(is.list(out$reproducibility$resolved_config))
@@ -129,11 +136,13 @@ test_that("simplified pipeline records sanitized effective configuration", {
     1L
   )
 
-  out2 <- do.call(semantica_full_pipeline, args)
+  out2 <- do.call(semantica_run_custom, args)
   expect_identical(out$reproducibility$resolved_config,
                    out2$reproducibility$resolved_config)
   expect_identical(out$reproducibility$resolved_config_hash,
                    out2$reproducibility$resolved_config_hash)
+  expect_false(exists("semantica_full_pipeline", envir = asNamespace("SEMANTICA"), inherits = FALSE))
+  expect_false(exists("semantica_full_pipeline_custom", envir = asNamespace("SEMANTICA"), inherits = FALSE))
 })
 
 test_that("preregistration manifest builder is deterministic for explicit inputs", {

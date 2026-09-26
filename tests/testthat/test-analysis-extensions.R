@@ -26,6 +26,64 @@ test_that("construct blueprints expose missing facet coverage", {
   expect_equal(out$coverage_table$coverage[out$coverage_table$factor == "B"], 1)
 })
 
+test_that("construct graphs preserve deterministic vertex and edge data", {
+  blueprint <- semantica_construct_blueprint(
+    factors = list(
+      A = list(description = "A", facets = list(core = list(), applied = list())),
+      B = list(description = "B")
+    ),
+    exclusions = list(A = "overlap", B = "spillover")
+  )
+  items <- data.frame(
+    item_id = c("a1", "b1", "a2"),
+    factor = c("A", "B", "A"),
+    Facet = c("core", NA_character_, "emergent"),
+    item_text = c("A core item", "B item", "A emergent item"),
+    stringsAsFactors = FALSE
+  )
+
+  graph <- semantica_construct_graph(blueprint, items)
+
+  expect_true(igraph::is_directed(graph))
+  expected_vertices <- data.frame(
+    name = c(
+      "factor::A", "facet::A::core", "facet::A::applied",
+      "exclusion::A::overlap", "factor::B", "exclusion::B::spillover",
+      "item::a1", "item::b1", "item::a2", "facet::A::emergent"
+    ),
+    node_type = c(
+      "factor", "facet", "facet", "exclusion", "factor", "exclusion",
+      "item", "item", "item", "facet"
+    ),
+    label = c(
+      "A", "core", "applied", "overlap", "B", "spillover",
+      "A core item", "B item", "A emergent item", "emergent"
+    ),
+    stringsAsFactors = FALSE
+  )
+  rownames(expected_vertices) <- expected_vertices$name
+  expect_identical(igraph::as_data_frame(graph, what = "vertices"), expected_vertices)
+  expect_identical(
+    igraph::as_data_frame(graph, what = "edges"),
+    data.frame(
+      from = c(
+        "factor::A", "factor::A", "factor::A", "factor::B",
+        "facet::A::core", "factor::B", "facet::A::emergent"
+      ),
+      to = c(
+        "facet::A::core", "facet::A::applied", "exclusion::A::overlap",
+        "exclusion::B::spillover", "item::a1", "item::b1", "item::a2"
+      ),
+      relation = c(
+        "requires_facet", "requires_facet", "exclude_or_discriminate",
+        "exclude_or_discriminate", "represented_by_item", "represented_by_item",
+        "represented_by_item"
+      ),
+      stringsAsFactors = FALSE
+    )
+  )
+})
+
 test_that("polarity screening flags overt negation conservatively", {
   x <- data.frame(item_id=c("a","b"), item_text=c("I feel capable", "I do not feel capable"))
   out <- semantica_polarity_diagnostics(x)
@@ -45,6 +103,23 @@ test_that("empirical calibration predicts a bounded symmetric matrix", {
   expect_equal(unname(diag(out)), rep(1,5))
   expect_equal(out, t(out), tolerance=1e-12)
   expect_true(all(out >= -.999 & out <= 1))
+})
+
+test_that("isotonic empirical calibration handles constant semantic predictors", {
+  ids <- paste0("i", 1:4)
+  s <- matrix(.30, 4L, 4L, dimnames = list(ids, ids))
+  diag(s) <- 1
+  r <- diag(1, 4L)
+  r[lower.tri(r)] <- c(.10, .20, .30, .40, .50, .60)
+  r[upper.tri(r)] <- t(r)[upper.tri(r)]
+  dimnames(r) <- list(ids, ids)
+
+  fit <- semantica_fit_empirical_calibration(s, response_matrix = r, method = "isotonic")
+  pred <- predict(fit, c(.30, .35))
+
+  expect_s3_class(fit, "semantica_empirical_calibration")
+  expect_true(all(is.finite(pred)))
+  expect_equal(pred[[1L]], pred[[2L]])
 })
 
 test_that("representation ensemble and signed matrix preserve geometry contracts", {
