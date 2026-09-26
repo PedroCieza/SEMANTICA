@@ -103,9 +103,13 @@ test_that("PFA diagnostics report and score boundary-loading penalties", {
 })
 
 test_that("ML promax PFA preserves oblique factor correlations", {
-  lambda <- matrix(0, nrow = 8L, ncol = 2L)
-  lambda[1:4, 1L] <- .90
-  lambda[5:8, 2L] <- .90
+  # Unequal primary loadings and small cross-loadings avoid the exact rotational
+  # symmetry of an equal-loading simple-structure population. That symmetry can
+  # yield numerically equivalent promax axes with different factor correlations
+  # across supported BLAS implementations.
+  lambda <- matrix(.05, nrow = 8L, ncol = 2L)
+  lambda[1:4, 1L] <- c(.95, .85, .75, .65)
+  lambda[5:8, 2L] <- c(.92, .82, .72, .62)
   phi_pop <- matrix(c(1, .60, .60, 1), 2L, 2L)
   common <- lambda %*% phi_pop %*% t(lambda)
   cor_mat <- common
