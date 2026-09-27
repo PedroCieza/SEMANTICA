@@ -13,6 +13,12 @@ jobs:
     runs-on: ubuntu-latest
     env:
       R_KEEP_PKG_SOURCE: yes
+      # `dynamic` is intentionally installed from GitHub until it is published
+      # on CRAN. Skip only CRAN incoming-feasibility checks, which necessarily
+      # warn about that non-CRAN strong dependency; all other check warnings
+      # remain fatal below.
+      _R_CHECK_CRAN_INCOMING_: "false"
+      _R_CHECK_CRAN_INCOMING_REMOTE_: "false"
 
     steps:
       - uses: actions/checkout@v7
