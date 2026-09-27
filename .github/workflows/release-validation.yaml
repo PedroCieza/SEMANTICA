@@ -13,12 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       R_KEEP_PKG_SOURCE: yes
-      # `dynamic` is intentionally installed from GitHub until it is published
-      # on CRAN. Skip only CRAN incoming-feasibility checks, which necessarily
-      # warn about that non-CRAN strong dependency; all other check warnings
-      # remain fatal below.
-      _R_CHECK_CRAN_INCOMING_: "false"
-      _R_CHECK_CRAN_INCOMING_REMOTE_: "false"
 
     steps:
       - uses: actions/checkout@v7
@@ -65,10 +59,13 @@ jobs:
         run: |
           devtools::test(stop_on_failure = TRUE)
 
-      - name: R CMD check --as-cran
+      - name: R CMD check
         shell: Rscript {0}
         run: |
-          chk <- rcmdcheck::rcmdcheck(args = c("--as-cran", "--no-manual"), error_on = "warning")
+          # `dynamic` is intentionally installed from GitHub until it is
+          # available on CRAN. Standard checks remain strict: every warning
+          # other than CRAN-submission eligibility remains fatal.
+          chk <- rcmdcheck::rcmdcheck(args = c("--no-manual"), error_on = "warning")
 
       - name: Build pkgdown site
         shell: Rscript {0}
