@@ -36,6 +36,7 @@ reference:
   - semantica_evidence_status
   - semantica_config
   - semantica_models
+  - semantica_condition_info
 
 - title: "Plot, export, save, and resume"
   contents:
@@ -68,6 +69,8 @@ reference:
   - semantica_diagnostics_config
   - semantica_plot_config
   - semantica_construct_blueprint
+  - semantica_evaporation_config
+  - print.semantica_config
 
 - title: "Existing item pools and external embeddings"
   desc: >
@@ -75,8 +78,11 @@ reference:
   contents:
   - semantica_import_embeddings
   - semantica_connect
+  - print.semantica_session
   - semantica_backend_preflight
   - semantica_embed
+  - semantica_embedding_spec
+  - semantica_cosine_context
   - semantica_standardize_item_metadata
   - semantica_wrap
   - ACO_with_ESEM
@@ -88,7 +94,9 @@ reference:
   - SEMANTICA_BACKENDS
   - semantica_backend_spec
   - semantica_capabilities
+  - print.semantica_capabilities
   - semantica_resource_plan
+  - print.semantica_resource_plan
   - semantica_embedding_cache_config
   - semantica_setup_conda
   - semantica_activate_conda
@@ -119,6 +127,7 @@ reference:
   - semantica_calibrate_similarity_thresholds
   - semantica_fit_empirical_calibration
   - semantica_apply_empirical_calibration
+  - predict.semantica_empirical_calibration
   - semantica_leave_one_scale_out_calibration
   - semantica_benchmark_matrix_prediction
   - semantica_compare_selection_methods
@@ -132,6 +141,13 @@ reference:
   - semantica_scale_fingerprint
   - semantica_compare_scale_versions
   - semantica_cross_language_equivalence
+  - semantica_cluster_consensus
+  - semantica_compare_embedding_representations
+  - semantica_semantic_discrimination
+  - semantica_exact_semantic_reference
+  - semantica_pfa_esem_discrepancy
+  - semantica_esem_state
+  - semantica_esem_telemetry
   - semantica_expert_review_queue
   - semantica_suggest_coverage_prompts
   - semantica_preregistration_manifest
@@ -161,6 +177,7 @@ articles:
   contents:
   - semantica-workflow
   - semantica-user-workflows
+  - function-reference
 - title: "Understand and troubleshoot"
   contents:
   - semantica-glossary
