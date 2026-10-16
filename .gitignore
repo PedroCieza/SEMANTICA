@@ -39,3 +39,6 @@ SEMANTICA_frozen_*_test/
 semantica_bug_confirmation/
 semantica_runs/
 semantica_embedding_cache/
+
+# Generated HEXACO Monte Carlo study artifacts
+simulation_results/

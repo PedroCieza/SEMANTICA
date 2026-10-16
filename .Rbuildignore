@@ -51,3 +51,11 @@
 ^semantica_embedding_cache$
 ^semantica_bug_confirmation$
 ^TECHNICAL_AUDIT\.md$
+^simulation_results$
+
+# Local embedding-integrity verification artifacts.
+^audit-verification$
+
+# Interrupted R workspace saves are local analysis data, never package source.
+^\.RDataTmp$
+^semantica_checkpoints$

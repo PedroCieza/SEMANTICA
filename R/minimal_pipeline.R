@@ -5,6 +5,175 @@
 # analytical engine remains semantica_run_custom(); semantica_run() delegates
 # to it so the main and extended interfaces remain on the same pipeline.
 
+.semantica_console_language <- function(console_language = c("English", "Spanish")) {
+  match.arg(console_language, c("English", "Spanish"))
+}
+
+.semantica_console_text <- function(console_language, key, ...) {
+  console_language <- .semantica_console_language(console_language)
+  catalog <- list(
+    English = list(
+      run_unidimensional = paste0(
+        "[SEMANTICA] Unidimensional model detected: using the established one-factor branch; ",
+        "PFA partition recovery, HTMT, and between-factor separation are not applicable."
+      ),
+      run_starting = "[SEMANTICA] Starting %s: %d factor(s), %d retained candidates, ~%d raw-generation target, %d final items.",
+      run_progress_mode = "[SEMANTICA] Progress mode is concise. Use progress = 'detailed' for component-level telemetry.",
+      run_complete = "[SEMANTICA] Complete: %d final item(s) selected.",
+      run_restarts = "[SEMANTICA] Optimizer restarts: %s (%d successful start(s)).",
+      run_result_surface = "[SEMANTICA] Result surface: $scale | $items | $diagnostics | $plots | $provenance | $advanced",
+      run_next = "[SEMANTICA] Next: summary(result) | plot(result) | semantica_save_bundle(result, path)",
+      resource_plan_title = "<semantica_resource_plan>\n",
+      resource_parallel_disabled = "%s (parallel disabled)",
+      resource_requested = "  Requested workers   : %s\n",
+      resource_available = "  Available to R      : %s\n",
+      resource_coordinator = "  Coordinator budget  : %d\n",
+      resource_reserved = "  Reserved (auto)     : %d\n",
+      resource_effective = "  Effective workers   : %d\n",
+      resource_physical_cap = "  Physical-core cap   : %d worker(s)\n",
+      resource_memory_cap = "  Memory-aware cap    : %d (%s)\n",
+      resource_auto_cap = "  Auto safety cap     : CPU allocation with coordinator/reserve accounting\n",
+      resource_parallel_backend = "  Parallel backend    : %s\n",
+      resource_blas_threads = "  Worker BLAS threads : %s\n",
+      resource_measured = "measured",
+      resource_not_applicable = "not applicable",
+      custom_resource_plan = "\n[SEMANTICA] Resolved resource plan before expensive execution:\n",
+      custom_cosine_device = "  Cosine device       : %s (lavaan remains on CPU)\n",
+      custom_default_items = "[FULL PIPELINE] i.per.f not specified. Defaulting to 3 items per factor.",
+      custom_step_generation = "\n[SEMANTICA] Step 1/3: LLM Generation & Semantic Embedding...\n",
+      custom_pool_thresholds = "[SEMANTICA] Experimental pool-relative thresholds: redundancy %.3f | duplicate %.3f\n",
+      custom_step_optimization = "\n[SEMANTICA] Step 2/3: ACO-ESEM Optimization...\n",
+      custom_semantic_summary = "\n[SEMANTICA] Semantic Similarity Change Summary:\n",
+      custom_semantic_within = "  Within-factor : %.4f -> %.4f | change = %+.4f",
+      custom_semantic_percent = " (%+.2f%%)",
+      custom_semantic_target = "  Within target : %.4f +/- %.4f | deviation %.4f -> %.4f | %s\n",
+      custom_semantic_between = "  Between-factor: %.4f -> %.4f | change = %+.4f\n",
+      custom_semantic_gap = "  Separation gap: %.4f -> %.4f | change = %+.4f\n",
+      custom_semantic_composite = "  Composite index: %.4f -> %.4f | change = %+.4f\n",
+      custom_semantic_interpretation = "  Interpretation: %s\n",
+      custom_target_inside = "inside target band",
+      custom_target_outside = "outside target band",
+      custom_separation_improved = "Relative within-versus-between semantic separation improved%s.",
+      custom_separation_weakened = "Relative within-versus-between semantic separation weakened%s.",
+      custom_separation_unchanged = "Relative within-versus-between semantic separation was unchanged%s.",
+      custom_cohesion_guard = "; within-factor cohesion remained %s",
+      custom_separation_unavailable = "Relative separation could not be computed; inspect the available cohesion diagnostics.",
+      custom_separation_insufficient = "Could not compute (insufficient items)",
+      custom_facet_pfa_available = "\n[SEMANTICA] Facet/unit PFA: score=%.4f | recovery=%.4f | clarity=%.4f\n",
+      custom_facet_pfa_unavailable = "\n[SEMANTICA] Facet/unit PFA %s: %s\n",
+      custom_unit_skipped = "skipped",
+      custom_unit_unavailable = "unavailable",
+      custom_unit_insufficient = "insufficient facet/unit structure",
+      custom_generation_provenance = "\n[SEMANTICA] Generation reproducibility/provenance:\n",
+      custom_generation_seed = "  Generation master seed : %d\n",
+      custom_backend_seed = "  Backend seed control   : %s (%s)\n",
+      custom_seed_requested = "requested",
+      custom_seed_uncontrolled = "not controlled",
+      custom_unavailable = "unavailable",
+      custom_seed_not_requested = "  Generation master seed : not requested\n",
+      custom_seed_schedule = "  Seed schedule          : %d realized call(s)\n",
+      custom_seed_ledger = "  Generation call ledger : %d call(s)\n",
+      custom_exact_replay = "  Exact text replay      : not guaranteed by backend/runtime; reuse the realized item pool for exact downstream replay\n",
+      custom_replay_fingerprint = "  Replay-plan fingerprint: %s\n",
+      custom_pool_fingerprint = "  Item-pool fingerprint  : %s\n",
+      custom_screening_state = "  Content-screening state: %s\n",
+      custom_unknown = "unknown",
+      custom_representation_summary = "\n[SEMANTICA] Representation robustness summary:\n",
+      custom_evidence_state = "  Evidence state: %s\n",
+      custom_evidence_dependency = "  Evidence dependency: semantic/PFA/ESEM/clustering conclusions share this embedding representation; agreement is dependent corroboration, not independent validation.\n",
+      custom_common_direction = "  Common-direction concentration: %.4f (descriptive; no universal cutoff)\n",
+      custom_cosine_sensitivity = "  Raw vs mean-centered cosine: offdiag r=%.3f | top %.1f%% pair J=%.3f | random ref=%.3f\n",
+      custom_overlap_warning = "  Interpretation: WARNING -- strongest-pair membership is not more stable across preprocessing than its finite-pool random reference; replicate proxy conclusions under a justified alternative representation.\n",
+      custom_sensitivity_note = "  Interpretation: sensitivity diagnostic only; SEMANTICA does not automatically choose a more favorable cosine preprocessing.\n",
+      custom_step_plots = "\n[SEMANTICA] Step 3/3: Generating Diagnostic Plots...\n",
+      custom_complete = "\n[SEMANTICA] Pipeline complete.\n"
+    ),
+    Spanish = list(
+      run_unidimensional = paste0(
+        "[SEMANTICA] Modelo unidimensional detectado: se usar\u00e1 la ruta establecida para un factor; ",
+        "la recuperaci\u00f3n de particiones PFA, HTMT y la separaci\u00f3n entre factores no son aplicables."
+      ),
+      run_starting = "[SEMANTICA] Iniciando %s: %d factor(es), %d candidatos retenidos, objetivo aproximado de generaci\u00f3n bruta: %d, %d \u00edtems finales.",
+      run_progress_mode = "[SEMANTICA] El modo de progreso es conciso. Use progress = 'detailed' para la telemetr\u00eda de componentes.",
+      run_complete = "[SEMANTICA] Completado: %d \u00edtem(s) final(es) seleccionado(s).",
+      run_restarts = "[SEMANTICA] Reinicios del optimizador: %s (%d inicio(s) exitoso(s)).",
+      run_result_surface = "[SEMANTICA] Superficie de resultados: $scale | $items | $diagnostics | $plots | $provenance | $advanced",
+      run_next = "[SEMANTICA] Siguiente: summary(result) | plot(result) | semantica_save_bundle(result, path)",
+      resource_plan_title = "<semantica_resource_plan>\n",
+      resource_parallel_disabled = "%s (paralelismo desactivado)",
+      resource_requested = "  Trabajadores solicitados : %s\n",
+      resource_available = "  Disponibles para R       : %s\n",
+      resource_coordinator = "  Presupuesto del coordinador: %d\n",
+      resource_reserved = "  Reserva (autom\u00e1tica)     : %d\n",
+      resource_effective = "  Trabajadores efectivos   : %d\n",
+      resource_physical_cap = "  L\u00edmite de n\u00facleos f\u00edsicos: %d trabajador(es)\n",
+      resource_memory_cap = "  L\u00edmite seg\u00fan memoria     : %d (%s)\n",
+      resource_auto_cap = "  L\u00edmite de seguridad autom\u00e1tico: asignaci\u00f3n de CPU con contabilidad de coordinador/reserva\n",
+      resource_parallel_backend = "  Backend paralelo         : %s\n",
+      resource_blas_threads = "  Hilos BLAS por trabajador: %s\n",
+      resource_measured = "medido",
+      resource_not_applicable = "no aplica",
+      custom_resource_plan = "\n[SEMANTICA] Plan de recursos resuelto antes de la ejecuci\u00f3n costosa:\n",
+      custom_cosine_device = "  Dispositivo de coseno : %s (lavaan permanece en la CPU)\n",
+      custom_default_items = "[FULL PIPELINE] i.per.f no se especific\u00f3. Se usar\u00e1n 3 \u00edtems por factor.",
+      custom_step_generation = "\n[SEMANTICA] Paso 1/3: Generaci\u00f3n con LLM y embeddings sem\u00e1nticos...\n",
+      custom_pool_thresholds = "[SEMANTICA] Umbrales experimentales relativos al conjunto: redundancia %.3f | duplicado %.3f\n",
+      custom_step_optimization = "\n[SEMANTICA] Paso 2/3: Optimizaci\u00f3n ACO-ESEM...\n",
+      custom_semantic_summary = "\n[SEMANTICA] Resumen de cambios en la similitud sem\u00e1ntica:\n",
+      custom_semantic_within = "  Intra-factor  : %.4f -> %.4f | cambio = %+.4f",
+      custom_semantic_percent = " (%+.2f%%)",
+      custom_semantic_target = "  Objetivo intra-factor : %.4f +/- %.4f | desviaci\u00f3n %.4f -> %.4f | %s\n",
+      custom_semantic_between = "  Entre factores: %.4f -> %.4f | cambio = %+.4f\n",
+      custom_semantic_gap = "  Brecha de separaci\u00f3n: %.4f -> %.4f | cambio = %+.4f\n",
+      custom_semantic_composite = "  \u00cdndice compuesto: %.4f -> %.4f | cambio = %+.4f\n",
+      custom_semantic_interpretation = "  Interpretaci\u00f3n: %s\n",
+      custom_target_inside = "dentro del rango objetivo",
+      custom_target_outside = "fuera del rango objetivo",
+      custom_separation_improved = "La separaci\u00f3n sem\u00e1ntica relativa intra-factor frente a entre factores mejor\u00f3%s.",
+      custom_separation_weakened = "La separaci\u00f3n sem\u00e1ntica relativa intra-factor frente a entre factores se debilit\u00f3%s.",
+      custom_separation_unchanged = "La separaci\u00f3n sem\u00e1ntica relativa intra-factor frente a entre factores no cambi\u00f3%s.",
+      custom_cohesion_guard = "; la cohesi\u00f3n intra-factor se mantuvo %s",
+      custom_separation_unavailable = "No se pudo calcular la separaci\u00f3n relativa; revise los diagn\u00f3sticos de cohesi\u00f3n disponibles.",
+      custom_separation_insufficient = "No se pudo calcular (\u00edtems insuficientes)",
+      custom_facet_pfa_available = "\n[SEMANTICA] PFA de faceta/unidad: puntuaci\u00f3n=%.4f | recuperaci\u00f3n=%.4f | claridad=%.4f\n",
+      custom_facet_pfa_unavailable = "\n[SEMANTICA] PFA de faceta/unidad %s: %s\n",
+      custom_unit_skipped = "omitido",
+      custom_unit_unavailable = "no disponible",
+      custom_unit_insufficient = "estructura de faceta/unidad insuficiente",
+      custom_generation_provenance = "\n[SEMANTICA] Reproducibilidad/procedencia de la generaci\u00f3n:\n",
+      custom_generation_seed = "  Semilla maestra de generaci\u00f3n : %d\n",
+      custom_backend_seed = "  Control de semilla del backend : %s (%s)\n",
+      custom_seed_requested = "solicitado",
+      custom_seed_uncontrolled = "sin control",
+      custom_unavailable = "no disponible",
+      custom_seed_not_requested = "  Semilla maestra de generaci\u00f3n : no solicitada\n",
+      custom_seed_schedule = "  Calendario de semillas          : %d llamada(s) realizada(s)\n",
+      custom_seed_ledger = "  Registro de llamadas de semillas: %d llamada(s)\n",
+      custom_exact_replay = "  Reproducci\u00f3n exacta del texto   : no est\u00e1 garantizada por el backend/entorno; reutilice el conjunto de \u00edtems generado para una reproducci\u00f3n posterior exacta\n",
+      custom_replay_fingerprint = "  Huella del plan de reproducci\u00f3n : %s\n",
+      custom_pool_fingerprint = "  Huella del conjunto de \u00edtems    : %s\n",
+      custom_screening_state = "  Estado del filtrado de contenido: %s\n",
+      custom_unknown = "desconocido",
+      custom_representation_summary = "\n[SEMANTICA] Resumen de robustez de la representaci\u00f3n:\n",
+      custom_evidence_state = "  Estado de la evidencia: %s\n",
+      custom_evidence_dependency = "  Dependencia de la evidencia: las conclusiones sem\u00e1nticas/PFA/ESEM/de agrupamiento comparten esta representaci\u00f3n de incrustaci\u00f3n; la concordancia es corroboraci\u00f3n dependiente, no validaci\u00f3n independiente.\n",
+      custom_common_direction = "  Concentraci\u00f3n de direcci\u00f3n com\u00fan: %.4f (descriptiva; sin punto de corte universal)\n",
+      custom_cosine_sensitivity = "  Coseno bruto frente a centrado en la media: r fuera de la diagonal=%.3f | J del %.1f%% de pares superiores=%.3f | referencia aleatoria=%.3f\n",
+      custom_overlap_warning = "  Interpretaci\u00f3n: ADVERTENCIA -- la pertenencia de los pares m\u00e1s fuertes no es m\u00e1s estable entre preprocesamientos que su referencia aleatoria de conjunto finito; replique las conclusiones proxy con una representaci\u00f3n alternativa justificada.\n",
+      custom_sensitivity_note = "  Interpretaci\u00f3n: solo diagn\u00f3stico de sensibilidad; SEMANTICA no selecciona autom\u00e1ticamente un preprocesamiento de coseno m\u00e1s favorable.\n",
+      custom_step_plots = "\n[SEMANTICA] Paso 3/3: Generando gr\u00e1ficos diagn\u00f3sticos...\n",
+      custom_complete = "\n[SEMANTICA] Pipeline completado.\n"
+    )
+  )
+  template <- catalog[[console_language]][[key]]
+  if (is.null(template)) {
+    stop(sprintf("Unknown SEMANTICA console-text key: '%s'.", key), call. = FALSE)
+  }
+  values <- list(...)
+  if (!length(values)) return(template)
+  do.call(sprintf, c(list(template), values))
+}
+
 .semantica_run_normalize_factors <- function(factors) {
   if (!is.list(factors) || length(factors) < 1L) {
     stop("'factors' must be a non-empty named list.", call. = FALSE)
@@ -531,6 +700,9 @@ semantica_aco_config <- function(
 #'   `"numbered"`, or `"json"`.
 #' @param progress User-facing progress level: `"normal"` (concise high-level
 #'   stages), `"detailed"` (existing component telemetry), or `"quiet"`.
+#' @param console_language Language for console feedback: `"English"` (the
+#'   default) or `"Spanish"`. This does not change the language of generated
+#'   questionnaire items; use `language` for that setting.
 #'
 #' @details
 #' The three ACO modes alter search effort/evidence cadence without weakening
@@ -625,7 +797,8 @@ semantica_run <- function(
     item_style = "first-person declarative sentence",
     temperature = 0.4,
     structured_output = c("auto", "numbered", "json"),
-    progress = c("normal", "detailed", "quiet")) {
+    progress = c("normal", "detailed", "quiet"),
+    console_language = c("English", "Spanish")) {
 
   if (!is.character(scale_name) || length(scale_name) != 1L || is.na(scale_name) || !nzchar(trimws(scale_name))) {
     stop("'scale_name' must be one non-empty character string.", call. = FALSE)
@@ -635,6 +808,7 @@ semantica_run <- function(
   }
   verbose <- .semantica_assert_flag(verbose, "verbose")
   progress <- match.arg(progress)
+  console_language <- .semantica_console_language(console_language)
   if (!isTRUE(verbose)) progress <- "quiet"
   pipeline_verbose <- identical(progress, "detailed")
   pool_items <- .semantica_assert_positive_integer(pool_items, "pool_items")
@@ -684,10 +858,7 @@ semantica_run <- function(
   if (is_unidimensional) {
     aco_cfg <- .semantica_run_adapt_unidimensional_aco(aco_cfg)
     if (!identical(progress, "quiet")) {
-      message(
-        "[SEMANTICA] Unidimensional model detected: using the established one-factor branch; ",
-        "PFA partition recovery, HTMT, and between-factor separation are not applicable."
-      )
+      message(.semantica_console_text(console_language, "run_unidimensional"))
     }
   }
   aco_cfg <- .semantica_run_adapt_aco_budget(
@@ -721,11 +892,11 @@ semantica_run <- function(
     retained_total <- as.integer(pool_items * n_factors)
     raw_target <- as.integer(ceiling(pool_items * overgenerate) * n_factors)
     selected_total <- if (length(selected_items) == 1L) as.integer(selected_items * n_factors) else as.integer(sum(selected_items))
-    message(sprintf(
-      "[SEMANTICA] Starting %s: %d factor(s), %d retained candidates, ~%d raw-generation target, %d final items.",
+    message(.semantica_console_text(
+      console_language, "run_starting",
       trimws(scale_name), n_factors, retained_total, raw_target, selected_total
     ))
-    message("[SEMANTICA] Progress mode is concise. Use progress = 'detailed' for component-level telemetry.")
+    message(.semantica_console_text(console_language, "run_progress_mode"))
   }
 
   pfa_cfg <- semantica_pfa_config(
@@ -799,7 +970,8 @@ semantica_run <- function(
     quality = quality_cfg,
     seed = seed_cfg$seed,
     restart_seeds = restart_cfg$seeds,
-    verbose = pipeline_verbose
+    verbose = pipeline_verbose,
+    console_language = console_language
   )
 
   run_meta <- list(
@@ -856,6 +1028,7 @@ semantica_run <- function(
     structured_output = generation_cfg$structured_output,
     backend_contract = backend_contract,
     progress = progress,
+    console_language = console_language,
     generation_provenance_schema = result$generation_provenance$schema %||% NA_character_,
     generation_seed_controlled = result$generation_provenance$generation_seed_controlled %||% FALSE,
     generation_seed_mechanism = result$generation_provenance$generation_seed_mechanism %||% NA_character_,
@@ -876,14 +1049,16 @@ semantica_run <- function(
   result$reproducibility$run_interface <- run_meta
   if (identical(progress, "normal")) {
     selected_n <- length(result$best_items %||% result$optimization$best_items %||% character(0L))
-    message(sprintf("[SEMANTICA] Complete: %d final item(s) selected.", selected_n))
+    message(.semantica_console_text(console_language, "run_complete", selected_n))
     restart_status <- result$multi_seed_stability$status %||% "unavailable"
     if (length(restart_cfg$seeds) > 1L) {
-      message(sprintf("[SEMANTICA] Optimizer restarts: %s (%d successful start(s)).",
-                      restart_status, length(result$multi_seed_stability$successful_seeds %||% integer(0L))))
+      message(.semantica_console_text(
+        console_language, "run_restarts", restart_status,
+        length(result$multi_seed_stability$successful_seeds %||% integer(0L))
+      ))
     }
-    message("[SEMANTICA] Result surface: $scale | $items | $diagnostics | $plots | $provenance | $advanced")
-    message("[SEMANTICA] Next: summary(result) | plot(result) | semantica_save_bundle(result, path)")
+    message(.semantica_console_text(console_language, "run_result_surface"))
+    message(.semantica_console_text(console_language, "run_next"))
   }
   .semantica_wrap_run_result(result)
 }

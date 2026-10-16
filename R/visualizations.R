@@ -16,7 +16,7 @@ utils::globalVariables(c(
   "n_obs", "metric", "metric_value", "anchor_kind",
   "xmin", "xmax", "ymin", "ymax", "middle.linewidth", ".data",
   "total", "ci_lo", "ci_hi", ".", "aggregate", "combn", "runif",
-  "score", "score_col", "component", "status", "display", "kind",
+  "score", "score_col", "component", "status", "display", "kind", "observed", "cutoff", "state",
   "group", "score_label", "before_after", "sim_type", "metric_group",
   "phase", "phase_x", "score_norm", "score_plot", "score_txt", "item_status",
   "centroid_type", "pool_x", "pool_y", "selected_x", "selected_y",
@@ -434,13 +434,13 @@ plot_fitness_evolution <- function(result) {
 #' plot_semantic_networks(
 #'   result, cosine_sim_matrix,
 #'   edge_threshold_before = 0.45,
-#'   edge_threshold_after = 0.30,
+#'   edge_threshold_after = 0.45,
 #'   df = item_metadata,
 #'   max_before_items = 200L
 #' )
 #' }
 plot_semantic_networks <- function(result, cosine_sim_matrix, edge_threshold_before = 0.45,
-                                   edge_threshold_after = 0.30, df = NULL,
+                                   edge_threshold_after = edge_threshold_before, df = NULL,
                                    max_before_items = 200L) {
   fa_final  <- result$factor_assignment
   best_items <- result$best_items
@@ -582,14 +582,19 @@ plot_esem_loadings <- function(result) {
 #' Factor loading profiles with confidence intervals
 #'
 #' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
+#' @param evidence_source Select semantic or observed-response loadings. Response
+#'   profiles use the response fit and do not inherit semantic utility bands.
 #' @return A `ggplot` object.
 #' @export
 #' @examples
 #' \dontrun{
 #' plot_loading_profiles(result)
 #' }
-plot_loading_profiles <- function(result) {
-  esem_fit <- result$esem_fit
+plot_loading_profiles <- function(result, evidence_source = c("semantic", "response")) {
+  evidence_source <- match.arg(evidence_source)
+  result <- .viz_core_result(result)
+  response <- identical(evidence_source, "response")
+  esem_fit <- if (response) result$response_validation$fit else result$esem_fit
   if (is.null(esem_fit)) { message("[plot_loading_profiles] No ESEM fit object."); return(invisible(NULL)) }
   fa <- result$factor_assignment
   factors <- unique(fa)
@@ -617,7 +622,7 @@ plot_loading_profiles <- function(result) {
 
   ggplot2::ggplot(df_all, ggplot2::aes(x = loading, y = stats::reorder(item, loading))) +
     ggplot2::geom_vline(xintercept = 0, colour = "#CCCCCC", linewidth = 0.8) +
-    ggplot2::annotate("rect", xmin = 0.50, xmax = 0.95, ymin = -Inf, ymax = Inf, fill = "#E8F4EA", alpha = 0.5) +
+    (if (!response) ggplot2::annotate("rect", xmin = .semantica_decision_policy()$esem$loading_quality$reference_lower, xmax = .semantica_decision_policy()$esem$loading_quality$reference_upper, ymin = -Inf, ymax = Inf, fill = "#DDDDDD", alpha = 0.5) else NULL) +
     ggplot2::geom_errorbar(data = df_all[is.finite(df_all$ci_lo) & is.finite(df_all$ci_hi), ],
                            ggplot2::aes(xmin = ci_lo, xmax = ci_hi, y = stats::reorder(item, loading)),
                            orientation = "y", width = 0.25, colour = "#AAAAAA", linewidth = 0.5) +
@@ -627,9 +632,9 @@ plot_loading_profiles <- function(result) {
     ggplot2::scale_colour_manual(values = fac_cols, name = "Factor", guide = "none") +
     ggplot2::facet_wrap(~factor, scales = "free_y", ncol = 3) +
     ggplot2::geom_text(data = df_all[df_all$dominant, ], ggplot2::aes(label = sprintf("%.2f", loading), x = loading + 0.04), size = 2.3, hjust = 0, colour = "#333333") +
-    ggplot2::geom_vline(xintercept = c(0.50, 0.95), colour = "#4DAC26", linetype = "dashed", linewidth = 0.5) +
+    ggplot2::geom_vline(xintercept = if (response) numeric() else unlist(.semantica_decision_policy()$esem$loading_quality[c("reference_lower", "reference_upper")]), colour = "#888888", linetype = "dashed", linewidth = 0.5) +
     .sem_theme() + ggplot2::theme(axis.text.y = ggplot2::element_text(size = 7), strip.background = ggplot2::element_rect(fill = "#F2F2F2", colour = NA), panel.grid.major.x = ggplot2::element_line(colour = "#EEEEEE")) +
-    ggplot2::labs(title = "Factor Loading Profiles (ESEM)", subtitle = "Filled = dominant loading; green band = ideal range [0.50, 0.95]", x = "Standardized Factor Loading", y = NULL, caption = "SEMANTICA")
+    ggplot2::labs(title = if (response) "Response Factor Loading Profiles (ESEM)" else "Semantic Factor Loading Profiles (ESEM)", subtitle = if (response) "Observed-response loadings; no loading reference supplied" else "Filled = assigned loading; grey band = legacy optimization reference [0.50, 0.95]; not a guard verdict", x = "Standardized Factor Loading", y = NULL, caption = "SEMANTICA")
 }
 
 # =================================================================
@@ -638,61 +643,61 @@ plot_loading_profiles <- function(result) {
 #' Model fit indices vs DFI cutoffs (gauge chart)
 #'
 #' @param result A high-level SEMANTICA result or output from `ACO_with_ESEM()`.
+#' @param evidence_source Select semantic geometry or separately assessed responses.
 #' @return A `ggplot` object.
 #' @export
 #' @examples
 #' \dontrun{
 #' plot_dfi_gauges(result)
 #' }
-plot_dfi_gauges <- function(result) {
-  cr <- result$esem_result; ac <- result$active_cutoffs
-  if (is.null(cr) || is.null(ac)) { message("[plot_dfi_gauges] Missing results."); return(invisible(NULL)) }
-
-  metrics_df  <- data.frame(metric = c("CFI", "TLI", "RMSEA", "SRMR", "AVE"),
-                            observed = c(cr$cfi, cr$tli, cr$rmsea, cr$srmr, cr$ave),
-                            cutoff = c(ac$cfi, ac$tli, ac$rmsea, ac$srmr, 0.50),
-                            direction = c("high", "high", "low", "low", "high"),
-                            label = c("CFI (>=)", "TLI (>=)", "RMSEA (<=)", "SRMR (<=)",
-                                      if (is.null(result$response_validation)) "AVE (desc.)" else "AVE (>=)"),
-                            stringsAsFactors = FALSE)
-  metrics_df  <- metrics_df[!is.na(metrics_df$observed) & is.finite(metrics_df$observed), ]
-  metrics_df$pass <- ifelse(metrics_df$direction == "high", metrics_df$observed >= metrics_df$cutoff, metrics_df$observed <= metrics_df$cutoff)
-  if (is.null(result$response_validation) && any(metrics_df$metric == "AVE")) {
-    metrics_df$pass[metrics_df$metric == "AVE"] <- TRUE
+plot_dfi_gauges <- function(result, evidence_source = c("semantic", "response")) {
+  evidence_source <- match.arg(evidence_source)
+  result <- .viz_core_result(result)
+  response <- identical(evidence_source, "response")
+  selected <- if (response) result$response_validation else result
+  cr <- if (response) selected$result else result$esem_result
+  if (is.null(cr)) { message("[plot_dfi_gauges] Missing results."); return(invisible(NULL)) }
+  ac <- selected$active_cutoffs %||% list()
+  ids <- c("cfi", "tli", "rmsea", "srmr", "ave", "htmt_max")
+  measurements <- utils::modifyList(cr, cr$raw_fit_metrics %||% list(), keep.null = TRUE)
+  observed <- vapply(ids, function(id) .semantica_metric_scalar(measurements[[id]]), numeric(1L))
+  if (!response && !is.finite(observed[["htmt_max"]]))
+    observed[["htmt_max"]] <- .semantica_metric_scalar(result$htmt_max)
+  refs <- vapply(ids, function(id) .semantica_metric_scalar(ac[[id]]), numeric(1L))
+  spec <- data.frame(criterion = ids, threshold = refs,
+    direction = c(">=", ">=", "<=", "<=", ">=", "<="),
+    constraint_active = is.finite(refs) & (response | ids != "tli"), stringsAsFactors = FALSE)
+  tab <- .semantica_evaluate_criteria(spec, as.list(observed),
+    statuses = list(htmt_max = cr$htmt_status),
+    source = if (response) "observed_responses" else "semantic_geometry",
+    role = if (response) "final_constraint" else "optimization_utility")
+  evaluated <- if (response) selected$criteria else
+    result$structural_diagnostics$criteria %||% result$structural_guard$diagnostics$criteria
+  if (is.data.frame(evaluated)) {
+    for (id in intersect(ids, evaluated$criterion)) {
+      i <- match(id, tab$criterion); j <- match(id, evaluated$criterion)
+      for (nm in intersect(names(tab), names(evaluated))) tab[i, nm] <- evaluated[j, nm]
+    }
   }
-
-  htmt_max  <- result$htmt_max; htmt_thr <- result$model_info$htmt_threshold
-  htmt_pass <- !is.null(htmt_max) && is.finite(htmt_max) && htmt_max <= htmt_thr
-  pass_col <- "#4DAC26"; fail_col <- "#D6604D"; grey_col <- "#DDDDDD"
-  bar_height <- 0.55
-
-  p_main <- ggplot2::ggplot(metrics_df, ggplot2::aes(y = stats::reorder(label, seq_len(nrow(metrics_df))))) +
-    ggplot2::geom_col(ggplot2::aes(x = 1), fill = grey_col, width = bar_height) +
-    ggplot2::geom_col(ggplot2::aes(x = pmin(observed / ifelse(direction == "high", max(cutoff * 1.15, 1), cutoff * 1.5), 1), fill = pass), width = bar_height) +
-    ggplot2::scale_fill_manual(values = c("TRUE" = pass_col, "FALSE" = fail_col), name = NULL, labels = c("TRUE" = "Reference met", "FALSE" = "Reference not met")) +
-    ggplot2::geom_segment(ggplot2::aes(x = ifelse(direction == "high", cutoff / max(cutoff * 1.15, 1), cutoff / (cutoff * 1.5)), xend = ifelse(direction == "high", cutoff / max(cutoff * 1.15, 1), cutoff / (cutoff * 1.5)), y = as.numeric(stats::reorder(label, seq_len(nrow(metrics_df)))) - bar_height/2, yend = as.numeric(stats::reorder(label, seq_len(nrow(metrics_df)))) + bar_height/2), colour = "#1A1A1A", linewidth = 1.1) +
-    ggplot2::geom_text(ggplot2::aes(x = pmin(observed / ifelse(direction == "high", max(cutoff * 1.15, 1), cutoff * 1.5), 1) + 0.02, label = sprintf("%.4f", observed)), hjust = 0, size = 3, fontface = "bold") +
-    ggplot2::geom_text(ggplot2::aes(x = ifelse(direction == "high", cutoff / max(cutoff * 1.15, 1), cutoff / (cutoff * 1.5)), label = sprintf("cut: %.3f", cutoff)), vjust = -1.2, size = 2.4, colour = "#444444") +
-    ggplot2::scale_x_continuous(limits = c(0, 1.25), breaks = NULL) + .sem_theme() +
-    ggplot2::theme(axis.text.x = ggplot2::element_blank(), axis.title.x = ggplot2::element_blank(), panel.grid = ggplot2::element_blank(), legend.position = "bottom") +
-    ggplot2::labs(title = "Semantic-Proxy Fit vs Reference Values", subtitle = sprintf("Reference source: %s; not a participant-data validity test", result$cutoff_source), y = NULL)
-
-  if (!is.null(htmt_max) && is.finite(htmt_max)) {
-    htmt_df <- data.frame(label = "HTMT max (<=)", observed = htmt_max, cutoff = htmt_thr, pass = htmt_pass)
-    p_htmt <- ggplot2::ggplot(htmt_df, ggplot2::aes(y = label)) +
-      ggplot2::geom_col(ggplot2::aes(x = 1), fill = grey_col, width = bar_height) +
-      ggplot2::geom_col(ggplot2::aes(x = pmin(observed / (htmt_thr * 1.3), 1), fill = pass), width = bar_height) +
-      ggplot2::scale_fill_manual(values = c("TRUE" = pass_col, "FALSE" = fail_col), guide = "none") +
-      ggplot2::geom_segment(ggplot2::aes(x = htmt_thr / (htmt_thr * 1.3), xend = htmt_thr / (htmt_thr * 1.3), y = 0.7, yend = 1.3), colour = "#1A1A1A", linewidth = 1.1) +
-      ggplot2::geom_text(ggplot2::aes(x = pmin(observed / (htmt_thr * 1.3), 1) + 0.02, label = sprintf("%.4f", observed)), hjust = 0, size = 3, fontface = "bold") +
-      ggplot2::scale_x_continuous(limits = c(0, 1.25), breaks = NULL) + .sem_theme() +
-      ggplot2::theme(axis.text.x = ggplot2::element_blank(), axis.title.x = ggplot2::element_blank(), panel.grid = ggplot2::element_blank()) +
-      ggplot2::labs(y = NULL, title = "HTMT-like semantic separation proxy")
-    patchwork::wrap_plots(p_main, p_htmt, ncol = 1, heights = c(4, 1)) +
-      patchwork::plot_annotation(caption = "SEMANTICA | Semantic-proxy reference comparisons; participant validation is separate")
-  } else {
-    p_main + ggplot2::labs(caption = "SEMANTICA | Semantic-proxy reference comparisons; participant validation is separate")
-  }
+  tab$metric <- c("CFI", "TLI", "RMSEA", "SRMR", "AVE", "HTMT")
+  tab$observed <- tab$value; tab$cutoff <- tab$threshold
+  tab$source <- if (response) "observed_responses" else "semantic_geometry"
+  tab$role[tab$state == "inactive"] <- "descriptive"
+  tab$pass <- ifelse(tab$state %in% c("met", "not_met"), tab$state == "met", NA)
+  tab$label <- paste(tab$metric, ifelse(tab$state == "inactive", "(descriptive)", tab$direction))
+  # Each panel retains unavailable/inactive rows. Neutral grey means no verdict.
+  ggplot2::ggplot(tab, ggplot2::aes(x = observed, y = metric, colour = state)) +
+    ggplot2::geom_point(size = 3, na.rm = TRUE) +
+    ggplot2::geom_point(data = tab[is.finite(tab$cutoff) & tab$constraint_active, ],
+      ggplot2::aes(x = cutoff), shape = 4, size = 3, colour = "#444444", na.rm = TRUE) +
+    ggplot2::facet_wrap(~metric, scales = "free_x", ncol = 2) +
+    ggplot2::scale_colour_manual(values = c(met = "#4DAC26", not_met = "#D6604D",
+      inactive = "#888888", unavailable = "#888888", not_applicable = "#888888")) +
+    .sem_theme() + ggplot2::labs(x = "Observed value; cross = evaluated reference", y = NULL,
+      title = if (response) "Observed-response diagnostics" else "Semantic-Proxy Fit vs Reference Values",
+      subtitle = if (response) "Response references are declared separately" else
+        "Semantic-proxy reference comparisons; not a participant-data validity test",
+      caption = "HTMT-like semantic separation proxy; descriptive and unavailable references have no passing verdict")
 }
 
 # =================================================================

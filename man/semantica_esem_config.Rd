@@ -45,7 +45,7 @@ semantically/PFA for that checkpoint, but later ESEM checkpoints are still
 attempted. Final archived candidates are also refit before non-ESEM
 fallback selection is allowed.}
 
-\item{uncalibrated_esem_policy}{Handling when automatic DFI calibration
+\item{uncalibrated_esem_policy}{Handling when automatic or explicitly requested ESEM DFI calibration
 disables ESEM scoring while final guardrails are hard constraints:
 \code{"fail_early"} (default), \code{"guard_screen"}, or explicit
 \code{"semantic_fallback"}.}

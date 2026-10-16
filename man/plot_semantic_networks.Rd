@@ -8,7 +8,7 @@ plot_semantic_networks(
   result,
   cosine_sim_matrix,
   edge_threshold_before = 0.45,
-  edge_threshold_after = 0.3,
+  edge_threshold_after = edge_threshold_before,
   df = NULL,
   max_before_items = 200L
 )
@@ -41,7 +41,7 @@ Semantic similarity networks: BEFORE vs AFTER
 plot_semantic_networks(
   result, cosine_sim_matrix,
   edge_threshold_before = 0.45,
-  edge_threshold_after = 0.30,
+  edge_threshold_after = 0.45,
   df = item_metadata,
   max_before_items = 200L
 )

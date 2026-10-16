@@ -2687,7 +2687,8 @@ semantica_standardize_item_metadata <- function(x, id_col = NULL, dimension_col 
 #' @param overgenerate     LLM overgeneration multiplier.
 #' @param max_retries      Maximum generation attempts. After a partial successful response, retries are deficit-aware: already usable items are preserved and the next request is sized from the observed new-item yield rather than regenerating the full target.
 #' @param global_forbidden_max Maximum number of previously generated items to
-#'   include as anti-duplicate examples in subsequent prompts.
+#'   include as anti-duplicate examples in subsequent prompts. Normalized lexical
+#'   duplicates are excluded against all retained items regardless of this limit.
 #' @param temperature      LLM temperature.
 #' @param structured_output Output contract: `"auto"`, `"numbered"`, or structured `"json"` when supported.
 #' @param verbose          Print progress.
@@ -2790,6 +2791,7 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
   diversity_curation <- list()
   for (unit in generation_plan) {
     unit_attempt_start <- length(generation_attempts) + 1L
+    unit_responses <- list()
     n_target <- unit$n_items
     n_request <- ceiling(n_target * overgenerate)
     if (verbose) cat(sprintf("\n  [%s / %s] Requesting %d items...\n", unit$dimension, unit$facet, n_request))
@@ -2863,13 +2865,21 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
           NULL
         }
       )
+      unit_responses[[attempt]] <- list(prompt = user_prompt, raw_response = raw)
       if (!is.null(raw)) {
         parsed_response <- .semantica_parse_generation_response(
           raw, request_n, unit$facet, minimum_n = min(needed_before, request_n),
           output_mode = output_mode
         )
         parsed <- parsed_response$items
-        new_items <- setdiff(parsed, collected_before)
+        # Prompt prohibitions do not enforce uniqueness. Reuse the existing
+        # lexical-identity normalization across ALL retained generation units,
+        # independently of the bounded prompt-history window. Near-duplicate
+        # semantic screening remains unchanged.
+        parsed_identity <- .semantica_normalize_item_text(parsed)
+        previous_unit_duplicate <- parsed_identity %in% .semantica_normalize_item_text(global_forbidden)
+        current_unit_duplicate <- parsed_identity %in% .semantica_normalize_item_text(collected_before)
+        new_items <- parsed[!previous_unit_duplicate & !current_unit_duplicate]
         collected <- unique(c(collected_before, new_items))
         successful_requested <- successful_requested + as.integer(request_n)
         successful_new_retained <- successful_new_retained + as.integer(length(new_items))
@@ -2890,6 +2900,8 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
         attempt_meta$newly_retained <- as.integer(length(new_items))
         attempt_meta$new_item_yield <- if (request_n > 0L) length(new_items) / request_n else NA_real_
         attempt_meta$duplicate_existing <- as.integer(max(0L, length(parsed) - length(new_items)))
+        attempt_meta$duplicate_previous_units <- as.integer(sum(previous_unit_duplicate))
+        attempt_meta$duplicate_current_unit <- as.integer(sum(current_unit_duplicate & !previous_unit_duplicate))
         attempt_meta$retained_total <- length(collected)
         attempt_meta$needed_after <- as.integer(max(0L, n_target - length(collected)))
         generation_attempts[[length(generation_attempts) + 1L]] <- attempt_meta
@@ -2912,7 +2924,8 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
           generation_seed_supported = isTRUE(seed_capability$supported),
           generation_seed_control = seed_capability$mechanism,
           needed_before = as.integer(needed_before),
-          newly_retained = 0L, new_item_yield = NA_real_, duplicate_existing = 0L, retained_total = length(collected),
+          newly_retained = 0L, new_item_yield = NA_real_, duplicate_existing = 0L,
+          duplicate_previous_units = 0L, duplicate_current_unit = 0L, retained_total = length(collected),
           needed_after = as.integer(max(0L, n_target - length(collected))),
           backend_error = last_error
         )
@@ -2975,8 +2988,12 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
       }
       diag_txt <- .semantica_generation_failure_summary(unit_attempts)
       diag_suffix <- if (nzchar(diag_txt)) paste0(" Attempt diagnostics: ", diag_txt, ".") else ""
-      stop(sprintf("Facet '%s' in dimension '%s': generated only %d/%d usable items after %d attempt(s).%s",
-                   unit$facet, unit$dimension, length(collected), n_target, max_retries, diag_suffix))
+      .semantica_abort(sprintf("Facet '%s' in dimension '%s': generated only %d/%d usable items after %d attempt(s).%s",
+                   unit$facet, unit$dimension, length(collected), n_target, max_retries, diag_suffix),
+        subclass = "semantica_error_generation_incomplete",
+        generation_failure = list(dimension = unit$dimension, facet = unit$facet,
+          target = n_target, retained_items = collected, previous_items = global_forbidden,
+          system_prompt = system_prompt, attempts = unit_attempts, responses = unit_responses))
     }
     if (verbose) cat(sprintf("    --> Retained %d generated candidates (pre-alignment)\n", length(collected)))
     for (txt in collected) {

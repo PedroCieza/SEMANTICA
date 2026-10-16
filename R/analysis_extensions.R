@@ -465,6 +465,20 @@ semantica_assess_construct_coverage <- function(
       missing[[f]] <- if (semantic_factor_available) sem_miss else miss
     }
   }
+  # Preserve legacy eligibility counts while separating positive support from
+  # ambiguity and missing evidence. These additions do not tighten selection.
+  for (i in seq_along(rows)) {
+    f <- rows[[i]]$factor
+    ii <- which(as.character(x[[factor_col]]) == f)
+    req <- unique(as.character(blueprint$required_facets[[f]] %||% character()))
+    states <- if ("semantica_facet_alignment_status" %in% names(x))
+      as.character(x$semantica_facet_alignment_status[ii]) else rep(NA_character_, length(ii))
+    count_facets <- function(ok) length(intersect(req, unique(as.character(x[[facet_col]][ii[which(ok)]]))))
+    rows[[i]]$eligible_facets <- rows[[i]]$semantic_covered_facets
+    rows[[i]]$positive_alignment_facets <- count_facets(states == "aligned")
+    rows[[i]]$ambiguous_facets <- count_facets(states %in% c("ambiguous", "tied", "alignment_unresolved"))
+    rows[[i]]$unavailable_facets <- count_facets(is.na(states) | states == "unavailable")
+  }
   coverage_table <- do.call(rbind, rows)
   finite_cov <- coverage_table$coverage[is.finite(coverage_table$coverage)]
   overall <- if (length(finite_cov)) mean(finite_cov) else NA_real_
@@ -510,7 +524,7 @@ semantica_assess_construct_coverage <- function(
        relation_diagnostics=relation_diagnostics, expected_relation_diagnostics=relation_diagnostics,
        evidence_role=if (semantic_available) 'semantic_definition_content_screen' else 'metadata_content_screen',
        note=if (semantic_available)
-         'coverage uses semantic item-to-facet definition alignment; metadata coverage is reported separately.'
+         'Semantic coverage is legacy non-mismatch eligibility, not positive alignment support; declared labels, positive support, ambiguity and unavailable evidence are reported separately.'
        else 'semantic facet alignment was unavailable; coverage reflects declared metadata labels only.')
 }
 
@@ -1394,10 +1408,19 @@ semantica_construct_graph <- function(blueprint, items_tbl = NULL,
 #' @param variants Named list or data frame of controlled variants.
 #' @param scorer Function accepting two character vectors (`original`,
 #'   `variants`) and returning numeric scores or a data frame.
+#' @param benchmark_manifest Optional prespecified benchmark labels, severity, split,
+#'   adjudication and label-independence provenance retained with the results.
+#' @param experiment Frozen-form perturbation or pool reselection. The scorer must
+#'   implement the declared experiment; these experiments have separate estimands.
 #' @return Stress-test table. SEMANTICA does not assign a universal success
 #'   threshold; the output is intended for benchmark suites.
 #' @export
-semantica_counterfactual_stress_test <- function(original, variants, scorer) {
+semantica_counterfactual_stress_test <- function(original, variants, scorer,
+                                                   benchmark_manifest = NULL,
+                                                   experiment = c("frozen_form", "pool_reselection")) {
+  experiment <- match.arg(experiment)
+  if (!is.null(benchmark_manifest) && !is.list(benchmark_manifest))
+    stop("benchmark_manifest must be a list with prespecified labels and provenance.")
   if (!is.function(scorer)) stop("'scorer' must be a function.")
   original <- as.character(original)
   if (is.data.frame(variants)) {
@@ -1414,8 +1437,16 @@ semantica_counterfactual_stress_test <- function(original, variants, scorer) {
   if (any(v$original_index < 1L | v$original_index > length(original))) stop("Invalid original_index.")
   base <- original[v$original_index]
   scored <- scorer(base, v$variant_text)
-  if (is.data.frame(scored)) return(cbind(v, original_text = base, scored))
-  cbind(v, original_text = base, score = as.numeric(scored), stringsAsFactors = FALSE)
+  out <- if (is.data.frame(scored)) cbind(v, original_text = base, scored) else
+    cbind(v, original_text = base, score = as.numeric(scored), stringsAsFactors = FALSE)
+  attr(out, "benchmark_manifest") <- benchmark_manifest
+  attr(out, "benchmark_fingerprint") <- .semantica_object_md5(list(original, v, benchmark_manifest, experiment))
+  attr(out, "experiment") <- experiment
+  attr(out, "label_independence") <- benchmark_manifest$label_independence %||% "undeclared"
+  attr(out, "interpretation") <- if (experiment == "pool_reselection")
+    "Scorer must rerun full selection on the perturbed pool under the declared budget; a label alone does not perform reselection." else
+    "Frozen-form diagnostic responsiveness; not complete selection-procedure error calibration."
+  out
 }
 
 #' Contextualize an observed cosine within its active representation

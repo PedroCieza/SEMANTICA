@@ -4,7 +4,13 @@
 \alias{semantica_counterfactual_stress_test}
 \title{Run a counterfactual semantic stress test}
 \usage{
-semantica_counterfactual_stress_test(original, variants, scorer)
+semantica_counterfactual_stress_test(
+  original,
+  variants,
+  scorer,
+  benchmark_manifest = NULL,
+  experiment = c("frozen_form", "pool_reselection")
+)
 }
 \arguments{
 \item{original}{Character vector of original item texts.}
@@ -13,6 +19,12 @@ semantica_counterfactual_stress_test(original, variants, scorer)
 
 \item{scorer}{Function accepting two character vectors (\code{original},
 \code{variants}) and returning numeric scores or a data frame.}
+
+\item{benchmark_manifest}{Optional prespecified benchmark labels, severity, split,
+adjudication and label-independence provenance retained with the results.}
+
+\item{experiment}{Frozen-form perturbation or pool reselection. The scorer must
+implement the declared experiment; these experiments have separate estimands.}
 }
 \value{
 Stress-test table. SEMANTICA does not assign a universal success

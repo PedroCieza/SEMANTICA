@@ -4,10 +4,13 @@
 \alias{plot_loading_profiles}
 \title{Factor loading profiles with confidence intervals}
 \usage{
-plot_loading_profiles(result)
+plot_loading_profiles(result, evidence_source = c("semantic", "response"))
 }
 \arguments{
 \item{result}{A high-level SEMANTICA result or output from \code{ACO_with_ESEM()}.}
+
+\item{evidence_source}{Select semantic or observed-response loadings. Response
+profiles use the response fit and do not inherit semantic utility bands.}
 }
 \value{
 A \code{ggplot} object.

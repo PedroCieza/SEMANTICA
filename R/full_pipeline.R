@@ -2,6 +2,18 @@ if (!exists("%||%", mode = "function")) {
   `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0L) a else b
 }
 
+# Shared by native checkpoints and experiment supervisors. Preserve the
+# structured evidence already attached to a failure, not arbitrary call frames.
+.semantica_failure_details <- function(error) {
+  fields <- c("psychometric_guard_action", "guard_failure_summary", "guard_diagnostics",
+    "final_structure_repair", "feasibility", "dfi_calibration_path", "generation_failure",
+    "archive_evaluations", "archive_item_ids", "archive_factor_assignment",
+    "search_parallel_recoveries", "search_parallel_fallbacks", "final_parallel_fallbacks")
+  details <- list(condition_class = class(error), message = conditionMessage(error))
+  for (field in fields) if (!is.null(error[[field]])) details[[field]] <- error[[field]]
+  details
+}
+
 .semantica_config_object <- function(values, class_name, schema_fields = names(values)) {
   schema_fields <- unique(as.character(schema_fields %||% character(0L)))
   schema_fields <- schema_fields[!is.na(schema_fields) & nzchar(schema_fields)]
@@ -220,7 +232,7 @@ if (!exists("%||%", mode = "function")) {
       "validation_n_max_heywood", "validation_n_min_recovery",
       "validation_n_max_loading_error", "validation_n_min_dominance",
       "validation_n_max_cross_error", "validation_n_max_factor_cor_error",
-      "validation_n_on_inadmissible", "validation_data", "validation_ordered"
+      "validation_n_on_inadmissible", "validation_data", "validation_ordered", "response_analysis"
     )
   )
 
@@ -672,7 +684,7 @@ semantica_compute_config <- function(
 #'   semantically/PFA for that checkpoint, but later ESEM checkpoints are still
 #'   attempted. Final archived candidates are also refit before non-ESEM
 #'   fallback selection is allowed.
-#' @param uncalibrated_esem_policy Handling when automatic DFI calibration
+#' @param uncalibrated_esem_policy Handling when automatic or explicitly requested ESEM DFI calibration
 #'   disables ESEM scoring while final guardrails are hard constraints:
 #'   `"fail_early"` (default), `"guard_screen"`, or explicit
 #'   `"semantic_fallback"`.
@@ -1514,7 +1526,7 @@ semantica_plot_config <- function(
 #'   `"semantic_fallback"` falls back only for that checkpoint, continues trying
 #'   ESEM at later checkpoints, and allows final semantic/PFA fallback only after
 #'   every archived finalist has received a full-ESEM attempt.
-#' @param uncalibrated_esem_policy Handling when automatic DFI calibration
+#' @param uncalibrated_esem_policy Handling when automatic or explicitly requested ESEM DFI calibration
 #'   disables ESEM scoring while final guardrails are hard constraints:
 #'   `"fail_early"` (default), `"guard_screen"`, or explicit
 #'   `"semantic_fallback"`.
@@ -1535,6 +1547,8 @@ semantica_plot_config <- function(
 #'   for the selected item IDs. When supplied, SEMANTICA fits a separate
 #'   response-data ESEM; this participant-based result is reported separately
 #'   from and should take precedence over semantic-proxy ESEM interpretation.
+#' @param response_analysis Optional separately declared response-analysis specification;
+#'   see [ACO_with_ESEM()]. Without response references only raw diagnostics are assessed.
 #' @param validation_ordered Optional character vector of ordered item columns
 #'   for response-data validation. `NULL` leaves estimator-specific defaults.
 #' @param plots Plot config from [semantica_plot_config()], or `"none"`,
@@ -1553,6 +1567,8 @@ semantica_plot_config <- function(
 #'   regime is common across successful starts. Agreement remains a descriptive
 #'   optimizer-sensitivity diagnostic, not validation evidence.
 #' @param verbose Print progress messages.
+#' @param console_language Language for console feedback: `"English"` (the
+#'   default) or `"Spanish"`. This does not change `generation$language`.
 #' @section Side effects:
 #' May perform provider network I/O, persistent embedding-cache I/O, local
 #' Python/model initialization, stochastic ACO/DFI computation, parallel worker
@@ -1608,13 +1624,16 @@ semantica_run_custom <- function(
   diagnostics = semantica_diagnostics_config(),
   validation_data = NULL,
   validation_ordered = NULL,
+  response_analysis = NULL,
   plots = semantica_plot_config(),
   checkpoint_dir = if (interactive()) "semantica_checkpoints" else NULL,
   checkpoint_on_exit = TRUE,
   seed = NULL,
   restart_seeds = NULL,
-  verbose = TRUE
+  verbose = TRUE,
+  console_language = c("English", "Spanish")
 ) {
+  console_language <- .semantica_console_language(console_language)
   top_max_iter <- !missing(max.iter)
   top_esem_every <- !missing(esem_every)
   top_run_esem <- !missing(run_esem_during_search)
@@ -1880,6 +1899,7 @@ semantica_run_custom <- function(
     elite_multicriteria_rerank = TRUE,
     validation_data = validation_data,
     validation_ordered = validation_ordered,
+    response_analysis = response_analysis,
     sigmoid_steepness = 10,
     heuristic_beta = 0.50,
     archive_stable_window = archive_stable_window,
@@ -1917,6 +1937,7 @@ semantica_run_custom <- function(
     include_interactive_plot = plots$include_interactive,
     plot_progress = plot_progress,
     verbose = verbose,
+    console_language = console_language,
     response_format = generation$response_format,
     item_style = generation$item_style,
     language = generation$language,
@@ -1991,7 +2012,12 @@ semantica_run_custom <- function(
     ),
     participant_validation = list(
       data_supplied = !is.null(validation_data),
-      ordered = validation_ordered
+      ordered = validation_ordered,
+      response_analysis = response_analysis
+    ),
+    console = list(
+      language = console_language,
+      verbose = verbose
     ),
     plots = resolved_plots,
     seed = seed,
@@ -2133,7 +2159,7 @@ semantica_run_custom <- function(
   final_structure_repair_max_evals = 20L,
   final_structure_repair_prefilter_top_k = 10L,
   final_structure_repair_auto_skip_infeasible = TRUE,
-  validation_data = NULL, validation_ordered = NULL,
+  validation_data = NULL, validation_ordered = NULL, response_analysis = NULL,
   sigmoid_steepness = 10, heuristic_beta = 0.50, archive_stable_window = 8L,
   structural_archive_stable_window = 2L,
   min_successful_pfa_checkpoints = 2L, min_successful_esem_checkpoints = 2L,
@@ -2168,8 +2194,10 @@ semantica_run_custom <- function(
   allow_provider_key_forwarding = FALSE, allow_insecure_auth = FALSE,
   esem_cadence_mode = c("adaptive", "fixed"), generation_seed = NULL,
   htmt_objective_role = c("diagnostic", "penalty"),
-  elite_multicriteria_rerank = NULL
+  elite_multicriteria_rerank = NULL,
+  console_language = c("English", "Spanish")
 ) {
+  console_language <- .semantica_console_language(console_language)
   max_iter_explicit <- !missing(max.iter)
   if (!max_iter_explicit && !is.null(search_patience)) max.iter <- search_patience
 
@@ -2295,11 +2323,12 @@ semantica_run_custom <- function(
     memory_aware = memory_aware
   )
   if (verbose) {
-    cat("\n[SEMANTICA] Resolved resource plan before expensive execution:\n")
-    print(resource_plan_preview)
-    cat(sprintf(
-      "  Cosine device       : %s (lavaan remains on CPU)\n",
-      compute_device
+    cat(.semantica_console_text(console_language, "custom_resource_plan"))
+    resource_plan_for_display <- resource_plan_preview
+    attr(resource_plan_for_display, "semantica_console_language") <- console_language
+    print(resource_plan_for_display)
+    cat(.semantica_console_text(
+      console_language, "custom_cosine_device", compute_device
     ))
   }
   dots <- list(...)
@@ -2341,7 +2370,7 @@ semantica_run_custom <- function(
   # Default i.per.f if not provided
   if (is.null(i.per.f)) {
     i.per.f <- setNames(rep(3L, length(factors)), names(factors))
-    if (verbose) message("[FULL PIPELINE] i.per.f not specified. Defaulting to 3 items per factor.")
+    if (verbose) message(.semantica_console_text(console_language, "custom_default_items"))
   }
   i.per.f <- .semantica_validate_i_per_f(i.per.f)
   missing_targets <- setdiff(names(i.per.f), names(factors))
@@ -2364,8 +2393,8 @@ semantica_run_custom <- function(
   # =================================================================
   # STEP 1: LLM Generation & Semantic Embedding
   # =================================================================
-  if (verbose) cat("\n[SEMANTICA] Step 1/3: LLM Generation & Semantic Embedding...\n")
-  gen_res <- do.call(
+  if (verbose) cat(.semantica_console_text(console_language, "custom_step_generation"))
+  gen_res <- tryCatch(do.call(
     semantica_pipeline,
     c(
       list(
@@ -2422,7 +2451,10 @@ semantica_run_custom <- function(
       ),
       dots
     )
-  )
+  ), error = function(error) {
+    checkpoint_state$failure_details <- .semantica_failure_details(error)
+    stop(error)
+  })
 
   pool_topup_state <- gen_res$pool_topup %||%
     gen_res$generation_provenance$pool_topup %||% list()
@@ -2470,8 +2502,9 @@ semantica_run_custom <- function(
       within_similarity_target <- threshold_calibration$within_similarity_target
     }
     if (verbose) {
-      cat(sprintf("[SEMANTICA] Experimental pool-relative thresholds: redundancy %.3f | duplicate %.3f\n",
-                  redundancy_threshold, dup_threshold))
+      cat(.semantica_console_text(
+        console_language, "custom_pool_thresholds", redundancy_threshold, dup_threshold
+      ))
     }
   }
 
@@ -2572,7 +2605,7 @@ semantica_run_custom <- function(
   # =================================================================
   # STEP 2: ACO-ESEM Optimization with DFI Calibration
   # =================================================================
-  if (verbose) cat("\n[SEMANTICA] Step 2/3: ACO-ESEM Optimization...\n")
+  if (verbose) cat(.semantica_console_text(console_language, "custom_step_optimization"))
   aco_args <- list(
     ants = ants, max.iter = max.iter,
     search_patience = search_patience, evaporation = evaporation, esem_every = esem_every,
@@ -2680,6 +2713,7 @@ semantica_run_custom <- function(
     final_structure_repair_auto_skip_infeasible = final_structure_repair_auto_skip_infeasible,
     validation_data = validation_data,
     validation_ordered = validation_ordered,
+    response_analysis = response_analysis,
     sigmoid_steepness = sigmoid_steepness, heuristic_beta = heuristic_beta,
     archive_stable_window = archive_stable_window,
     structural_archive_stable_window = structural_archive_stable_window,
@@ -2704,16 +2738,7 @@ semantica_run_custom <- function(
     # Preserve structured guard diagnostics in the incomplete-run checkpoint.
     # Other errors retain their class and message without attempting to infer
     # an analysis-specific cause from text.
-    fields <- c(
-      "psychometric_guard_action", "guard_failure_summary",
-      "guard_diagnostics", "final_structure_repair"
-    )
-    details <- list(
-      condition_class = class(error),
-      message = conditionMessage(error)
-    )
-    for (field in fields) if (!is.null(error[[field]])) details[[field]] <- error[[field]]
-    checkpoint_state$failure_details <- details
+    checkpoint_state$failure_details <- .semantica_failure_details(error)
     stop(error)
   })
   restart_stability <- list(
@@ -2908,41 +2933,65 @@ semantica_run_custom <- function(
   target_dev_after <- if (is.finite(target_value) && is.finite(within_after)) abs(within_after - target_value) else NA_real_
   target_improvement <- if (is.finite(target_dev_before) && is.finite(target_dev_after)) target_dev_before - target_dev_after else NA_real_
   target_band_status <- if (is.finite(target_value) && is.finite(within_after)) {
-    if (abs(within_after - target_value) <= within_similarity_band) "inside target band" else "outside target band"
+    if (abs(within_after - target_value) <= within_similarity_band) {
+      .semantica_console_text(console_language, "custom_target_inside")
+    } else {
+      .semantica_console_text(console_language, "custom_target_outside")
+    }
   } else NA_character_
   separation_gap_before <- if (is.finite(within_before) && is.finite(between_before)) within_before - between_before else NA_real_
   separation_gap_after <- if (is.finite(within_after) && is.finite(between_after)) within_after - between_after else NA_real_
   separation_gap_change <- if (is.finite(separation_gap_before) && is.finite(separation_gap_after)) separation_gap_after - separation_gap_before else NA_real_
   sem_reduction_interpretation <- if (is.finite(separation_gap_change)) {
-    direction <- if (separation_gap_change > 0) "improved" else if (separation_gap_change < 0) "weakened" else "was unchanged"
-    guard_txt <- if (!is.na(target_band_status)) paste0("; within-factor cohesion remained ", target_band_status) else ""
-    paste0("Relative within-versus-between semantic separation ", direction, guard_txt, ".")
+    key <- if (separation_gap_change > 0) {
+      "custom_separation_improved"
+    } else if (separation_gap_change < 0) {
+      "custom_separation_weakened"
+    } else {
+      "custom_separation_unchanged"
+    }
+    guard_txt <- if (!is.na(target_band_status)) {
+      .semantica_console_text(console_language, "custom_cohesion_guard", target_band_status)
+    } else ""
+    .semantica_console_text(console_language, key, guard_txt)
   } else if (!is.na(sem_index_reduction)) {
-    "Relative separation could not be computed; inspect the available cohesion diagnostics."
+    .semantica_console_text(console_language, "custom_separation_unavailable")
   } else {
-    "Could not compute (insufficient items)"
+    .semantica_console_text(console_language, "custom_separation_insufficient")
   }
 
   if (verbose && is.null(aco_res$semantic_similarity_reduction)) {
-    cat("\n[SEMANTICA] Semantic Similarity Change Summary:\n")
-    cat(sprintf("  Within-factor : %.4f -> %.4f | change = %+.4f",
-                within_before, within_after, -reduction))
-    if (!is.na(percent_reduction)) cat(sprintf(" (%+.2f%%)", -percent_reduction))
+    cat(.semantica_console_text(console_language, "custom_semantic_summary"))
+    cat(.semantica_console_text(
+      console_language, "custom_semantic_within", within_before, within_after, -reduction
+    ))
+    if (!is.na(percent_reduction)) {
+      cat(.semantica_console_text(console_language, "custom_semantic_percent", -percent_reduction))
+    }
     cat("\n")
     if (is.finite(target_value)) {
-      cat(sprintf("  Within target : %.4f +/- %.4f | deviation %.4f -> %.4f | %s\n",
-                  target_value, within_similarity_band, target_dev_before, target_dev_after,
-                  target_band_status))
+      cat(.semantica_console_text(
+        console_language, "custom_semantic_target", target_value, within_similarity_band,
+        target_dev_before, target_dev_after, target_band_status
+      ))
     }
-    cat(sprintf("  Between-factor: %.4f -> %.4f | change = %+.4f\n",
-                between_before, between_after, -between_reduction))
+    cat(.semantica_console_text(
+      console_language, "custom_semantic_between", between_before, between_after,
+      -between_reduction
+    ))
     if (is.finite(separation_gap_before) && is.finite(separation_gap_after)) {
-      cat(sprintf("  Separation gap: %.4f -> %.4f | change = %+.4f\n",
-                  separation_gap_before, separation_gap_after, separation_gap_change))
+      cat(.semantica_console_text(
+        console_language, "custom_semantic_gap", separation_gap_before,
+        separation_gap_after, separation_gap_change
+      ))
     }
-    cat(sprintf("  Composite index: %.4f -> %.4f | change = %+.4f\n",
-                sem_index_before, sem_index_after, -sem_index_reduction))
-    cat(sprintf("  Interpretation: %s\n", sem_reduction_interpretation))
+    cat(.semantica_console_text(
+      console_language, "custom_semantic_composite", sem_index_before,
+      sem_index_after, -sem_index_reduction
+    ))
+    cat(.semantica_console_text(
+      console_language, "custom_semantic_interpretation", sem_reduction_interpretation
+    ))
   }
 
   # ---- Build standardized selected item metadata ----
@@ -3075,74 +3124,105 @@ semantica_run_custom <- function(
     ))
     if (verbose && !is.null(pfa_unit_result)) {
       if (isTRUE(pfa_unit_result$available)) {
-        cat(sprintf("\n[SEMANTICA] Facet/unit PFA: score=%.4f | recovery=%.4f | clarity=%.4f\n",
-                    pfa_unit_result$score,
-                    pfa_unit_result$recovery_score,
-                    pfa_unit_result$clarity_score))
+        cat(.semantica_console_text(
+          console_language, "custom_facet_pfa_available", pfa_unit_result$score,
+          pfa_unit_result$recovery_score, pfa_unit_result$clarity_score
+        ))
       } else {
-        unit_status <- if (isTRUE(pfa_unit_result$skipped)) "skipped" else "unavailable"
-        cat(sprintf("\n[SEMANTICA] Facet/unit PFA %s: %s\n",
-                    unit_status,
-                    pfa_unit_result$note %||% "insufficient facet/unit structure"))
+        unit_status <- if (isTRUE(pfa_unit_result$skipped)) {
+          .semantica_console_text(console_language, "custom_unit_skipped")
+        } else {
+          .semantica_console_text(console_language, "custom_unit_unavailable")
+        }
+        cat(.semantica_console_text(
+          console_language, "custom_facet_pfa_unavailable", unit_status,
+          pfa_unit_result$note %||% .semantica_console_text(
+            console_language, "custom_unit_insufficient"
+          )
+        ))
       }
     }
   }
 
   if (verbose && !is.null(gen_res$generation_provenance)) {
     gp <- gen_res$generation_provenance
-    cat("\n[SEMANTICA] Generation reproducibility/provenance:\n")
+    cat(.semantica_console_text(console_language, "custom_generation_provenance"))
     seed_txt <- gp$generation_seed_master %||% NA_integer_
     if (is.finite(seed_txt)) {
-      cat(sprintf("  Generation master seed : %d\n", as.integer(seed_txt)))
-      cat(sprintf("  Backend seed control   : %s (%s)\n",
-                  if (isTRUE(gp$generation_seed_controlled)) "requested" else "not controlled",
-                  gp$generation_seed_mechanism %||% "unavailable"))
+      cat(.semantica_console_text(
+        console_language, "custom_generation_seed", as.integer(seed_txt)
+      ))
+      cat(.semantica_console_text(
+        console_language, "custom_backend_seed",
+        if (isTRUE(gp$generation_seed_controlled)) {
+          .semantica_console_text(console_language, "custom_seed_requested")
+        } else {
+          .semantica_console_text(console_language, "custom_seed_uncontrolled")
+        },
+        gp$generation_seed_mechanism %||% .semantica_console_text(
+          console_language, "custom_unavailable"
+        )
+      ))
     } else {
-      cat("  Generation master seed : not requested\n")
+      cat(.semantica_console_text(console_language, "custom_seed_not_requested"))
     }
     if (!is.null(gp$generation_seed_schedule)) {
-      cat(sprintf("  Seed schedule          : %d realized call(s)\n", nrow(gp$generation_seed_schedule)))
+      cat(.semantica_console_text(
+        console_language, "custom_seed_schedule", nrow(gp$generation_seed_schedule)
+      ))
     } else if (!is.null(gp$task_seed_ledger)) {
-      cat(sprintf("  Generation call ledger : %d call(s)\n", nrow(gp$task_seed_ledger)))
+      cat(.semantica_console_text(
+        console_language, "custom_seed_ledger", nrow(gp$task_seed_ledger)
+      ))
     }
     if (isTRUE(gp$generation_seed_controlled)) {
-      cat("  Exact text replay      : not guaranteed by backend/runtime; reuse the realized item pool for exact downstream replay\n")
+      cat(.semantica_console_text(console_language, "custom_exact_replay"))
     }
     replay_fp <- gp$generation_replay_plan_fingerprint %||% NA_character_
     if (is.character(replay_fp) && length(replay_fp) == 1L &&
         !is.na(replay_fp) && nzchar(replay_fp)) {
-      cat(sprintf("  Replay-plan fingerprint: %s\n", replay_fp))
+      cat(.semantica_console_text(console_language, "custom_replay_fingerprint", replay_fp))
     }
     if (!is.null(gp$item_pool_fingerprint) && nzchar(gp$item_pool_fingerprint)) {
-      cat(sprintf("  Item-pool fingerprint  : %s\n", gp$item_pool_fingerprint))
+      cat(.semantica_console_text(
+        console_language, "custom_pool_fingerprint", gp$item_pool_fingerprint
+      ))
     }
-    cat(sprintf("  Content-screening state: %s\n",
-                gp$content_screening_status %||% "unknown"))
+    cat(.semantica_console_text(
+      console_language, "custom_screening_state",
+      gp$content_screening_status %||% .semantica_console_text(console_language, "custom_unknown")
+    ))
   }
 
   if (verbose && !is.null(gen_res$representation_stability)) {
     rs <- gen_res$representation_stability
     sens <- rs$cosine_adjustment_sensitivity %||% list()
-    cat("\n[SEMANTICA] Representation robustness summary:\n")
+    cat(.semantica_console_text(console_language, "custom_representation_summary"))
     rep_state <- gen_res$representation_evidence_state %||% NULL
     if (!is.null(rep_state)) {
-      cat(sprintf("  Evidence state: %s\n", rep_state$status %||% "insufficient_representation_diagnostics"))
-      cat("  Evidence dependency: semantic/PFA/ESEM/clustering conclusions share this embedding representation; agreement is dependent corroboration, not independent validation.\n")
+      cat(.semantica_console_text(
+        console_language, "custom_evidence_state",
+        rep_state$status %||% "insufficient_representation_diagnostics"
+      ))
+      cat(.semantica_console_text(console_language, "custom_evidence_dependency"))
     }
     if (is.finite(rs$common_direction_strength %||% NA_real_)) {
-      cat(sprintf("  Common-direction concentration: %.4f (descriptive; no universal cutoff)\n",
-                  rs$common_direction_strength))
+      cat(.semantica_console_text(
+        console_language, "custom_common_direction", rs$common_direction_strength
+      ))
     }
     if (isTRUE(sens$available)) {
-      cat(sprintf("  Raw vs mean-centered cosine: offdiag r=%.3f | top %.1f%% pair J=%.3f | random ref=%.3f\n",
-                  sens$offdiag_correlation %||% NA_real_,
-                  100 * (sens$top_pair_fraction_effective %||% sens$top_pair_fraction %||% 0.05),
-                  sens$top_pair_jaccard %||% NA_real_,
-                  sens$top_pair_jaccard_random_baseline %||% NA_real_))
+      cat(.semantica_console_text(
+        console_language, "custom_cosine_sensitivity",
+        sens$offdiag_correlation %||% NA_real_,
+        100 * (sens$top_pair_fraction_effective %||% sens$top_pair_fraction %||% 0.05),
+        sens$top_pair_jaccard %||% NA_real_,
+        sens$top_pair_jaccard_random_baseline %||% NA_real_
+      ))
       if (isTRUE(rs$top_pair_overlap_warning)) {
-        cat("  Interpretation: WARNING -- strongest-pair membership is not more stable across preprocessing than its finite-pool random reference; replicate proxy conclusions under a justified alternative representation.\n")
+        cat(.semantica_console_text(console_language, "custom_overlap_warning"))
       } else {
-        cat("  Interpretation: sensitivity diagnostic only; SEMANTICA does not automatically choose a more favorable cosine preprocessing.\n")
+        cat(.semantica_console_text(console_language, "custom_sensitivity_note"))
       }
     }
   }
@@ -3154,7 +3234,7 @@ semantica_run_custom <- function(
   plot_generation_seconds <- 0
   plot_generation_breakdown_seconds <- numeric(0L)
   if (generate_plots) {
-    if (verbose) cat("\n[SEMANTICA] Step 3/3: Generating Diagnostic Plots...\n")
+    if (verbose) cat(.semantica_console_text(console_language, "custom_step_plots"))
     plot_started <- proc.time()[["elapsed"]]
     plots <- semantica_plot_all(
       result = aco_res, cosine_sim_matrix = gen_res$cosine_sim_matrix,
@@ -3176,7 +3256,7 @@ semantica_run_custom <- function(
   # =================================================================
   # RETURN UNIFIED OBJECT
   # =================================================================
-  if (verbose) cat("\n[SEMANTICA] Pipeline complete.\n")
+  if (verbose) cat(.semantica_console_text(console_language, "custom_complete"))
   .metadata_value <- function(x, name) {
     if (is.null(x) || !is.list(x) || !name %in% names(x)) return(NULL)
     x[[name]]

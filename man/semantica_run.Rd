@@ -23,7 +23,8 @@ semantica_run(
   item_style = "first-person declarative sentence",
   temperature = 0.4,
   structured_output = c("auto", "numbered", "json"),
-  progress = c("normal", "detailed", "quiet")
+  progress = c("normal", "detailed", "quiet"),
+  console_language = c("English", "Spanish")
 )
 }
 \arguments{
@@ -47,6 +48,7 @@ semantica_run(
 \item{temperature}{Non-negative provider sampling temperature; the easy interface defaults to 0.4 to prioritize instruction consistency.}
 \item{structured_output}{\code{"auto"}, \code{"numbered"}, or \code{"json"}.}
 \item{progress}{\code{"normal"} for concise user progress, \code{"detailed"} for component telemetry, or \code{"quiet"}.}
+\item{console_language}{Language for console feedback: \code{"English"} (the default) or \code{"Spanish"}. This does not change the language of generated questionnaire items; use \code{language} for that setting.}
 }
 \description{
 Main entry point for scale development. It uses the same analysis pipeline as

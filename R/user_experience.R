@@ -1445,12 +1445,15 @@ semantica_diagnostics <- function(result, section = "all") {
 #' ACO, and it does not change the selected scale.
 #'
 #' @param result A completed high-level SEMANTICA result.
+#' @param response_analysis Optional separate response-analysis specification; see
+#'   [ACO_with_ESEM()]. Semantic cutoffs and score settings are never inherited.
 #' @param responses Data frame or matrix with one column for every selected item ID.
 #' @param ordered Optional ordered-item specification passed to lavaan.
 #' @param verbose Logical; print a concise validation message.
 #' @return A copy of `result` with participant-response validation attached.
 #' @export
-semantica_validate <- function(result, responses, ordered = NULL, verbose = TRUE) {
+semantica_validate <- function(result, responses, ordered = NULL, verbose = TRUE,
+                               response_analysis = NULL) {
   verbose <- .semantica_assert_flag(verbose, "verbose")
   if (!inherits(result, "semantica_full_pipeline_result")) stop("'result' must be a completed semantica_run()/semantica_run_custom() result.", call. = FALSE)
   was_run_facade <- .semantica_is_run_facade(result)
@@ -1469,20 +1472,10 @@ semantica_validate <- function(result, responses, ordered = NULL, verbose = TRUE
   factors_cfg <- result$reproducibility$resolved_config$scale$factors %||% NULL
   factors <- if (is.list(factors_cfg) && length(names(factors_cfg))) names(factors_cfg) else unique(as.character(factor_assignment))
   model_info <- opt$model_info %||% list()
-  rotation <- model_info$rotation %||% "geomin"
-  rotation_args <- prepare_esem_rotation_args(rotation, model_info$rotation_args %||% list(geomin.epsilon = 0.50), best_items, factor_assignment, factors)
   syntax <- opt$esem_syntax %||% build_esem_syntax_safe(best_items, factor_assignment, factors)
-  ordered_items <- .semantica_normalize_ordered_items(ordered, best_items, responses)
-  response_estimator <- .semantica_response_estimator(
-    model_info$estimator %||% "ML",
-    data_type = model_info$data_type %||% "continuous",
-    ordered_items = ordered_items
-  )
-  fit <- run_esem_on_response_data(syntax, responses, best_items, estimator = response_estimator, rotation = rotation, rotation_args = rotation_args, ordered = ordered_items, iter_max = model_info$full_esem_iter_max %||% 2000L, fallback = TRUE)
-  response_cor <- compute_response_cor(responses, best_items, fit = fit, ordered = ordered_items)
-  if (is.null(opt$active_cutoffs)) stop("The stored fit-cutoff configuration is unavailable; post-hoc validation cannot reproduce the established response-validation path safely.", call. = FALSE)
-  response_result <- extract_and_score_esem(fit, response_cor, factor_assignment, factors, opt$active_cutoffs, model_info$htmt_threshold %||% 0.85, verbose_decomp = FALSE, score_mode = model_info$semantic_esem_score_mode %||% "current")
-  validation <- list(fit = fit, result = response_result, estimator = response_estimator, ordered = ordered_items, n_obs = nrow(responses), note = "Response-data validation is based on observed item responses and should take priority over semantic-proxy ESEM for final scale validation.")
+  validation <- .semantica_validate_responses(syntax, responses, best_items,
+    factor_assignment, factors, ordered = ordered, analysis = response_analysis)
+  response_result <- validation$result
   out <- result
   out$optimization$response_validation <- validation
   out$participant_validation_performed <- TRUE
@@ -1508,15 +1501,15 @@ semantica_validate <- function(result, responses, ordered = NULL, verbose = TRUE
       profile$validity_dimensions$structural$participant_response_validation_available <- TRUE
     }
     profile$interpretation <- paste(
-      "Independent participant-response evidence was supplied in addition to",
-      "the embedding-semantic family; keep their inferential roles separate."
+      "Participant-response evidence was supplied in addition to",
+      "the embedding-semantic family; held-out independence depends on the declared dataset role and overlap."
     )
     profile
   }
   out$evidence_profile <- refresh_evidence_profile(out$evidence_profile %||% out$optimization$evidence_profile %||% NULL)
   out$optimization$evidence_profile <- refresh_evidence_profile(out$optimization$evidence_profile %||% out$evidence_profile %||% NULL)
 
-  out$reproducibility$posthoc_participant_validation <- list(schema = "semantica-posthoc-validation-1", n_obs = nrow(responses), ordered = ordered_items, estimator = response_estimator, selected_item_ids = best_items)
+  out$reproducibility$posthoc_participant_validation <- list(schema = "semantica-posthoc-validation-1", n_obs = validation$n_obs, input_n_obs = nrow(responses), ordered = validation$ordered, estimator = validation$estimator, selected_item_ids = best_items, response_analysis = response_analysis)
   if (isTRUE(verbose)) message("SEMANTICA participant validation attached to the existing selected scale; generation and ACO were not rerun.")
   if (isTRUE(was_run_facade)) .semantica_wrap_run_result(out) else out
 }

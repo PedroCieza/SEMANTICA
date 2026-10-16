@@ -42,12 +42,14 @@ semantica_run_custom(
   diagnostics = semantica_diagnostics_config(),
   validation_data = NULL,
   validation_ordered = NULL,
+  response_analysis = NULL,
   plots = semantica_plot_config(),
   checkpoint_dir = if (interactive()) "semantica_checkpoints" else NULL,
   checkpoint_on_exit = TRUE,
   seed = NULL,
   restart_seeds = NULL,
-  verbose = TRUE
+  verbose = TRUE,
+  console_language = c("English", "Spanish")
 )
 }
 \arguments{
@@ -118,7 +120,7 @@ aborts when all candidates at a required checkpoint fail.
 ESEM at later checkpoints, and allows final semantic/PFA fallback only after
 every archived finalist has received a full-ESEM attempt.}
 
-\item{uncalibrated_esem_policy}{Handling when automatic DFI calibration
+\item{uncalibrated_esem_policy}{Handling when automatic or explicitly requested ESEM DFI calibration
 disables ESEM scoring while final guardrails are hard constraints:
 \code{"fail_early"} (default), \code{"guard_screen"}, or explicit
 \code{"semantic_fallback"}.}
@@ -153,6 +155,9 @@ from and should take precedence over semantic-proxy ESEM interpretation.}
 \item{validation_ordered}{Optional character vector of ordered item columns
 for response-data validation. \code{NULL} leaves estimator-specific defaults.}
 
+\item{response_analysis}{Optional separately declared response-analysis specification;
+see \code{\link[=ACO_with_ESEM]{ACO_with_ESEM()}}. Without response references only raw diagnostics are assessed.}
+
 \item{plots}{Plot config from \code{\link[=semantica_plot_config]{semantica_plot_config()}}, or \code{"none"},
 \code{"summary"}, \code{"full"}, \code{TRUE}, or \code{FALSE}.}
 
@@ -174,6 +179,9 @@ regime is common across successful starts. Agreement remains a descriptive
 optimizer-sensitivity diagnostic, not validation evidence.}
 
 \item{verbose}{Print progress messages.}
+
+\item{console_language}{Language for console feedback: \code{"English"} (the
+default) or \code{"Spanish"}. This does not change \code{generation$language}.}
 }
 \value{
 A compact \code{semantica_run_result}; \verb{$advanced} retains the complete

@@ -1,3 +1,117 @@
+test_that("requested ESEM calibration failure activates the existing failure policy", {
+  for (mode in c("auto", "semantic_approx_dfi", "semantic_roc_dfi", "esem_parametric_dfi")) {
+    for (stage in c("heuristic", "strict_cfa")) {
+      weight <- .semantica_dfi_search_weight_adjustment(NULL, .75,
+        active_stage = stage, requested_mode = mode)
+      expect_true(weight$cap_applied)
+      expect_equal(weight$effective_weight, 0)
+      policy <- .semantica_resolve_uncalibrated_esem_policy("fail_early",
+        weight$cap_applied, TRUE, "final_constraint")
+      expect_true(policy$fail_early)
+      expect_true(.semantica_resolve_uncalibrated_esem_policy("guard_screen",
+        weight$cap_applied, TRUE, "final_constraint")$run_guard_screen)
+      expect_false(.semantica_resolve_uncalibrated_esem_policy("semantic_fallback",
+        weight$cap_applied, TRUE, "final_constraint")$fail_early)
+      expect_false(.semantica_resolve_uncalibrated_esem_policy("fail_early",
+        weight$cap_applied, FALSE, "final_constraint")$active)
+    }
+    matched <- .semantica_dfi_search_weight_adjustment(NULL, .75,
+      active_stage = "semantic_approx", requested_mode = mode)
+    expect_false(matched$cap_applied)
+    expect_equal(matched$effective_weight, .75)
+  }
+  for (mode in c("strict_cfa_dfi", "heuristic_semantic")) {
+    expect_false(.semantica_dfi_search_weight_adjustment(NULL, .75,
+      active_stage = "heuristic", requested_mode = mode)$cap_applied)
+  }
+})
+
+test_that("native ACO records unavailable requested calibration before search fitting", {
+  bootstrap_calls <- 0L; search_calls <- 0L
+  local_mocked_bindings(
+    extract_fitted_dfi_params_esem = function(...) {
+      bootstrap_calls <<- bootstrap_calls + 1L
+      list(parameters = NULL, failure_reason = "offline_bootstrap_failure", solver = list())
+    },
+    run_esem_on_matrix = function(...) {
+      search_calls <<- search_calls + 1L
+      stop("Search/final fitting must not start")
+    },
+    .package = "SEMANTICA")
+  ids <- paste0("item_", seq_len(12L))
+  intended <- rep(c("F1", "F2"), each = 6L)
+  lambda <- matrix(.08, 12L, 2L)
+  lambda[cbind(seq_len(12L), rep(1:2, each = 6L))] <- .68
+  similarity <- tcrossprod(lambda)
+  diag(similarity) <- 1
+  dimnames(similarity) <- list(ids, ids)
+  outcome <- tryCatch(ACO_with_ESEM(
+    cosine_sim_matrix = similarity, df = data.frame(item = ids, factor = intended),
+    i.per.f = c(F1 = 4L, F2 = 4L), ants = 2L, max.iter = 1L, max_total_iter = 1L,
+    run_esem_during_search = TRUE, esem_weight = .75,
+    dfi_mode = "semantic_approx_dfi", dfi_fallback_policy = "requested_only",
+    uncalibrated_esem_policy = "fail_early", psychometric_guard_action = "final_constraint",
+    dfi_warmup_iters = 1L, pfa_mode = "off", run_pfa_during_search = FALSE,
+    semantic_n_sensitivity = FALSE, validation_n_diagnostic = FALSE,
+    final_dddfi = FALSE, final_equivtest = FALSE, use_parallel = FALSE,
+    seed = 101L, verbose = FALSE), error = identity)
+  expect_gt(bootstrap_calls, 0L)
+  expect_equal(search_calls, 0L)
+  expect_s3_class(outcome, "semantica_error_uncalibrated_esem_final_constraint")
+  expect_identical(outcome$dfi_calibration_path$requested_mode, "semantic_approx_dfi")
+  expect_identical(outcome$dfi_calibration_path$active_stage, "heuristic")
+})
+
+test_that("structural rejection retains archived fits and candidate identities", {
+  local_mocked_bindings(
+    run_esem_on_matrix = function(..., return_diagnostics = FALSE) {
+      fit <- list(offline = TRUE)
+      if (return_diagnostics) list(fit = fit) else fit
+    },
+    extract_and_score_esem = function(...) list(converged = TRUE, admissible = TRUE,
+      score = .4, loading_quality = .5, ave = .2, htmt_max = .4,
+      structure_diagnostics = list(min_primary_loading = .1, primary_ge_50 = .5,
+        correct_dominance = 1, simple_structure = 1)),
+    .package = "SEMANTICA")
+  ids <- paste0("item_", seq_len(12L)); intended <- rep(c("F1", "F2"), each = 6L)
+  lambda <- matrix(.08, 12L, 2L); lambda[cbind(seq_len(12L), rep(1:2, each = 6L))] <- .68
+  similarity <- tcrossprod(lambda); diag(similarity) <- 1
+  dimnames(similarity) <- list(ids, ids)
+  reject <- function(repair) tryCatch(ACO_with_ESEM(
+    cosine_sim_matrix = similarity, df = data.frame(item = ids, factor = intended),
+    i.per.f = c(F1 = 4L, F2 = 4L), ants = 2L, max.iter = 1L, max_total_iter = 1L,
+    run_esem_during_search = TRUE, dfi_mode = "heuristic_semantic",
+    psychometric_guard_action = "final_constraint", final_structure_repair = repair,
+    final_structure_repair_max_swaps = 1L, final_structure_repair_max_evals = 1L,
+    pfa_mode = "off", run_pfa_during_search = FALSE,
+    semantic_n_sensitivity = FALSE, validation_n_diagnostic = FALSE,
+    final_dddfi = FALSE, final_equivtest = FALSE, use_parallel = FALSE,
+    seed = 101L, verbose = FALSE), error = identity)
+  for (repair in c(FALSE, TRUE)) {
+    outcome <- reject(repair)
+    expect_s3_class(outcome, "semantica_error_structural_guard")
+    if (repair) expect_type(outcome$final_structure_repair, "list")
+    expect_gt(length(outcome$archive_evaluations), 0L)
+    expect_length(outcome$archive_item_ids, length(outcome$archive_evaluations))
+    for (i in seq_along(outcome$archive_evaluations)) {
+      expect_setequal(rownames(outcome$archive_evaluations[[i]]$esem_cor), outcome$archive_item_ids[[i]])
+      expect_equal(as.integer(table(outcome$archive_factor_assignment[outcome$archive_item_ids[[i]]])), c(4L, 4L))
+      expect_equal(outcome$archive_evaluations[[i]]$esem_result$ave, .2)
+    }
+    # The checkpoint extractor retains the original evidence without mutation.
+    outcome$search_parallel_recoveries <- list(list(iteration = 10L,
+      first_message = "offline worker disconnect", recovered = TRUE))
+    before <- serialize(outcome, NULL)
+    details <- SEMANTICA:::.semantica_failure_details(outcome)
+    path <- tempfile(fileext = ".rds")
+    saveRDS(details, path)
+    expect_identical(readRDS(path)$archive_evaluations, outcome$archive_evaluations)
+    expect_identical(readRDS(path)$search_parallel_recoveries, outcome$search_parallel_recoveries)
+    expect_identical(serialize(outcome, NULL), before)
+    unlink(path)
+  }
+})
+
 test_that("content guard is fail-closed without alignment evidence", {
   df <- data.frame(
     ID = c("a1", "a2", "a3", "b1", "b2", "b3"),

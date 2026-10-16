@@ -584,6 +584,9 @@
       as.integer(x$newly_retained %||% x$retained %||% 0L)
     )
     if (length(reasons)) fields <- paste0(fields, ", reasons=", paste(reasons, collapse = "+"))
+    for (field in c("duplicate_previous_units", "duplicate_current_unit")) {
+      if (!is.null(x[[field]])) fields <- paste0(fields, ", ", field, "=", x[[field]])
+    }
     if (length(backend_error) && !is.na(backend_error) && nzchar(backend_error)) {
       fields <- paste0(fields, ", backend_error=", backend_error)
     }

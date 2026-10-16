@@ -128,6 +128,7 @@ ACO_with_ESEM(
   final_structure_repair_auto_skip_infeasible = TRUE,
   validation_data = NULL,
   validation_ordered = NULL,
+  response_analysis = NULL,
   heuristic_beta = 0.5,
   archive_stable_window = 8L,
   structural_archive_stable_window = 2L,
@@ -379,7 +380,7 @@ standardized parameters.}
 declared guardrails and returns a machine-readable no-solution condition
 when none do.}
 
-\item{uncalibrated_esem_policy}{Handling when automatic DFI calibration
+\item{uncalibrated_esem_policy}{Handling when automatic or explicitly requested ESEM DFI calibration
 disables ESEM scoring while final guardrails are hard constraints:
 \code{"fail_early"} (default), \code{"guard_screen"}, or explicit
 \code{"semantic_fallback"}.}
@@ -524,6 +525,12 @@ search-time proxy diagnostics into proof of construct validity.}
 
 \item{validation_ordered}{Optional ordered item names for ordinal response-data
 validation.}
+
+\item{response_analysis}{Optional separately declared response-analysis list: estimator,
+ordered, data_type, model, rotation, rotation_args, iter_max, cutoffs,
+criterion_provenance, dataset_role, overlap_declaration, held_out.
+Without response cutoffs, raw diagnostics are extracted without cutoff assessment.
+Response fit references do not import the semantic optimizer's composite utility.}
 
 \item{heuristic_beta}{Heuristic influence in ACO probability.}
 

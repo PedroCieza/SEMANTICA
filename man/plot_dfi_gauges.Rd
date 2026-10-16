@@ -4,10 +4,12 @@
 \alias{plot_dfi_gauges}
 \title{Model fit indices vs DFI cutoffs (gauge chart)}
 \usage{
-plot_dfi_gauges(result)
+plot_dfi_gauges(result, evidence_source = c("semantic", "response"))
 }
 \arguments{
 \item{result}{A high-level SEMANTICA result or output from \code{ACO_with_ESEM()}.}
+
+\item{evidence_source}{Select semantic geometry or separately assessed responses.}
 }
 \value{
 A \code{ggplot} object.

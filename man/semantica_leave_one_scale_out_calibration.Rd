@@ -26,3 +26,7 @@ This benchmark prevents item-pair leakage within the same instrument by
 training the semantic-to-response mapping on entire other scales and testing
 on the held-out scale.
 }
+\details{
+Optional \code{item_ids}, \code{paraphrase_groups}, and \code{respondent_ids} in each
+dataset support overlap checks. Missing declarations leave independence unknown.
+}

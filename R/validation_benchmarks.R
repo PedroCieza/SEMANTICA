@@ -259,6 +259,8 @@ semantica_benchmark_matrix_prediction <- function(semantic_matrix,
 #' @param method Calibration method.
 #' @param cor_method Correlation method for response data.
 #' @return Per-scale holdout metrics and pooled summary.
+#' @details Optional `item_ids`, `paraphrase_groups`, and `respondent_ids` in each
+#'   dataset support overlap checks. Missing declarations leave independence unknown.
 #' @export
 semantica_leave_one_scale_out_calibration <- function(
   datasets,
@@ -271,6 +273,18 @@ semantica_leave_one_scale_out_calibration <- function(
   if (any(!nzchar(names(datasets))) || anyDuplicated(names(datasets))) {
     stop("'datasets' must have unique, non-empty scale names so holdout provenance is unambiguous.")
   }
+  split_manifest <- do.call(rbind, lapply(seq_along(datasets), function(i) {
+    train <- datasets[-i]; held <- datasets[[i]]
+    overlap <- function(field) {
+      if (is.null(held[[field]]) || any(vapply(train, function(d) is.null(d[[field]]), logical(1L)))) return(NA_integer_)
+      length(intersect(as.character(held[[field]]), unique(unlist(lapply(train, `[[`, field)))))
+    }
+    data.frame(held_out_scale = names(datasets)[i], shared_item_ids = overlap("item_ids"),
+      shared_paraphrase_groups = overlap("paraphrase_groups"), shared_respondent_ids = overlap("respondent_ids"),
+      stringsAsFactors = FALSE)
+  }))
+  split_manifest$overlap_status <- apply(split_manifest[, -1, drop = FALSE], 1L, function(z)
+    if (any(z > 0, na.rm = TRUE)) "overlap_detected" else if (anyNA(z)) "unknown" else "declared_disjoint")
   pairsets <- lapply(datasets, function(d) {
     rm <- d$response_matrix %||% NULL
     if (is.null(rm)) {
@@ -315,7 +329,11 @@ semantica_leave_one_scale_out_calibration <- function(
       mae = mean(abs(pred_all$predicted - pred_all$empirical))
     ),
     predictions = pred_all,
+    split_manifest = split_manifest,
+    split_fingerprint = .semantica_object_md5(lapply(datasets, function(d)
+      d[c("item_ids", "paraphrase_groups", "respondent_ids")])),
     validation_status = "out_of_scale_external_cross_validation",
+    held_out_independence = if (all(split_manifest$overlap_status == "declared_disjoint")) "declared_disjoint" else "not_established",
     leakage_control = "entire_scale_holdout_no_within_instrument_pair_split",
     source_families = c("embedding_semantic", "response_data"),
     participant_based = TRUE,
@@ -348,23 +366,50 @@ semantica_compare_selection_methods <- function(methods, problem, budget,
   for (seed in as.integer(seeds)) {
     for (nm in names(methods)) {
       started <- proc.time()[["elapsed"]]
-      res <- methods[[nm]](problem = problem, budget = budget, seed = seed)
+      method_error <- evaluator_error <- NA_character_
+      res <- tryCatch(methods[[nm]](problem = problem, budget = budget, seed = seed),
+        error = function(e) { method_error <<- conditionMessage(e); NULL })
       elapsed <- proc.time()[["elapsed"]] - started
-      ev <- evaluator(res)
-      if (is.data.frame(ev)) {
-        if (nrow(ev) != 1L) stop("'evaluator' data frame must contain one row per run.")
-        ev <- as.list(ev[1L, , drop = FALSE])
-      } else if (is.atomic(ev)) ev <- as.list(ev)
+      ev <- if (is.na(method_error)) tryCatch({
+        value <- evaluator(res)
+        if (is.data.frame(value)) {
+          if (nrow(value) != 1L) stop("'evaluator' data frame must contain one row per run.")
+          value <- as.list(value[1L, , drop = FALSE])
+        } else if (is.atomic(value)) value <- as.list(value)
+        if (!is.list(value) || (length(value) && (is.null(names(value)) || any(!nzchar(names(value))))))
+          stop("Evaluator must return named scalar metrics.")
+        if (length(value) && nrow(as.data.frame(value)) != 1L) stop("Evaluator metrics must be scalar.")
+        reserved <- c("method", "seed", "elapsed_seconds", "status", "method_error", "evaluator_error", "actual_evaluation_cost", "budget_enforced")
+        if (any(names(value) %in% reserved)) stop("Evaluator metric names conflict with benchmark accounting fields.")
+        value
+      }, error = function(e) { evaluator_error <<- conditionMessage(e); list() }) else list()
       k <- k + 1L
+      cost <- if (is.list(res)) .semantica_metric_scalar(res$evaluation_cost) else NA_real_
       records[[k]] <- data.frame(method = nm, seed = seed, elapsed_seconds = elapsed,
-                                 as.data.frame(ev, stringsAsFactors = FALSE), check.names = FALSE)
-      raw[[paste(nm, seed, sep = "::")]] <- res
+        status = if (!is.na(method_error)) "method_error" else if (!is.na(evaluator_error)) "evaluator_error" else "completed",
+        method_error = method_error, evaluator_error = evaluator_error,
+        actual_evaluation_cost = cost, budget_enforced = FALSE, check.names = FALSE)
+      if (length(ev)) {
+        metrics <- as.data.frame(ev, stringsAsFactors = FALSE)
+        if (nrow(metrics) != 1L) stop("Evaluator metrics must be scalar.")
+        records[[k]] <- cbind(records[[k]], metrics)
+      }
+      # Assign with [ ] so a NULL failed result still occupies its scheduled slot.
+      raw[paste(nm, seed, sep = "::")] <- list(res)
     }
   }
   list(
-    results = do.call(rbind, records),
+    results = {
+      columns <- unique(unlist(lapply(records, names)))
+      do.call(rbind, lapply(records, function(r) {
+        for (nm in setdiff(columns, names(r))) r[[nm]] <- NA
+        r[, columns, drop = FALSE]
+      }))
+    },
     raw = raw,
     budget = budget,
+    budget_contract = "declared_to_method; arbitrary user functions require their own enforced budget; actual cost is user-reported or unavailable",
+    evaluator_provenance = "user_supplied; independence_not_inferred",
     evidence_role = "selection_method_external_benchmark",
     benchmark_requirements = c("same_declared_budget", "same_seed_set", "independent_evaluator"),
     validation_status = "depends_on_user_supplied_independent_evaluator",

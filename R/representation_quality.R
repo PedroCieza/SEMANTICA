@@ -263,6 +263,16 @@ semantica_embedding_spec <- function(
   )
 }
 
+# Numerical ties have no unique winner; label order cannot resolve evidence.
+.semantica_unique_top_prototype <- function(sim, labels,
+                                            tolerance = sqrt(.Machine$double.eps)) {
+  apply(sim, 1L, function(x) {
+    if (!all(is.finite(x))) return(NA_character_)
+    winners <- which(abs(x - max(x)) <= tolerance)
+    if (length(winners) == 1L) labels[winners] else NA_character_
+  })
+}
+
 .semantica_classify_alignment_margins <- function(margins, groups = NULL, min_reference = 2L) {
   margins <- as.numeric(margins)
   n <- length(margins)
@@ -274,8 +284,12 @@ semantica_embedding_spec <- function(
     status = rep(NA_character_, n)
   )
   finite <- is.finite(margins)
-  out$status[finite & margins >= 0] <- "aligned"
-  out$status[finite & margins < 0] <- "ambiguous"
+  tie_tolerance <- sqrt(.Machine$double.eps)
+  out$status[!finite] <- "unavailable"
+  out$status[finite & margins > tie_tolerance] <- "aligned"
+  out$status[finite & margins < -tie_tolerance] <- "ambiguous"
+  out$status[finite & abs(margins) <= tie_tolerance] <- "tied"
+  out$tie_tolerance <- tie_tolerance
 
   # Guard calibration uses the typical *positive* separation achieved by items
   # that the assigned construct already wins. If a group has too few positively
@@ -288,12 +302,12 @@ semantica_embedding_spec <- function(
     if (!length(ii)) next
     positive <- margins[ii][margins[ii] > sqrt(.Machine$double.eps)]
     if (length(positive) < as.integer(min_reference)) {
-      out$status[ii[margins[ii] < 0]] <- "alignment_unresolved"
+      out$status[ii[margins[ii] < -tie_tolerance]] <- "alignment_unresolved"
       next
     }
     scale_g <- stats::median(positive, na.rm = TRUE)
     if (!is.finite(scale_g) || scale_g <= sqrt(.Machine$double.eps)) {
-      out$status[ii[margins[ii] < 0]] <- "alignment_unresolved"
+      out$status[ii[margins[ii] < -tie_tolerance]] <- "alignment_unresolved"
       next
     }
     out$scale[ii] <- scale_g
@@ -381,7 +395,7 @@ semantica_embedding_spec <- function(
   colnames(sim) <- f_names
   rownames(sim) <- common
   assigned <- as.character(x[[factor_col]][match(common, ids)])
-  top <- f_names[max.col(sim, ties.method = "first")]
+  top <- .semantica_unique_top_prototype(sim, f_names)
   assigned_score <- vapply(seq_along(common), function(i) {
     if (assigned[i] %in% f_names) sim[i, assigned[i]] else NA_real_
   }, numeric(1L))
@@ -402,7 +416,7 @@ semantica_embedding_spec <- function(
   )
   colnames(sim_centered) <- f_names
   rownames(sim_centered) <- common
-  top_centered <- f_names[max.col(sim_centered, ties.method = "first")]
+  top_centered <- .semantica_unique_top_prototype(sim_centered, f_names)
   assigned_score_centered <- vapply(seq_along(common), function(i) {
     if (assigned[i] %in% f_names) sim_centered[i, assigned[i]] else NA_real_
   }, numeric(1L))
@@ -604,7 +618,7 @@ semantica_embedding_spec <- function(
       if (!length(ii)) next
       fs <- .semantica_cosine_cross(embeddings[common[ii], , drop = FALSE], fe)
       colnames(fs) <- fn
-      topf <- fn[max.col(fs, ties.method = "first")]
+      topf <- .semantica_unique_top_prototype(fs, fn)
       out$semantica_top_facet[ii] <- topf
       for (k in seq_along(ii)) {
         af <- assigned_facet[ii[k]]
@@ -617,7 +631,7 @@ semantica_embedding_spec <- function(
           } else {
             NA_real_
           }
-          out$semantica_facet_aligned[ii[k]] <- identical(af, topf[k])
+          out$semantica_facet_aligned[ii[k]] <- if (is.na(topf[k])) NA else identical(af, topf[k])
         }
       }
       jj <- ii[is.finite(out$semantica_facet_margin[ii])]

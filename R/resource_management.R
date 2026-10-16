@@ -624,35 +624,58 @@ semantica_resource_plan <- function(n.cores = 2L,
 #' @method print semantica_resource_plan
 #' @export
 print.semantica_resource_plan <- function(x, ...) {
+  console_language <- tryCatch(
+    .semantica_console_language(attr(x, "semantica_console_language") %||% "English"),
+    error = function(e) "English"
+  )
   requested <- if (identical(x$request_mode, "serial")) {
-    paste0(x$requested_workers, " (parallel disabled)")
+    .semantica_console_text(
+      console_language, "resource_parallel_disabled", x$requested_workers
+    )
   } else {
     as.character(x$requested_workers)
   }
-  cat("<semantica_resource_plan>\n")
-  cat(sprintf("  Requested workers   : %s\n", requested))
-  cat(sprintf("  Available to R      : %s\n", as.character(x$available_workers)))
+  cat(.semantica_console_text(console_language, "resource_plan_title"))
+  cat(.semantica_console_text(console_language, "resource_requested", requested))
+  cat(.semantica_console_text(
+    console_language, "resource_available", as.character(x$available_workers)
+  ))
   if (identical(x$request_mode, "auto")) {
-    cat(sprintf("  Coordinator budget  : %d\n", x$coordinator_cores_applied %||% 0L))
-    cat(sprintf("  Reserved (auto)     : %d\n", x$reserve_cores_applied))
+    cat(.semantica_console_text(
+      console_language, "resource_coordinator", x$coordinator_cores_applied %||% 0L
+    ))
+    cat(.semantica_console_text(
+      console_language, "resource_reserved", x$reserve_cores_applied
+    ))
   }
-  cat(sprintf("  Effective workers   : %d\n", x$effective_workers))
+  cat(.semantica_console_text(console_language, "resource_effective", x$effective_workers))
   if (identical(x$request_mode, "auto")) {
     if (is.finite(x$physical_worker_cap %||% NA_real_)) {
-      cat(sprintf("  Physical-core cap   : %d worker(s)\n", x$physical_worker_cap))
+      cat(.semantica_console_text(
+        console_language, "resource_physical_cap", x$physical_worker_cap
+      ))
     }
     if (isTRUE(x$memory_aware) && is.finite(x$memory_worker_cap %||% NA_real_)) {
-      cat(sprintf("  Memory-aware cap    : %d (%s)\n", x$memory_worker_cap, x$memory_source %||% "measured"))
+      cat(.semantica_console_text(
+        console_language, "resource_memory_cap", x$memory_worker_cap,
+        x$memory_source %||% .semantica_console_text(console_language, "resource_measured")
+      ))
     }
     if (!is.finite(x$physical_worker_cap %||% NA_real_) &&
         (!isTRUE(x$memory_aware) || !is.finite(x$memory_worker_cap %||% NA_real_))) {
-      cat("  Auto safety cap     : CPU allocation with coordinator/reserve accounting\n")
+      cat(.semantica_console_text(console_language, "resource_auto_cap"))
     }
   }
-  cat(sprintf("  Parallel backend    : %s\n", x$parallel_backend))
-  cat(sprintf(
-    "  Worker BLAS threads : %s\n",
-    if (is.na(x$worker_blas_threads)) "not applicable" else as.character(x$worker_blas_threads)
+  cat(.semantica_console_text(
+    console_language, "resource_parallel_backend", x$parallel_backend
+  ))
+  cat(.semantica_console_text(
+    console_language, "resource_blas_threads",
+    if (is.na(x$worker_blas_threads)) {
+      .semantica_console_text(console_language, "resource_not_applicable")
+    } else {
+      as.character(x$worker_blas_threads)
+    }
   ))
   invisible(x)
 }
@@ -803,6 +826,21 @@ semantica_reset_resources <- function(force = FALSE) {
       )
     }
   )
+  # Integer task seeds require the same RNG algorithms on master and workers.
+  # Fresh PSOCK workers otherwise default to Mersenne-Twister even when a
+  # simulation child uses L'Ecuyer-CMRG, changing draws under the same seed.
+  # Synchronize algorithms only; task-local scopes own seeds and preserve state.
+  tryCatch(
+    parallel::clusterCall(cluster, function(kind) {
+      do.call(RNGkind, as.list(kind))
+      invisible(NULL)
+    }, RNGkind()),
+    error = function(e) {
+      try(.semantica_stop_psock_cluster(cluster), silent = TRUE)
+      stop(sprintf("SEMANTICA could not initialize worker RNG algorithms: %s",
+        conditionMessage(e)), call. = FALSE)
+    }
+  )
   .semantica_pool_registry$next_id <- .semantica_pool_registry$next_id + 1L
   token <- paste0("pool_", .semantica_pool_registry$next_id)
   attr(cluster, "semantica_pool_token") <- token
@@ -860,6 +898,31 @@ semantica_reset_resources <- function(force = FALSE) {
   object_names <- ls(envir, all.names = TRUE)
   if (length(object_names) > 0L) {
     parallel::clusterExport(cluster, varlist = object_names, envir = envir)
+    # Source-mode functions serialize their namespace by name. Workers may have
+    # an older installed namespace, so explicitly exported helpers must resolve
+    # one another through the current exports. Keep task data in .GlobalEnv so
+    # later parameter exports remain visible, and preserve local closure state.
+    source_functions <- object_names[vapply(object_names, function(name) {
+      value <- get(name, envir = envir, inherits = FALSE)
+      is.function(value) && isNamespace(environment(value)) &&
+        identical(unname(getNamespaceName(environment(value))), "SEMANTICA")
+    }, logical(1L))]
+    if (length(source_functions)) parallel::clusterCall(cluster, function(objects, functions) {
+      values <- mget(objects, envir = .GlobalEnv, inherits = FALSE)
+      bridge <- new.env(parent = environment(values[[functions[[1L]]]]))
+      for (name in objects) {
+        if (is.function(values[[name]]) || identical(name, ".SEMANTICA_DECISION_POLICY"))
+          assign(name, values[[name]], envir = bridge)
+      }
+      for (name in functions) {
+        value <- values[[name]]
+        environment(value) <- bridge
+        assign(name, value, envir = bridge)
+        values[[name]] <- value
+      }
+      list2env(values[functions], envir = .GlobalEnv)
+      invisible(TRUE)
+    }, object_names, source_functions)
   }
   invisible(object_names)
 }

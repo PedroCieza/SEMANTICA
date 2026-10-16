@@ -1,4 +1,12 @@
 test_that("task-level seeds are invariant to load-balanced worker scheduling", {
+  caller_kind <- RNGkind()
+  caller_seed <- get0(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+  on.exit({
+    do.call(RNGkind, as.list(caller_kind))
+    if (is.null(caller_seed)) {
+      if (exists(".Random.seed", envir = .GlobalEnv, inherits = FALSE)) rm(".Random.seed", envir = .GlobalEnv)
+    } else assign(".Random.seed", caller_seed, envir = .GlobalEnv)
+  }, add = TRUE)
   task_seeds <- c(104729L, 130363L, 155921L, 180503L, 205019L, 229939L)
   task_seed_scope <- SEMANTICA:::.semantica_with_task_seed
   evaluate <- function(seed) {
@@ -8,7 +16,7 @@ test_that("task-level seeds are invariant to load-balanced worker scheduling", {
     )
   }
 
-  set.seed(8675309L)
+  set.seed(8675309L, kind = "L'Ecuyer-CMRG", normal.kind = "Inversion", sample.kind = "Rejection")
   serial_rng_before <- get(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
   serial <- lapply(task_seeds, evaluate)
   expect_identical(
@@ -16,13 +24,15 @@ test_that("task-level seeds are invariant to load-balanced worker scheduling", {
     serial_rng_before
   )
   plan <- semantica_resource_plan(
-    n.cores = 2L,
-    max.cores = 2L
+    n.cores = 3L,
+    max.cores = 3L
   )
   skip_if(plan$effective_workers < 2L, "Fewer than two workers are available")
 
   cluster <- SEMANTICA:::.semantica_make_cluster(plan)
   on.exit(SEMANTICA:::.semantica_stop_cluster(cluster), add = TRUE)
+  worker_kinds <- parallel::clusterCall(cluster, RNGkind)
+  expect_true(all(vapply(worker_kinds, identical, logical(1L), RNGkind())))
   export_environment <- new.env(parent = emptyenv())
   export_environment$.hidden_helper <- function(value) value + 1L
   exported <- SEMANTICA:::.semantica_cluster_export_environment(
@@ -47,7 +57,7 @@ test_that("DFI seed ledgers and caller RNG agree in serial and parallel", {
   skip_if(plan$effective_workers < 2L, "Fewer than two workers are available")
 
   run_dfi <- function(n_cores) {
-    set.seed(271828L)
+    set.seed(271828L, kind = "L'Ecuyer-CMRG")
     result <- SEMANTICA:::compute_dfi_by_simulation(
       factors = c("F1", "F2"),
       items_per_factor = c(F1 = 3L, F2 = 3L),
@@ -79,6 +89,27 @@ test_that("DFI seed ledgers and caller RNG agree in serial and parallel", {
     unlist(serial$result[c("cfi", "tli", "rmsea", "srmr")]),
     tolerance = 1e-10
   )
+})
+
+test_that("failed worker RNG initialization cleans up without registering a pool", {
+  skip_if_not_installed("parallelly")
+  active <- SEMANTICA:::.semantica_pool_registry$active
+  before <- ls(active, all.names = TRUE)
+  skip_if(length(before) > 0L, "Another test owns a live worker pool")
+  stopped <- FALSE
+  local_mocked_bindings(makeClusterPSOCK = function(...) structure(list(), class = "cluster"),
+    .package = "parallelly")
+  local_mocked_bindings(clusterCall = function(...) stop("planned initialization failure"),
+    .package = "parallel")
+  local_mocked_bindings(.semantica_stop_psock_cluster = function(cluster) {
+    stopped <<- TRUE
+    invisible(TRUE)
+  }, .package = "SEMANTICA")
+  plan <- semantica_resource_plan(n.cores = 3L, max.cores = 3L)
+  skip_if(plan$effective_workers < 2L, "Fewer than two workers are available")
+  expect_error(SEMANTICA:::.semantica_make_cluster(plan), "initialize worker RNG algorithms")
+  expect_true(stopped)
+  expect_identical(ls(active, all.names = TRUE), before)
 })
 
 test_that("Conda setup rejects unsafe or ambiguous accelerator requests early", {

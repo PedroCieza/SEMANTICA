@@ -6,7 +6,7 @@
 # that the casual API, advanced API, and core optimizer silently drift apart.
 
 .SEMANTICA_DECISION_POLICY <- list(
-  schema_version = "semantica-decision-policy-v1",
+  schema_version = "semantica-decision-policy-v2",
   objective_schema_version = "semantica-objective-schema-v7",
   evidence_schema_version = "semantica-evidence-schema-v4",
   search_schema_version = "semantica-search-schema-v3",
@@ -82,13 +82,97 @@
 
 .semantica_decision_policy <- function() .SEMANTICA_DECISION_POLICY
 
+# Scalar validation is shared by evidence evaluation and presentation. A numeric
+# compatibility alias is never sufficient when its evidence status is unavailable.
+.semantica_metric_scalar <- function(x) {
+  if (!is.numeric(x) || length(x) != 1L || !is.finite(x)) return(NA_real_)
+  as.numeric(x)
+}
+
+.semantica_evaluate_criteria <- function(spec, measurements, statuses = list(),
+                                        source = "semantic_geometry", role = "final_constraint") {
+  spec$value <- vapply(spec$criterion, function(id) {
+    .semantica_metric_scalar(measurements[[id]])
+  }, numeric(1L))
+  # Historical numeric aliases (notably unavailable HTMT = 0) are retained
+  # separately and never presented as observed evidence.
+  spec$numeric_compatibility_alias <- spec$value
+  no_measurement <- vapply(spec$criterion, function(id)
+    identical(statuses[[id]], "unavailable") || identical(statuses[[id]], "not_applicable"), logical(1L))
+  spec$value[no_measurement] <- NA_real_
+  spec$state <- vapply(seq_len(nrow(spec)), function(i) {
+    id <- spec$criterion[i]
+    if (!spec$constraint_active[i]) return("inactive")
+    if (identical(statuses[[id]], "not_applicable")) return("not_applicable")
+    if (identical(statuses[[id]], "unavailable") || !is.finite(spec$value[i]) || !is.finite(spec$threshold[i])) return("unavailable")
+    met <- switch(spec$direction[i], ">=" = spec$value[i] >= spec$threshold[i],
+                  "<=" = spec$value[i] <= spec$threshold[i], "==" = spec$value[i] == spec$threshold[i])
+    if (isTRUE(met)) "met" else "not_met"
+  }, character(1L))
+  spec$passed <- spec$state %in% c("met", "not_applicable", "inactive")
+  spec$availability <- ifelse(!is.finite(spec$value) | spec$state == "unavailable", "unavailable",
+                             ifelse(spec$state == "not_applicable", "not_applicable", "observed"))
+  spec$reason <- ifelse(spec$state == "unavailable", "required scalar measurement unavailable",
+                       ifelse(spec$state == "not_applicable", "statistic not applicable to this model", ""))
+  spec$criterion_id <- paste0("semantica.", spec$criterion)
+  spec$metric_method_version <- paste0(spec$criterion, "-legacy-v1")
+  spec$metric_method_version[spec$criterion == "ave"] <- "dominant_standardized_loading_mean_square-v1"
+  spec$evidence_source <- source
+  spec$matrix_representation <- if (source == "observed_responses") "response_correlation" else "configured_semantic_matrix"
+  spec$scope <- "whole_form"
+  spec$aggregation <- ifelse(spec$criterion == "ave", "minimum_factor_mean_assigned_loading_square", "metric_specific")
+  spec$role <- ifelse(spec$constraint_active, rep_len(role, nrow(spec)), "inactive")
+  spec$units <- "dimensionless"
+  spec$origin <- "resolved_legacy_operational_policy"
+  spec$calibration_id <- NA_character_
+  spec$applicability <- "operational_reference_no_external_calibration_claim"
+  spec$policy_version <- "legacy-integrity-v2"
+  spec$resolved_configuration_hash <- .semantica_criterion_config_hash(
+    spec[, c("criterion", "threshold", "direction", "constraint_active", "evidence_source", "role", "policy_version")])
+  spec
+}
+
+.semantica_criterion_config_hash <- local({
+  previous <- NULL
+  previous_hash <- NULL
+  function(config) {
+    if (!identical(config, previous)) {
+      previous_hash <<- .semantica_object_md5(config)
+      previous <<- config
+    }
+    previous_hash
+  }
+})
+
 .semantica_policy_metadata <- function() {
   p <- .semantica_decision_policy()
   list(
     decision_policy_schema = p$schema_version,
+    operational_policy = "legacy-integrity-v2",
     objective_schema_version = p$objective_schema_version,
     evidence_schema_version = p$evidence_schema_version,
     search_schema_version = p$search_schema_version,
     policy_origin = p$policy_origin
   )
+}
+
+# Score references are metadata over the existing policy, never editable copies.
+.semantica_score_reference_spec <- function(cutoffs, source = "semantic_geometry") {
+  p <- .semantica_decision_policy()$esem
+  ids <- c("cfi", "tli", "rmsea", "srmr")
+  refs <- c(setNames(lapply(ids, function(id) cutoffs[[id]]), ids), list(
+    ave_utility = p$ave_reference,
+    loading_range_lower = p$loading_quality$reference_lower,
+    loading_range_upper = p$loading_quality$reference_upper,
+    loading_center = p$loading_quality$reference_center,
+    residual_reference = p$residual_reference))
+  tab <- data.frame(criterion = names(refs),
+    threshold = vapply(refs, .semantica_metric_scalar, numeric(1L)),
+    direction = c(">=", ">=", "<=", "<=", ">=", ">=", "<=", "==", "<="),
+    constraint_active = FALSE)
+  tab <- .semantica_evaluate_criteria(tab, list(), source = source)
+  tab$role <- ifelse(tab$criterion == "tli", "descriptive", "optimization_utility")
+  tab$availability <- ifelse(is.finite(tab$threshold), "reference_available", "unavailable")
+  tab$origin <- "legacy_policy_or_declared_fit_reference"
+  tab
 }

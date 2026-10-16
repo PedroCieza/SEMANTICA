@@ -120,7 +120,11 @@ result <- semantica_run(
 
 `semantica_run()` provides the main workflow with commonly used settings. `semantica_run_custom()` exposes the same pipeline with additional configuration.
 
-Console progress is concise by default. Use `progress = "detailed"` for component-level telemetry or `progress = "quiet"` for scripting.
+Console progress is concise and in English by default. Use `console_language = "Spanish"` for Spanish console feedback; this is independent of `language`, which controls generated item wording. Use `progress = "detailed"` for component-level telemetry or `progress = "quiet"` for scripting.
+
+```r
+result <- semantica_run(..., console_language = "Spanish")
+```
 
 ### 4. Inspect the final scale
 
@@ -565,3 +569,30 @@ citation("SEMANTICA")
 The GitHub repository also includes `CITATION.cff`, which enables GitHub's
 **Cite this repository** interface. Cite the specific software version used in
 your analysis.
+
+
+Embedding evidence and response assessment use separate references. The
+`legacy-integrity-v2` policy retains the existing operational cutoffs, reports
+required missing guard measurements as unavailable, and makes exact numerical
+prototype ties explicit. These corrections can change acceptance in missing-data
+and tied cases; they do not justify changing substantive quality thresholds.
+
+For participant data, use `semantica_validate(result, responses,
+response_analysis = list(...))`, or pass `response_analysis` with `validation_data`
+to `semantica_run_custom()`. Declare response `estimator`, `ordered`, `model`,
+`rotation`, `cutoffs` and `criterion_provenance` as appropriate. Without response
+cutoffs, raw diagnostics are available and cutoff assessment remains unavailable.
+Declaring response fit references permits criterion comparisons; it does not import
+the semantic optimizer's composite utility, so response composite scores remain
+unavailable pending a separate response utility specification.
+`dataset_role`, `overlap_declaration` and `held_out` record the study declaration;
+participant data alone do not establish a held-out design. Use
+`plot_dfi_gauges(result, evidence_source = "response")` for response measurements.
+The default plot continues to show semantic evidence after responses are attached.
+
+Conditional DFI simulation records successful and failed replications separately;
+its order-statistic intervals describe Monte Carlo quantile uncertainty conditional
+on the constructed population. They are not respondent confidence intervals or
+false-acceptance guarantees for the optimizer. The HEXACO design remains 22
+configurations of the adaptive algorithm by 100 complete attempts. Changed source
+hashes require a new frozen study specification and output directory.

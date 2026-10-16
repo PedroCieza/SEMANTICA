@@ -51,7 +51,8 @@ direct calls that supply \code{n_per_factor}.}
 \item{max_retries}{Maximum generation attempts. After a partial successful response, retries are deficit-aware: already usable items are preserved and the next request is sized from the observed new-item yield rather than regenerating the full target.}
 
 \item{global_forbidden_max}{Maximum number of previously generated items to
-include as anti-duplicate examples in subsequent prompts.}
+include as anti-duplicate examples in subsequent prompts. Normalized lexical
+duplicates are excluded against all retained items regardless of this limit.}
 
 \item{temperature}{LLM temperature.}
 
