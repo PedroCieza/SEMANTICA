@@ -20,7 +20,11 @@ semantica_generate_items(
   temperature = 0.8,
   structured_output = c("auto", "numbered", "json"),
   verbose = TRUE,
-  seed = NULL
+  seed = NULL,
+  prompt_history = c("include", "omit"),
+  history_dedup = c("exact", "lexical"),
+  retain_responses = FALSE,
+  candidate_validator = NULL
 )
 }
 \arguments{
@@ -62,12 +66,32 @@ duplicates are excluded against all retained items regardless of this limit.}
 
 \item{seed}{Optional nonnegative master seed for LLM generation. SEMANTICA
 currently forwards deterministically derived per-task seeds only to backends
-with an implemented seed-control contract (Ollama). Unsupported protocols
+with an implemented seed-control contract (Ollama and llama.cpp/Unsloth
+local server presets). Unsupported protocols
 are recorded as uncontrolled rather than silently treated as reproducible.
 A requested backend seed controls SEMANTICA's deterministic seed schedule
 but does not guarantee byte-identical backend output, even within one
 runtime. Exact downstream replay requires saving and reusing the realized
 item pool identified by its item-pool fingerprint.}
+
+\item{prompt_history}{Include retained item text in initial/retry prompts
+(\code{"include"}), or retain it exclusively in R (\code{"omit"}).}
+
+\item{history_dedup}{Reject normalized exact history matches (\code{"exact"}), or
+also character-bigram Jaccard matches at .92 (\code{"lexical"}). All retained
+previous facets and current-facet attempts are checked regardless of prompt history.}
+
+\item{retain_responses}{Logical; retain per-attempt prompts and raw responses
+in generation metadata for offline candidate/curation auditing. Default FALSE.}
+
+\item{candidate_validator}{Optional function \verb{function(items, context)} returning
+one character reason per unchanged candidate: \code{NA} or \code{""} accepts; a
+nonempty reason rejects. Context includes dimension/facet definitions,
+language and attempt. Rejections use the existing bounded retry budget and
+retain texts/reasons in attempt metadata. Errors or invalid returns stop
+generation. NULL means wording/content quality is not assessed here.
+Declare and freeze the validator and any external resources before a study;
+this callback is not independent content validation.}
 }
 \value{
 Tibble with legacy columns (\code{item_id}, \code{factor}, \code{item_text},

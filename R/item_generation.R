@@ -1360,11 +1360,14 @@ print.semantica_session <- function(x, ...) {
 
 .semantica_generation_seed_capability <- function(session) {
   proto <- as.character(session$protocol %||% "unknown")
-  supported <- identical(proto, "ollama")
+  local_openai <- identical(proto, "openai_compat") &&
+    isTRUE(session$backend %in% c("unsloth", "llamacpp"))
+  supported <- identical(proto, "ollama") || isTRUE(local_openai)
   list(
     supported = supported,
     protocol = proto,
-    mechanism = if (supported) "ollama_options_seed" else "not_implemented_for_protocol",
+    mechanism = if (identical(proto, "ollama")) "ollama_options_seed" else
+      if (supported) "llamacpp_request_seed" else "not_implemented_for_protocol",
     guarantee = if (supported) "seed_option_supported" else "not_controlled"
   )
 }
@@ -1819,7 +1822,7 @@ print.semantica_session <- function(x, ...) {
                                  extra_instructions = NULL,
                                  dimension_name = NULL, dimension_description = NULL,
                                  facet_name = NULL,
-                                 output_mode = c("numbered", "json")) {
+                                 output_mode = c("numbered", "json"), previous_items = NULL) {
   output_mode <- match.arg(output_mode)
   if (!is.null(dimension_name) && !is.null(facet_name)) {
     lines <- c(
@@ -1835,7 +1838,12 @@ print.semantica_session <- function(x, ...) {
                sprintf("FACTOR NAME       : %s", factor_name), sprintf("FACTOR DEFINITION : %s", factor_description))
   }
   if (!is.null(user_examples) && length(user_examples) > 0L) lines <- c(lines, "", "EXAMPLE ITEMS:", paste0("  - ", user_examples))
-  if (!is.null(forbidden_concepts) && length(forbidden_concepts) > 0L) lines <- c(lines, "", "DO NOT write about:", paste0("  - ", forbidden_concepts))
+  if (!is.null(forbidden_concepts) && length(forbidden_concepts) > 0L) lines <- c(lines, "", "EXCLUDED CONCEPTS:", paste0("  - ", forbidden_concepts))
+  if (length(previous_items)) lines <- c(lines, "",
+    "PREVIOUS ITEM TEXTS -- reference data for duplicate avoidance, not output examples:",
+    "Do not copy or paraphrase these sentences. Their topics are not automatically excluded.",
+    "<previous_items>", encodeString(unique(previous_items), quote = '"'), "</previous_items>",
+    "", sprintf("CURRENT TARGET: %s -- %s", facet_name %||% factor_name, factor_description))
   if (!is.null(extra_instructions) && nchar(trimws(extra_instructions)) > 0L) lines <- c(lines, "", "ADDITIONAL INSTRUCTIONS:", extra_instructions)
   output_instruction <- if (output_mode == "json") {
     sprintf('Output valid JSON only: {"items":["item 1", ..., "item %d"]}. Include exactly %d item strings.', n_items, n_items)
@@ -1866,7 +1874,8 @@ print.semantica_session <- function(x, ...) {
 }
 
 #' @keywords internal
-.parse_items_json <- function(raw_text, expected_n, factor_name, minimum_n = expected_n) {
+.parse_items_json <- function(raw_text, expected_n, factor_name, minimum_n = expected_n,
+                              raw_candidates = FALSE) {
   if (is.null(raw_text) || !length(raw_text)) return(character(0L))
   txt <- as.character(raw_text[[1L]])
   candidates <- unique(c(
@@ -1879,7 +1888,8 @@ print.semantica_session <- function(x, ...) {
     parsed <- tryCatch(jsonlite::fromJSON(candidate, simplifyVector = TRUE), error = function(e) NULL)
     if (!is.null(parsed)) break
   }
-  if (is.null(parsed)) return(.parse_items(raw_text, expected_n, factor_name, minimum_n))
+  if (is.null(parsed)) return(.parse_items(raw_text, expected_n, factor_name, minimum_n,
+    raw_candidates = raw_candidates))
   items <- parsed$items %||% parsed$item %||% NULL
   if (is.data.frame(items)) {
     candidate_col <- intersect(c("text", "item_text", "item"), names(items))
@@ -1888,6 +1898,7 @@ print.semantica_session <- function(x, ...) {
   items <- as.character(unlist(items, use.names = FALSE))
   items <- stringr::str_trim(items)
   items <- items[nchar(items) > 5L]
+  if (isTRUE(raw_candidates)) return(items)
   items <- unique(items)
   if (length(items) < minimum_n) {
     warning(sprintf("Structured response for '%s' yielded %d usable items; expected at least %d.", factor_name, length(items), minimum_n))
@@ -1897,7 +1908,8 @@ print.semantica_session <- function(x, ...) {
 }
 
 #' @keywords internal
-.parse_items <- function(raw_text, expected_n, factor_name, minimum_n = expected_n) {
+.parse_items <- function(raw_text, expected_n, factor_name, minimum_n = expected_n,
+                         raw_candidates = FALSE) {
   if (is.null(raw_text) || length(raw_text) == 0L || is.na(raw_text)) {
     warning("Empty LLM response for '", factor_name, "'.")
     return(character(0L))
@@ -1949,6 +1961,7 @@ print.semantica_session <- function(x, ...) {
   )
   items <- items[!bad_prefix]
   items <- items[nchar(items) > 5L]
+  if (isTRUE(raw_candidates)) return(items)
   items <- unique(items)
 
   if (length(items) == 0L) warning("Could not parse items for '", factor_name, "'.")
@@ -1970,11 +1983,18 @@ print.semantica_session <- function(x, ...) {
     z[nzchar(z)]
   }
   parsed_raw <- suppressWarnings(if (output_mode == "json") {
-    .parse_items_json(raw_text, expected_n, factor_name, minimum_n = minimum_n)
+    .parse_items_json(raw_text, expected_n, factor_name, minimum_n = minimum_n, raw_candidates = TRUE)
   } else {
-    .parse_items(raw_text, expected_n, factor_name, minimum_n = minimum_n)
+    .parse_items(raw_text, expected_n, factor_name, minimum_n = minimum_n, raw_candidates = TRUE)
   })
-  retained <- .dedup_items(parsed_raw)
+  # Keep the historical selection order: literal unique, truncate, lexical dedup.
+  # Count candidates before those operations so exact copies remain observable.
+  unique_raw <- unique(parsed_raw)
+  bounded <- head(unique_raw, expected_n)
+  retained <- .dedup_items(bounded)
+  exact_duplicate_n <- length(parsed_raw) - length(unique_raw)
+  lexical_duplicate_n <- length(bounded) - length(retained)
+  truncated_n <- length(unique_raw) - length(bounded)
   reasons <- character(0L)
   if (!length(nonempty_lines)) reasons <- c(reasons, "empty_response")
   refusal <- grepl("\\b(sorry|cannot|can't|unable|refuse)\\b", tolower(raw_scalar), perl = TRUE)
@@ -1985,18 +2005,22 @@ print.semantica_session <- function(x, ...) {
   # truthfully recorded as shorter than requested. This does not change which
   # items are retained or whether retries occur.
   if (length(parsed_raw) < expected_n) reasons <- c(reasons, "fewer_than_requested")
-  if (length(parsed_raw) < minimum_n) reasons <- c(reasons, "below_minimum_usable")
-  if (length(parsed_raw) > expected_n) reasons <- c(reasons, "more_than_requested_truncated")
-  duplicate_n <- max(0L, length(parsed_raw) - length(retained))
+  if (length(retained) < minimum_n) reasons <- c(reasons, "below_minimum_usable")
+  if (truncated_n > 0L) reasons <- c(reasons, "more_than_requested_truncated")
+  duplicate_n <- exact_duplicate_n + lexical_duplicate_n
   if (duplicate_n > 0L) reasons <- c(reasons, "duplicates_removed")
   list(
     items = retained,
     metadata = list(
+      accounting_schema = "candidate_partition_v2",
       requested = as.integer(expected_n),
       received = as.integer(length(nonempty_lines)),
       parsed = as.integer(length(parsed_raw)),
       rejected = as.integer(max(0L, length(nonempty_lines) - length(parsed_raw))),
       duplicate = as.integer(duplicate_n),
+      duplicate_exact = as.integer(exact_duplicate_n),
+      duplicate_lexical = as.integer(lexical_duplicate_n),
+      truncated = as.integer(truncated_n),
       retained = as.integer(length(retained)),
       rejection_reasons = unique(reasons),
       output_mode = output_mode
@@ -2050,6 +2074,20 @@ print.semantica_session <- function(x, ...) {
     }
   }
   items[keep]
+}
+
+# Compare retained history independently of what is sent to the model.
+.semantica_generation_history_matches <- function(items, history,
+    policy = c("exact", "lexical"), threshold = 0.92) {
+  policy <- match.arg(policy)
+  exact <- .semantica_normalize_item_text(items) %in% .semantica_normalize_item_text(history)
+  near <- rep(FALSE, length(items))
+  if (policy == "lexical" && length(history)) {
+    for (i in which(!exact)) {
+      near[i] <- any(vapply(history, function(h) .semantica_lexical_jaccard(items[i], h) >= threshold, logical(1L)))
+    }
+  }
+  list(exact = exact, near = near, duplicate = exact | near)
 }
 
 #' @keywords internal
@@ -2694,12 +2732,20 @@ semantica_standardize_item_metadata <- function(x, id_col = NULL, dimension_col 
 #' @param verbose          Print progress.
 #' @param seed Optional nonnegative master seed for LLM generation. SEMANTICA
 #'   currently forwards deterministically derived per-task seeds only to backends
-#'   with an implemented seed-control contract (Ollama). Unsupported protocols
+#'   with an implemented seed-control contract (Ollama and llama.cpp/Unsloth
+#'   local server presets). Unsupported protocols
 #'   are recorded as uncontrolled rather than silently treated as reproducible.
 #'   A requested backend seed controls SEMANTICA's deterministic seed schedule
 #'   but does not guarantee byte-identical backend output, even within one
 #'   runtime. Exact downstream replay requires saving and reusing the realized
 #'   item pool identified by its item-pool fingerprint.
+#' @param prompt_history Include retained item text in initial/retry prompts
+#'   (`"include"`), or retain it exclusively in R (`"omit"`).
+#' @param history_dedup Reject normalized exact history matches (`"exact"`), or
+#'   also character-bigram Jaccard matches at .92 (`"lexical"`). All retained
+#'   previous facets and current-facet attempts are checked regardless of prompt history.
+#' @param retain_responses Logical; retain per-attempt prompts and raw responses
+#'   in generation metadata for offline candidate/curation auditing. Default FALSE.
 #' @return Tibble with legacy columns (`item_id`, `factor`, `item_text`,
 #'   `attempt`) and facet-aware columns (`ID`, `Dimension`, `Facet`, `item`).
 #'   Attribute `semantica_generation_metadata` records the generation contract,
@@ -2707,6 +2753,14 @@ semantica_standardize_item_metadata <- function(x, id_col = NULL, dimension_col 
 #'   dynamic execution ledger, generation-specification and replay-plan
 #'   fingerprints, the exact retained-pool fingerprint, and whether downstream
 #'   content screening has occurred.
+#' @param candidate_validator Optional function `function(items, context)` returning
+#'   one character reason per unchanged candidate: `NA` or `""` accepts; a
+#'   nonempty reason rejects. Context includes dimension/facet definitions,
+#'   language and attempt. Rejections use the existing bounded retry budget and
+#'   retain texts/reasons in attempt metadata. Errors or invalid returns stop
+#'   generation. NULL means wording/content quality is not assessed here.
+#'   Declare and freeze the validator and any external resources before a study;
+#'   this callback is not independent content validation.
 #' @export
 #' @examples
 #' \dontrun{
@@ -2731,7 +2785,10 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
                                      overgenerate = 2.0, max_retries = 3L,
                                      global_forbidden_max = 40L, temperature = 0.8,
                                      structured_output = c("auto", "numbered", "json"),
-                                     verbose = TRUE, seed = NULL) {
+                                     verbose = TRUE, seed = NULL,
+                                     prompt_history = c("include", "omit"),
+                                     history_dedup = c("exact", "lexical"),
+                                     retain_responses = FALSE, candidate_validator = NULL) {
   if (!inherits(session, "semantica_session")) stop("'session' must be created with semantica_connect().")
   if (!is.list(factors) || is.null(names(factors))) stop("'factors' must be a named list.")
   if (!is.numeric(overgenerate) || length(overgenerate) != 1L || !is.finite(overgenerate) || overgenerate <= 0) {
@@ -2745,6 +2802,13 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
     stop("'global_forbidden_max' must be a non-negative integer.")
   }
   structured_output <- match.arg(structured_output)
+  prompt_history <- match.arg(prompt_history)
+  history_dedup <- match.arg(history_dedup)
+  if (!is.logical(retain_responses) || length(retain_responses) != 1L || is.na(retain_responses))
+    stop("'retain_responses' must be TRUE or FALSE.")
+  if (!is.null(candidate_validator) && !is.function(candidate_validator))
+    stop("'candidate_validator' must be NULL or a function.", call. = FALSE)
+  prompt_policy <- if (prompt_history == "omit") "history_free_v1" else "separate_concepts_and_previous_items_v2"
   output_mode <- if (structured_output == "auto") {
     if (isTRUE(session$supports_structured_output)) "json" else "numbered"
   } else structured_output
@@ -2788,6 +2852,7 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
 
   all_rows <- list(); item_counter <- 1L; global_forbidden <- character(0L)
   generation_attempts <- list()
+  response_archive <- list()
   diversity_curation <- list()
   for (unit in generation_plan) {
     unit_attempt_start <- length(generation_attempts) + 1L
@@ -2796,13 +2861,14 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
     n_request <- ceiling(n_target * overgenerate)
     if (verbose) cat(sprintf("\n  [%s / %s] Requesting %d items...\n", unit$dimension, unit$facet, n_request))
 
-    prompt_forbidden <- unique(c(unit$forbidden, tail(global_forbidden, global_forbidden_max)))
+    previous_items <- if (prompt_history == "include") tail(global_forbidden, global_forbidden_max) else NULL
     user_prompt <- .build_factor_prompt(
       factor_name = unit$facet,
       factor_description = unit$facet_description,
       n_items = n_request,
       user_examples = unit$examples,
-      forbidden_concepts = prompt_forbidden,
+      forbidden_concepts = unit$forbidden,
+      previous_items = previous_items,
       extra_instructions = paste(
         unit$extra_instructions,
         if (output_mode == "json") "Return only valid JSON with key 'items'." else "Return only a plain numbered list. Do not add headings, explanations, markdown tables, JSON, or bullet points."
@@ -2866,6 +2932,10 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
         }
       )
       unit_responses[[attempt]] <- list(prompt = user_prompt, raw_response = raw)
+      if (retain_responses) response_archive[[length(response_archive) + 1L]] <- list(
+        dimension = unit$dimension, facet = unit$facet, attempt = attempt,
+        system_prompt = system_prompt, prompt = user_prompt, raw_response = raw,
+        prompt_fingerprint = prompt_fingerprint, seed = task_seed)
       if (!is.null(raw)) {
         parsed_response <- .semantica_parse_generation_response(
           raw, request_n, unit$facet, minimum_n = min(needed_before, request_n),
@@ -2873,21 +2943,52 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
         )
         parsed <- parsed_response$items
         # Prompt prohibitions do not enforce uniqueness. Reuse the existing
-        # lexical-identity normalization across ALL retained generation units,
-        # independently of the bounded prompt-history window. Near-duplicate
-        # semantic screening remains unchanged.
-        parsed_identity <- .semantica_normalize_item_text(parsed)
-        previous_unit_duplicate <- parsed_identity %in% .semantica_normalize_item_text(global_forbidden)
-        current_unit_duplicate <- parsed_identity %in% .semantica_normalize_item_text(collected_before)
+        # history policy across ALL retained generation units, independently
+        # of whether any history text was included in the request.
+        previous_match <- .semantica_generation_history_matches(parsed, global_forbidden, history_dedup)
+        current_match <- .semantica_generation_history_matches(parsed, collected_before, history_dedup)
+        previous_unit_duplicate <- previous_match$duplicate
+        current_unit_duplicate <- current_match$duplicate
         new_items <- parsed[!previous_unit_duplicate & !current_unit_duplicate]
+        validation_records <- data.frame(item_text = new_items, reason = rep(NA_character_, length(new_items)))
+        if (!is.null(candidate_validator) && length(new_items)) {
+          reasons <- tryCatch(candidate_validator(new_items, list(
+            dimension = unit$dimension, facet = unit$facet,
+            dimension_description = unit$dimension_description,
+            facet_description = unit$facet_description,
+            language = language, attempt = attempt)), error = identity)
+          if (inherits(reasons, "error") || !is.character(reasons) || !is.null(dim(reasons)) || length(reasons) != length(new_items))
+            .semantica_abort("Candidate validator failed; generation stopped without accepting unchecked candidates.",
+              subclass = "semantica_error_candidate_validation",
+              generation_failure = list(dimension = unit$dimension, facet = unit$facet,
+                candidate_items = new_items, retained_items = collected_before,
+                validation_error = if (inherits(reasons, "error")) conditionMessage(reasons) else
+                  "Validator must return one character reason per candidate.",
+                all_attempts = generation_attempts, responses = unit_responses,
+                response_archive = if (retain_responses) response_archive else NULL))
+          validation_records$reason <- reasons
+        }
+        validation_records$accepted <- is.na(validation_records$reason) | !nzchar(trimws(validation_records$reason))
+        new_items <- new_items[validation_records$accepted]
         collected <- unique(c(collected_before, new_items))
         successful_requested <- successful_requested + as.integer(request_n)
         successful_new_retained <- successful_new_retained + as.integer(length(new_items))
         attempt_meta <- parsed_response$metadata
+        attempt_meta$candidate_validation_status <- if (is.null(candidate_validator)) "not_assessed" else "callback_screened"
+        attempt_meta$candidate_validation <- validation_records
+        attempt_meta$candidate_validation_rejected <- sum(!validation_records$accepted)
         attempt_meta$dimension <- unit$dimension
         attempt_meta$facet <- unit$facet
         attempt_meta$attempt <- attempt
         attempt_meta$retried <- attempt > 1L
+        attempt_meta$prompt_history <- prompt_history
+        attempt_meta$history_dedup <- history_dedup
+        attempt_meta$prompt_history_items <- length(previous_items)
+        attempt_meta$local_previous_items <- length(global_forbidden)
+        attempt_meta$local_current_items <- length(collected_before)
+        history_exact <- previous_match$exact | current_match$exact
+        attempt_meta$duplicate_history_exact <- as.integer(sum(history_exact))
+        attempt_meta$duplicate_history_near <- as.integer(sum(!history_exact & (previous_unit_duplicate | current_unit_duplicate)))
         attempt_meta$visible_token_budget <- as.integer(visible_token_budget)
         attempt_meta$reasoning_reserve <- as.integer(reasoning_reserve)
         attempt_meta$completion_budget <- as.integer(completion_budget)
@@ -2899,7 +3000,7 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
         attempt_meta$needed_before <- as.integer(needed_before)
         attempt_meta$newly_retained <- as.integer(length(new_items))
         attempt_meta$new_item_yield <- if (request_n > 0L) length(new_items) / request_n else NA_real_
-        attempt_meta$duplicate_existing <- as.integer(max(0L, length(parsed) - length(new_items)))
+        attempt_meta$duplicate_existing <- as.integer(sum(previous_unit_duplicate | current_unit_duplicate))
         attempt_meta$duplicate_previous_units <- as.integer(sum(previous_unit_duplicate))
         attempt_meta$duplicate_current_unit <- as.integer(sum(current_unit_duplicate & !previous_unit_duplicate))
         attempt_meta$retained_total <- length(collected)
@@ -2913,6 +3014,10 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
           rejection_reasons = if (inherits(last_condition, "semantica_error_reasoning_budget")) "reasoning_budget_exhausted" else "backend_error",
           output_mode = output_mode, dimension = unit$dimension, facet = unit$facet,
           attempt = attempt, retried = attempt > 1L,
+          prompt_history = prompt_history, history_dedup = history_dedup,
+          prompt_history_items = length(previous_items),
+          local_previous_items = length(global_forbidden), local_current_items = length(collected_before),
+          duplicate_history_exact = 0L, duplicate_history_near = 0L,
           visible_token_budget = as.integer(visible_token_budget),
           reasoning_reserve = as.integer(reasoning_reserve),
           completion_budget = as.integer(completion_budget),
@@ -2949,13 +3054,14 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
           cat(sprintf("    Replenishment: %d item(s) still needed; requesting %d new candidate(s) (%s).\n",
                       n_miss, request_n, yield_txt))
         }
-        prompt_forbidden <- unique(c(unit$forbidden, collected, tail(global_forbidden, global_forbidden_max)))
+        previous_items <- if (prompt_history == "include") unique(c(collected, tail(global_forbidden, global_forbidden_max))) else NULL
         user_prompt <- .build_factor_prompt(
           factor_name = unit$facet,
           factor_description = unit$facet_description,
           n_items = request_n,
           user_examples = unit$examples,
-          forbidden_concepts = prompt_forbidden,
+          forbidden_concepts = unit$forbidden,
+          previous_items = previous_items,
           extra_instructions = paste(
             "Generate NEW items only.",
             if (output_mode == "json") "Return valid JSON with key 'items' and exactly the requested number of strings." else "Return exactly the requested number of items as '1. item text', one item per line, with no preamble.",
@@ -2993,7 +3099,12 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
         subclass = "semantica_error_generation_incomplete",
         generation_failure = list(dimension = unit$dimension, facet = unit$facet,
           target = n_target, retained_items = collected, previous_items = global_forbidden,
-          system_prompt = system_prompt, attempts = unit_attempts, responses = unit_responses))
+          prompt_policy = prompt_policy, prompt_history = prompt_history, history_dedup = history_dedup,
+          system_prompt = system_prompt, attempts = unit_attempts, all_attempts = generation_attempts,
+          response_archive = if (retain_responses) response_archive else NULL,
+          completed_items = if (length(all_rows)) tibble::as_tibble(do.call(rbind,
+            lapply(all_rows, as.data.frame, stringsAsFactors = FALSE))) else NULL,
+          responses = unit_responses))
     }
     if (verbose) cat(sprintf("    --> Retained %d generated candidates (pre-alignment)\n", length(collected)))
     for (txt in collected) {
@@ -3028,7 +3139,9 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
     protocol = session$protocol %||% NA_character_, chat_model = session$chat_model %||% NA_character_
   ))
   generation_spec_fingerprint <- .semantica_object_md5(list(
-    schema = "semantica-generation-spec-v1",
+    schema = "semantica-generation-spec-v3",
+    prompt_policy = prompt_policy, prompt_history = prompt_history, history_dedup = history_dedup,
+    history_lexical_threshold = if (history_dedup == "lexical") 0.92 else NULL,
     scale_name = enc2utf8(scale_name),
     scale_description = enc2utf8(scale_description),
     factors = factors,
@@ -3041,6 +3154,9 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
     model_revision = session$model_revision %||% NA_character_,
     model_precision = session$model_precision %||% NA_character_
   ))
+  if (!is.null(candidate_validator)) generation_spec_fingerprint <- .semantica_object_md5(list(
+    schema = "semantica-generation-validator-spec-v1", generation_spec = generation_spec_fingerprint,
+    validator_formals = formals(candidate_validator), validator_body = body(candidate_validator)))
   item_pool_fingerprint <- .semantica_object_md5(data.frame(
     item_id = out$item_id, factor = out$factor, item_text = enc2utf8(out$item_text),
     stringsAsFactors = FALSE
@@ -3082,11 +3198,18 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
   }
   attr(out, "semantica_generation_metadata") <- list(
     schema = "semantica-generation-provenance-v1",
+    candidate_validation_status = if (is.null(candidate_validator)) "not_assessed" else "callback_screened",
+    candidate_validation_rejected = sum(vapply(generation_attempts,
+      function(x) as.integer(x$candidate_validation_rejected %||% 0L), integer(1L))),
     requested_total = sum(vapply(generation_plan, function(x) x$n_items, integer(1L))),
     retained_total = nrow(out),
     attempts = generation_attempts,
+    response_archive = if (retain_responses) response_archive else NULL,
     retry_count = sum(vapply(generation_attempts, function(x) isTRUE(x$retried), logical(1L))),
     parser_contract = "semantica-generation-parser-1",
+    parser_accounting = "candidate_partition_v2",
+    prompt_policy = prompt_policy, prompt_history = prompt_history, history_dedup = history_dedup,
+    history_lexical_threshold = if (history_dedup == "lexical") 0.92 else NULL,
     replenishment_policy = "yield_adaptive_v1",
     lexical_deduplication = "normalized_identity_plus_char_bigram_jaccard",
     overgeneration_curation = "deterministic_lexical_maxmin_v1",
@@ -3116,7 +3239,8 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
     generation_seed_schedule_schema = "semantica-generation-seed-schedule-v1",
     generation_seed_schedule = generation_seed_schedule,
     generation_seed_schedule_role = "stable_seed_control_fields_for_realized_generation_calls",
-    generation_spec_fingerprint_schema = "semantica-generation-spec-md5-v1",
+    generation_spec_fingerprint_schema = if (is.null(candidate_validator)) "semantica-generation-spec-md5-v3" else "semantica-generation-validator-spec-md5-v1",
+    candidate_validator_fingerprint_scope = "Callback code/formals only; external state must be frozen separately. Realized texts and decisions are recorded.",
     generation_spec_fingerprint = generation_spec_fingerprint,
     # Exact 0.5.3 fingerprint retained for compatibility with stored runs.
     generation_contract_fingerprint = generation_contract_fingerprint,
@@ -3132,7 +3256,9 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
     item_pool_fingerprint = item_pool_fingerprint,
     content_screening_status = "not_yet_performed",
     content_screening_note = paste(
-      "Retained candidates passed generation parsing and deterministic lexical curation only;",
+      "Retained candidates passed generation parsing and deterministic lexical curation;",
+      if (is.null(candidate_validator)) "Wording/content quality was not assessed at generation." else
+        "The declared candidate validator was applied; this does not establish independent content validity.",
       "construct-definition alignment and other construct-alignment guards occur downstream."
     )
   )
@@ -4258,6 +4384,7 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
 #' @param pool_topup_content_alignment_mode,pool_topup_polarity_action Internal
 #'   policies mirroring the downstream selection guard modes for top-up
 #'   feasibility accounting.
+#' @param generation_checkpoint Optional callback receiving generated items and provenance before embedding.
 #' @param generation_seed Optional nonnegative generation master seed forwarded
 #'   to [semantica_generate_items()]. In the high-level pipeline this inherits
 #'   the run master seed. Seed control is backend-specific and is recorded in
@@ -4364,7 +4491,7 @@ semantica_pipeline <- function(
                                backend_spec = NULL, embed_backend_spec = NULL,
                                generation_seed = NULL,
                                allow_provider_key_forwarding = FALSE,
-                               allow_insecure_auth = FALSE) {
+                               allow_insecure_auth = FALSE, generation_checkpoint = NULL) {
   pipeline_started <- proc.time()[["elapsed"]]
   cosine_adjustment <- match.arg(cosine_adjustment)
   pool_topup <- isTRUE(pool_topup)
@@ -4468,6 +4595,10 @@ semantica_pipeline <- function(
     schema = "semantica-generation-provenance-unavailable",
     content_screening_status = "unknown"
   )
+  if (!is.null(generation_checkpoint)) {
+    if (!is.function(generation_checkpoint)) stop("generation_checkpoint must be a function or NULL.")
+    generation_checkpoint(items_tbl, generation_provenance)
+  }
   run_representation_stages <- function(items_tbl_current) {
     generated_item_metadata_current <- semantica_standardize_item_metadata(items_tbl_current)
     embedding_started <- proc.time()[["elapsed"]]
@@ -4642,7 +4773,8 @@ semantica_pipeline <- function(
     analyst_forbidden <- unique(as.character(spec$forbidden %||% character(0L)))
     analyst_forbidden <- analyst_forbidden[!is.na(analyst_forbidden) & nzchar(trimws(analyst_forbidden))]
     if (identical(constraint_level, "strict")) {
-      spec$forbidden <- unique(c(analyst_forbidden, same_factor_text))
+      spec$forbidden <- unique(c(analyst_forbidden,
+        if (!identical(generation_dots$prompt_history, "omit")) same_factor_text else character(0L)))
     } else {
       # The second rung deliberately relaxes forbidden-concept conflicts. The
       # concepts remain soft guidance in the prompt/provenance, while robust
@@ -4756,6 +4888,14 @@ semantica_pipeline <- function(
             )
           ),
           error = function(e) {
+            if (isTRUE(generation_dots$retain_responses)) {
+              ledger <- generation_provenance$topup_generation_ledger %||% list()
+              ledger[[length(ledger) + 1L]] <- list(round = round_idx, factor = f,
+                seed = topup_seed, failure = .semantica_failure_details(e))
+              generation_provenance$topup_generation_ledger <<- ledger
+              if (!is.null(generation_checkpoint)) generation_checkpoint(items_tbl, generation_provenance)
+            }
+            if (inherits(e, "semantica_error_candidate_validation")) stop(e)
             topup_actions[[length(topup_actions) + 1L]] <<- data.frame(
               round = round_idx, factor = f, requested_n = request_n,
               generated_n = 0L, added_n = 0L, rejected_duplicates = 0L,
@@ -4771,6 +4911,14 @@ semantica_pipeline <- function(
         topup_generation_seconds <- topup_generation_seconds +
           (proc.time()[["elapsed"]] - topup_started)
         if (is.null(raw_topup)) next
+        if (isTRUE(generation_dots$retain_responses)) {
+          ledger <- generation_provenance$topup_generation_ledger %||% list()
+          ledger[[length(ledger) + 1L]] <- list(round = round_idx, factor = f,
+            seed = topup_seed, original_items = raw_topup,
+            metadata = attr(raw_topup, "semantica_generation_metadata"))
+          generation_provenance$topup_generation_ledger <- ledger
+          if (!is.null(generation_checkpoint)) generation_checkpoint(items_tbl, generation_provenance)
+        }
 
         topup_tbl <- .semantica_pool_topup_reindex(items_tbl, raw_topup)
         topup_tbl <- .semantica_pool_topup_distinct(
@@ -4802,6 +4950,7 @@ semantica_pipeline <- function(
         pool_topup_diagnostics$reason <- "topup_produced_no_new_distinct_items"
         break
       }
+      if (!is.null(generation_checkpoint)) generation_checkpoint(items_tbl, generation_provenance)
       stage <- run_representation_stages(items_tbl)
       items_tbl <- stage$items_tbl
       generated_item_metadata <- stage$generated_item_metadata

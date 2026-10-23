@@ -1,0 +1,186 @@
+---
+title: "Continuous ACO Objectives and Offline Replay"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Continuous ACO Objectives and Offline Replay}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+# Choose the scientific preference
+
+The experimental continuous policies guide semantic item selection using a
+declared structural proxy. They retain the supplied factor count and intended
+item assignments. They do not discover dimensionality, repair the meaning of
+embeddings, or predict participant-response validity by themselves.
+
+| ESEM score mode | Utility | Preference |
+|---|---|---|
+| `continuous_structure` | Structure | Intended loading strength and separation from cross-loadings |
+| `continuous_reconstruction` | Reconstruction | Approximation of the selected input matrix |
+| `continuous_balanced` | Harmonic mean of structure and reconstruction | Both organization and approximation |
+
+The existing `current` and `structure_weighted` modes retain their definitions.
+No continuous policy is declared universally best. Reconstruction does not
+directly reward the intended grouping; structure rewards it explicitly.
+
+# Exact definitions
+
+For item i, let p be its absolute standardized loading on the intended aligned
+factor, and c its largest absolute cross-loading. Average each item measurement
+within each intended factor, then average the factor means equally. A factor
+does not receive extra weight simply because it has more selected items.
+
+```text
+strength   = equal_factor_mean(min(1, p))
+separation = equal_factor_mean(min(1, max(0, p - c)))
+structure  = harmonic_mean(strength, separation)
+```
+
+For one factor, separation is inapplicable and structure equals strength.
+The unit cap bounds a decision utility; it is not an acceptance cutoff or a
+claim that every admissible oblique loading must lie below one.
+
+Compare the correlation matrix supplied to ESEM with the fitted model's implied
+correlation matrix. Use each off-diagonal pair once:
+
+```text
+raw_reconstruction = 1 - sum((observed - implied)^2) / sum(observed^2)
+reconstruction     = max(0, min(1, raw_reconstruction))
+```
+
+Identity is the explicit zero-association baseline. The raw improvement and both
+sums of squares are retained. If all observed off-diagonals are zero, the raw
+ratio is undefined (`NA`) and utility is zero because there is no association
+signal to improve over that baseline. Required unavailable measurements produce
+an unavailable objective; they receive no neutral reward. Negative loading
+margins and reconstruction worse than baseline have a zero utility floor, so
+weak candidates can tie. The harmonic mean is zero when a component is zero.
+
+These formulas use no conventional loading bands, fit-index, AVE, or HTMT
+cutoffs. They still express explicit optimization preferences. Factor
+correlations remain estimates and affect fitted geometry indirectly.
+
+# Configure scoring and guard roles separately
+
+```{r eval=FALSE}
+esem_options <- semantica_esem_config(score_mode = "continuous_balanced")
+quality_options <- semantica_quality_config(
+  psychometric_guard_action = "report_only",
+  final_selection_mode = "scalar"
+)
+diagnostic_options <- semantica_diagnostics_config(final_fit = "off")
+
+# Supply these as esem, quality, and diagnostics to semantica_run_custom().
+# Existing text/vector workflows can instead use ACO_with_ESEM() directly:
+# semantic_esem_score_mode = "continuous_balanced"
+# psychometric_guard_action = "report_only"
+```
+
+When quality options are omitted, continuous modes resolve to report-only guards
+and scalar final selection. Explicit quality settings take precedence. A
+separately declared hard guard remains available for a sensitivity condition.
+
+Report-only keeps reference values, exceedances, and unavailable states visible.
+Its guard multiplier is one; guard rejection, structural repair, and the legacy
+diagnostic bonus are inactive. `reference_guard_passed` or
+`structural_guard$passed` is descriptive. Participant-validation eligibility is
+`NA`, with status `not_assessed_report_only`. A legacy ESEM score still includes
+its reference-based terms when paired with report-only guards.
+
+The separate semantic objective, content/facet constraints, mathematical
+admissibility, and any separately configured PFA objective remain active.
+Continuous scoring changes the ESEM component of the mixture. For example,
+`esem_weight = 0.5` still combines it with the other search component. Existing
+checkpoint reliability adjustment can lower effective ESEM weight when fits
+fail; inspect recorded effective weights and fallback states.
+
+Search DFI is skipped because these utilities do not use its cutoffs. Explicitly
+requested post-selection DFI/DDDFI remains separately configurable and can be
+expensive. The fitter still uses a declared reference N; these utilities add no
+respondent interpretation or guarantee of numerical invariance.
+
+# Reuse recorded inputs and control cost
+
+`semantica_prepare_inputs()` freezes recorded item and definition vectors for
+provider-free native replay. See the [existing-item workflow](semantica-user-workflows.html)
+for the full recipe. Preparation discards supplied evaluation/pass columns and
+recomputes native alignment and representation diagnostics. Blueprint,
+representation, source-definition, and mutation checks protect replay identity;
+the pool cannot silently expand through generation top-up.
+
+Use `semantica_resource_config(cpu_cores = 1L)` for a serial worker configuration,
+and set explicit ants, total iterations, and search-fit limits. A search-fit
+limit counts unique search candidate jobs; archive refits and final diagnostics
+have separate counts. One worker is not a guarantee that every numerical
+library uses only one system thread.
+
+Continuous archive fits receive candidate-specific seeds derived from the run
+seed and item IDs, independent of item order and native character encoding.
+Solver tolerances can still permit small numerical differences. Utility schemas
+and calibration records distinguish modes; prepare newly versioned runs when
+changing policies rather than resuming old scores under a new definition.
+
+# Interpret comparisons on a common basis
+
+Hold the pool, representation, blueprint, counts, constraints, and budgets fixed.
+Use several matched optimizer seeds and a constrained random or semantic-only
+reference. Report common loading/margin, reconstruction, semantic, coverage,
+redundancy, failure, selection-stability, and cost outcomes. Do not rank policies
+by their differently defined objective scores or treat those scores as universal
+quality certificates. Search-time and archive/final fit counts should both be
+included in cost reporting.
+
+An exact two-factor synthetic matrix can reconstruct almost perfectly under
+several different item selections. Its reconstruction utility cannot then
+distinguish the intended loading organization. With reconstruction fixed at one,
+the balanced ESEM utility becomes `2 * structure / (1 + structure)`. This is a
+rescaling, not evidence of improved selected items; in a mixture it can also
+change tradeoffs against the separate semantic objective.
+
+For direct optimizer results, inspect:
+
+```{r eval=FALSE}
+selected$esem_result$continuous_utility
+selected$objective_context
+selected$structural_guard
+selected$evaluation_telemetry
+selected$performance
+```
+
+For `semantica_run_custom()` results, the optimizer is retained under
+`result$advanced$optimization`. Reference attainment, numerical admissibility,
+and optional participant-response evidence answer separate questions.
+
+# Other recent controls
+
+- `semantica_generation_config(prompt_history = "omit")` excludes previous
+  generated sentence text from prompts while retaining local history checks.
+  `history_dedup = "lexical"` also uses the existing character-bigram Jaccard
+  threshold of .92; it is lexical duplicate screening, not semantic equivalence.
+- `retain_responses = TRUE` retains per-attempt prompts/responses for offline
+  audit. This can retain sensitive item text. The default is false. Parser
+  accounting separates exact duplicates, lexical duplicates, truncation, and
+  retained items.
+- `candidate_validator = function(items, context) ...` returns one character
+  reason per candidate: `NA` or empty accepts, a nonempty reason rejects.
+  Rejections consume the existing bounded retry budget. Invalid returns/errors
+  stop generation. Freeze any external resources separately; the callback is
+  neither independent validation nor a fully captured external environment.
+- `semantica_esem_config(bounds = "pos.var")` explicitly requests nonnegative
+  variance estimation with boundary flags and an unconstrained final comparison.
+  Use native ESEM/heuristic calibration and `final_fit = "off"`; unsupported
+  strict-CFA/DDDFI combinations are rejected. Zero-boundary convergence does
+  not establish favorable structure. The default remains `bounds = "none"`.
+- `exploration_slots = 1L` reserves a seeded random candidate outside the cheap
+  top shortlist when possible, within the existing search-fit budget. Its
+  default is zero. Calibration `bootstrap_candidates` controls the bounded
+  warm-up candidate limit.
+- `semantica_leave_one_scale_out_calibration(..., splits = ...)` accepts frozen
+  training memberships for each held-out instrument. Explicit detected item,
+  paraphrase, or respondent overlap is rejected. Missing declarations leave
+  independence unestablished; pooled and macro-scale summaries remain distinct.

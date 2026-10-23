@@ -1,4 +1,43 @@
 # SEMANTICA 0.2
+
+## Current development updates
+
+- Adds three opt-in ESEM utilities: `continuous_structure`,
+  `continuous_reconstruction`, and `continuous_balanced`. Their explicit,
+  factor-balanced loading/margin and matrix-reconstruction definitions are
+  experimental semantic decision utilities, not participant-validation claims.
+  Continuous modes skip search DFI, preserve numerical admissibility, and record
+  utility components, raw reconstruction errors, schemas, and candidate fit seeds.
+- Adds `psychometric_guard_action = "report_only"`: reference diagnostics remain
+  visible while guard penalties, final rejection, repair, and diagnostic-bonus
+  reranking are inactive. Continuous modes use this action and scalar final
+  selection when quality options are omitted; explicit options take precedence.
+  Participant-validation eligibility remains unassessed in report-only mode.
+- Adds fingerprinted `semantica_prepare_inputs()` and the `prepared_inputs`
+  pipeline boundary for provider-free replay of recorded item and definition
+  vectors. Native alignment/representation diagnostics are recomputed, supplied
+  evaluation columns are discarded, and immutable pools cannot be topped up.
+- Adds explicit generation prompt-history and local exact/lexical history-dedup
+  policies, optional per-attempt response retention, a bounded candidate-validator
+  callback, and separate accounting for exact duplicates, lexical duplicates,
+  truncation, and retained candidates. Previous sentences are prompt reference
+  data rather than excluded concepts. Local llama.cpp/Unsloth presets now receive
+  supported generation seeds without claiming byte-identical model output.
+- Adds opt-in native ESEM nonnegative variance bounds, boundary flags, and a final
+  unconstrained comparison. Unsupported strict-CFA/DDDFI combinations fail early;
+  boundary convergence does not establish favorable structural evidence.
+- Hardens DFI parallel recovery and execution accounting, preserves solver and
+  optional diagnostic warning evidence, reports global fit references separately
+  from structural guards, and distinguishes raw alignment flags from robust
+  exclusions. Adaptive calibration defaults and final repair constraint handling
+  receive focused regression coverage.
+- Adds an optional seeded ESEM shortlist exploration slot and bounded bootstrap
+  candidate controls. Calibration benchmarks accept frozen training exclusions,
+  reject declared overlap in explicit splits, and report macro-scale summaries.
+- Documents these features in the README, generated help, function/workflow
+  guides, and a new continuous-ACO article. The package version remains `0.2`;
+  local study scripts, result directories, and audit artifacts are not distributed.
+
 - Adds the named legacy-integrity-v2 evidence policy without changing substantive thresholds. Required unavailable guard measurements block acceptance and retain explicit states; inactive and genuinely inapplicable criteria remain distinct. Exact numerical prototype ties no longer depend on label order.
 - Gauges consume evaluated criteria and explicitly select semantic or response measurements. Attaching participant output cannot change semantic verdicts. Loading reference bands are neutral legacy utility references; comparative networks use a common default threshold.
 - Separates participant-response specifications from semantic cutoffs and score settings. Inline and post-hoc paths share extraction and assessment; absent response references leave raw diagnostics available with unavailable criterion assessment. Response fit references never import the semantic composite utility. Dataset role and overlap are declared separately from evidence source.

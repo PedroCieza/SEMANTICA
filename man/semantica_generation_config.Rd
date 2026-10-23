@@ -18,7 +18,11 @@ semantica_generation_config(
   pool_topup_max_rounds = 2L,
   pool_topup_overgenerate = NULL,
   pool_topup_relaxation_ladder = TRUE,
-  pool_topup_structural_gate = TRUE
+  pool_topup_structural_gate = TRUE,
+  prompt_history = c("include", "omit"),
+  history_dedup = c("exact", "lexical"),
+  retain_responses = FALSE,
+  candidate_validator = NULL
 )
 }
 \arguments{
@@ -63,6 +67,24 @@ construct-alignment and polarity guards.}
 
 \item{pool_topup_structural_gate}{Logical; require pre-ACO semantic slack
 and network-redundancy feasibility, not just raw/aligned item counts.}
+
+\item{prompt_history}{Include retained item text in initial/retry prompts
+(\code{"include"}), or keep it exclusively in R (\code{"omit"}).}
+
+\item{history_dedup}{Reject normalized exact history matches (\code{"exact"}), or
+also character-bigram Jaccard matches at the existing .92 threshold (\code{"lexical"}).}
+
+\item{retain_responses}{Logical; archive per-attempt prompts, raw responses
+and top-up generation evidence for independent review. Defaults to FALSE.}
+
+\item{candidate_validator}{Optional function \verb{function(items, context)} returning
+one character reason per unchanged candidate: \code{NA} or \code{""} accepts; a
+nonempty reason rejects. Context includes dimension/facet definitions,
+language and attempt. Rejections use the existing bounded retry budget and
+retain texts/reasons in attempt metadata. Errors or invalid returns stop
+generation. NULL means wording/content quality is not assessed here.
+Declare and freeze the validator and any external resources before a study;
+this callback is not independent content validation.}
 }
 \value{
 A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.

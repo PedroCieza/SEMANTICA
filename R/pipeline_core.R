@@ -54,6 +54,22 @@ extract_similarity_submatrix <- function(sim_matrix, items) {
 # =================================================================
 # 0-B2  SOLUTION CACHE HELPERS
 # =================================================================
+.semantica_esem_shortlist <- function(scores, k, exploration_slots = 0L, solutions = NULL) {
+  ranked <- order(scores, decreasing = TRUE, na.last = NA)
+  ranked <- ranked[is.finite(scores[ranked])]
+  k <- min(length(ranked), k)
+  if (exploration_slots == 1L && k > 0L && length(ranked) > k) {
+    outside <- ranked[seq.int(k + 1L, length(ranked))]
+    if (!is.null(solutions)) {
+      keys <- vapply(solutions, make_solution_key, character(1L))
+      outside <- outside[!keys[outside] %in% keys[head(ranked, k)] & !duplicated(keys[outside])]
+    }
+    if (!length(outside)) return(head(ranked, k))
+    return(c(head(ranked, k - 1L), outside[sample.int(length(outside), 1L)]))
+  }
+  head(ranked, k)
+}
+
 make_solution_key <- function(vec) {
   paste(which(vec == 1L), collapse = "-")
 }
@@ -147,7 +163,17 @@ cache_set <- function(cache, key, value) {
 }
 
 .semantica_progress_par_lapply <- function(cl, x, fun, progress = FALSE, label = NULL,
-                                           serial_fun = fun, on_parallel_error = NULL) {
+                                           serial_fun = fun, on_parallel_error = NULL,
+                                           observer = NULL) {
+  observe <- function(event) {
+    if (is.function(observer)) observer(event)
+    invisible(NULL)
+  }
+  retained <- function(ids, backend) observe(list(type = "retained", indices = ids, backend = backend))
+  recovery <- function(error, ids, remaining, completed) observe(list(
+    type = "recovery", stage = "dispatch", condition_classes = class(error),
+    message = conditionMessage(error), indices = remaining, failing_chunk = ids,
+    retained_completed_tasks = completed, serial_recovery_scheduled = TRUE))
   notify <- function(error) {
     if (is.function(on_parallel_error)) try(on_parallel_error(error), silent = TRUE)
   }
@@ -156,9 +182,15 @@ cache_set <- function(cache, key, value) {
       list(ok = TRUE, value = parallel::parLapplyLB(cl, x, fun)),
       error = function(e) list(ok = FALSE, error = e)
     )
-    if (isTRUE(dispatched$ok)) return(dispatched$value)
+    if (isTRUE(dispatched$ok)) {
+      retained(seq_along(x), "parallel")
+      return(dispatched$value)
+    }
+    recovery(dispatched$error, seq_along(x), seq_along(x), 0L)
     notify(dispatched$error)
-    return(lapply(x, serial_fun))
+    out <- lapply(x, serial_fun)
+    retained(seq_along(x), "serial")
+    return(out)
   }
   out <- vector("list", length(x))
   names(out) <- names(x)
@@ -178,13 +210,16 @@ cache_set <- function(cache, key, value) {
       error = function(e) list(ok = FALSE, error = e)
     )
     if (!isTRUE(dispatched$ok)) {
-      notify(dispatched$error)
       remaining <- seq.int(ids[1L], length(x))
+      recovery(dispatched$error, ids, remaining, done)
+      notify(dispatched$error)
       out[remaining] <- lapply(x[remaining], serial_fun)
+      retained(remaining, "serial")
       .semantica_progress_update(progress_bar, length(x))
       return(out)
     }
     out[ids] <- dispatched$value
+    retained(ids, "parallel")
     done <- done + length(ids)
     .semantica_progress_update(progress_bar, done)
   }
@@ -202,7 +237,7 @@ cache_set <- function(cache, key, value) {
   invisible(NULL)
 }
 
-.semantica_dfi_export_or_serial <- function(cl, export_env, verbose, label) {
+.semantica_dfi_export_or_serial <- function(cl, export_env, verbose, label, observer = NULL) {
   if (is.null(cl)) return(NULL)
   ok <- tryCatch(
     {
@@ -210,11 +245,121 @@ cache_set <- function(cache, key, value) {
       TRUE
     },
     error = function(e) {
+      if (is.function(observer)) observer(list(type = "recovery", stage = "export",
+        condition_classes = class(e), message = conditionMessage(e),
+        serial_recovery_scheduled = TRUE))
       .semantica_dfi_parallel_fallback(e, cl, verbose, label)
       FALSE
     }
   )
   if (isTRUE(ok)) cl else NULL
+}
+
+# Caller-owned calibration bookkeeping. Counts describe retained logical results,
+# not computations whose replies might have been lost in a failed chunk.
+.semantica_dfi_execution <- function(requested_workers, cl, jobs) {
+  state <- new.env(parent = emptyenv())
+  state$requested_workers <- requested_workers
+  state$initial_backend <- if (is.null(cl)) "serial" else "parallel"
+  state$jobs <- lapply(seq_along(jobs), function(i) {
+    job <- jobs[[i]]
+    list(replication = if (is.list(job)) job$replication %||% i else i,
+         seed = if (is.list(job)) job$seed else job,
+         branch = if (is.list(job)) job$kind else NULL)
+  })
+  state$scheduled <- 0L
+  state$retained_parallel_results <- 0L
+  state$retained_serial_results <- 0L
+  state$recovery_events <- list()
+  state$fit_diagnostics <- list()
+  state
+}
+
+.semantica_dfi_execution_observer <- function(state, indices = seq_along(state$jobs)) {
+  function(event) {
+    if (identical(event$type, "retained")) {
+      field <- paste0("retained_", event$backend, "_results")
+      state[[field]] <- state[[field]] + length(event$indices)
+    } else if (identical(event$type, "recovery")) {
+      local_ids <- event$indices %||% seq_along(indices)
+      event$tasks <- state$jobs[indices[local_ids]]
+      event$failing_chunk <- if (is.null(event$failing_chunk)) NULL else indices[event$failing_chunk]
+      event$indices <- indices[local_ids]
+      event$retained_completed_tasks <- state$retained_parallel_results + state$retained_serial_results
+      event$requested_workers <- state$requested_workers
+      event$initial_backend <- state$initial_backend
+      state$recovery_events[[length(state$recovery_events) + 1L]] <- event
+    }
+    invisible(NULL)
+  }
+}
+
+.semantica_dfi_execution_snapshot <- function(state, completed = TRUE) {
+  parallel_n <- state$retained_parallel_results
+  serial_n <- state$retained_serial_results
+  list(schema_version = "semantica-dfi-execution-1",
+    requested_workers = state$requested_workers, initial_backend = state$initial_backend,
+    completion_backend = if (!isTRUE(completed)) "incomplete" else if (parallel_n && serial_n) "mixed" else
+      if (parallel_n) "parallel" else "serial",
+    retained_parallel_results = parallel_n, retained_serial_results = serial_n,
+    recovery_events = state$recovery_events)
+}
+
+.semantica_dfi_collect_batch <- function(results, state, preserve_failure = FALSE) {
+  offset <- length(state$fit_diagnostics)
+  lapply(seq_along(results), function(i) {
+    record <- results[[i]]
+    id <- offset + i
+    record$fit_diagnostics$replication <- id
+    state$fit_diagnostics[[as.character(id)]] <- record$fit_diagnostics
+    if (isTRUE(preserve_failure) && is.null(record$value)) {
+      list(failure_category = record$failure_category)
+    } else record$value
+  })
+}
+
+# One native task, shared by calibrations and exact-seed diagnostic replay.
+# Deliberately no outer catch: unexpected programming errors remain terminal.
+.semantica_dfi_esem_task <- function(seed, population, item_names, syntax, n_obs,
+                                     estimator, rotation, rotation_args, iter_max,
+                                     kind = NULL, bounds = "none") {
+  .semantica_with_task_seed(seed, {
+    diagnostics <- list(seed = seed, branch = kind, bounds = bounds, solver_attempts_started = 0L,
+      accepted_attempt = NA_integer_, rejection_assessment = NULL,
+      rejected_attempts = list(), solver_records = list(), reasons = character())
+    finish <- function(value = NULL, category = NULL, reasons = character()) {
+      diagnostics$outcome <- if (is.null(value)) "failed" else "success"
+      diagnostics$reasons <- unique(c(diagnostics$reasons, reasons))
+      if (is.null(value) && !length(diagnostics$reasons)) diagnostics$reasons <- "unknown"
+      list(value = value, failure_category = category, fit_diagnostics = diagnostics)
+    }
+    sim_cor <- sample_correlation_from_population(population, n_obs)
+    if (is.null(sim_cor)) return(finish(category = "sampling_failed", reasons = "sampling_failed"))
+    dimnames(sim_cor) <- list(item_names, item_names)
+    envelope <- run_esem_on_matrix(syntax, sim_cor, n_obs = n_obs, estimator = estimator,
+      rotation = rotation, rotation_args = rotation_args, iter_max = iter_max,
+      fallback = TRUE, sample_cov_rescale = TRUE, return_diagnostics = TRUE, bounds = bounds)
+    for (nm in c("solver_attempts_started", "accepted_attempt", "rejection_assessment",
+                 "rejected_attempts", "solver_records")) diagnostics[nm] <- envelope[nm]
+    diagnostics$reasons <- unique(c(envelope$rejection_assessment$reasons,
+      unlist(lapply(envelope$rejected_attempts, function(x) x$reasons), use.names = FALSE)))
+    fit <- envelope$fit
+    converged <- tryCatch(isTRUE(lavaan::lavInspect(fit, "converged")), error = function(e) FALSE)
+    diagnostics$converged <- converged
+    if (is.null(fit) || !converged) return(finish(category = "fit_failed_or_nonconverged",
+      reasons = if (!is.null(fit) && !converged) "nonconvergence" else character()))
+    metric_error <- NULL
+    fm <- tryCatch(lavaan::fitMeasures(fit, c("cfi", "tli", "rmsea", "srmr")),
+      error = function(e) { metric_error <<- conditionMessage(e); NULL })
+    diagnostics$metric_error <- metric_error
+    if (is.null(fm) || any(!is.finite(fm))) return(finish(category = "nonfinite_fit_metrics",
+      reasons = if (is.null(fm)) "fit_metrics_unavailable" else "nonfinite_fit_metrics"))
+    value <- list(cfi = as.numeric(fm["cfi"]), tli = as.numeric(fm["tli"]),
+      rmsea = as.numeric(fm["rmsea"]), srmr = as.numeric(fm["srmr"]),
+      fit_attempt = attr(fit, "semantica_fit_attempt") %||% NA_integer_)
+    if (!is.null(kind)) value <- c(list(kind = kind), value)
+    finish(value)
+  })
 }
 
 .semantica_par_lapply_lb_or_serial <- function(cl, x, fun, serial_fun = fun,
@@ -351,7 +496,7 @@ cache_set <- function(cache, key, value) {
                                          n_obs = NULL, model_syntax = NULL,
                                          task_seeds = integer(0L),
                                          parallel_workers = 1L,
-                                         adaptive_telemetry = NULL,
+                                         adaptive_telemetry = NULL, execution = NULL,
                                          extra = list()) {
   requested_reps <- suppressWarnings(as.integer(requested_reps[1L]))
   completed_reps <- suppressWarnings(as.integer(completed_reps[1L]))
@@ -377,7 +522,8 @@ cache_set <- function(cache, key, value) {
       task_seeds = task_seeds
     ),
     .semantica_dfi_fit_telemetry(successful_results),
-    list(adaptive = adaptive_telemetry %||% list(enabled = FALSE, stopped_early = FALSE))
+    list(execution = execution,
+         adaptive = adaptive_telemetry %||% list(enabled = FALSE, stopped_early = FALSE))
   )
   c(
     list(
@@ -413,15 +559,19 @@ cache_set <- function(cache, key, value) {
 # refitting every successful model twice. Other warnings (including a failed
 # rotation start) must not cancel a potentially usable fit.
 .semantica_try_lavaan <- function(fit_args) {
+  # The supported legacy parser avoids syntax-cache hash collisions in the
+  # newer lavaan parsers. Our generated EFA/CFA syntax uses its public grammar.
+  fit_args$parser <- "old"
   fit_args$warn <- TRUE
   seed_before <- get0(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
-  fit_error <- NULL; failure_reason <- NULL; fit_warnings <- character(0L)
+  fit_error <- NULL; failure_reason <- NULL; fit_warnings <- warning_calls <- character(0L)
   marker_recovery <- FALSE
   fit <- tryCatch(withCallingHandlers(
     do.call(lavaan::sem, fit_args),
     warning = function(w) {
       msg <- conditionMessage(w)
       fit_warnings <<- c(fit_warnings, msg)
+      warning_calls <<- c(warning_calls, paste(deparse(conditionCall(w)), collapse = " "))
       normalized <- tolower(gsub("[[:space:]]+", " ", msg))
       # Some lavaan versions can retry the original marker after a switched
       # marker fails. Do not interrupt that dependency-owned recovery path.
@@ -452,8 +602,15 @@ cache_set <- function(cache, key, value) {
     }
     NULL
   })
-  list(fit = fit, error = fit_error, warnings = unique(fit_warnings),
-       failure_reason = failure_reason)
+  expected_ids <- colnames(fit_args$sample.cov)
+  if (!is.null(fit) && length(expected_ids) &&
+      !setequal(lavaan::lavNames(fit, "ov"), expected_ids)) {
+    fit <- NULL
+    failure_reason <- "fitted_item_identity_mismatch"
+    fit_error <- "Fitted observed-variable IDs differ from the supplied covariance matrix; fit discarded."
+  }
+  list(fit = fit, error = fit_error, warnings = fit_warnings, warning_calls = warning_calls,
+       parser = fit_args$parser, failure_reason = failure_reason)
 }
 
 .semantica_dfi_cutoff_delta <- function(previous, current) {
@@ -871,6 +1028,7 @@ compute_dfi_by_simulation <- function(factors, items_per_factor, n_obs = 1000,
                                       simulation_input = c("auto", "covariance", "raw")) {
   start_time <- proc.time()[["elapsed"]]
   simulation_input <- match.arg(simulation_input)
+  requested_workers <- n_cores
   n_cores <- .semantica_max_workers(n_cores)
   pop_model <- build_population_syntax_modelbased(items_per_factor, fitted_loadings, fitted_factor_cors,
                                                   loading_pattern, mean_loading, target_factor_cors,
@@ -952,12 +1110,15 @@ compute_dfi_by_simulation <- function(factors, items_per_factor, n_obs = 1000,
   seeds <- sample.int(.Machine$integer.max, reps)
   results <- vector("list", reps)
 
-  if (n_cores > 1L) {
-    cl <- .semantica_make_dfi_cluster(n_cores)
+  cl <- NULL
+  if (n_cores > 1L) cl <- .semantica_make_dfi_cluster(n_cores)
+  execution <- .semantica_dfi_execution(requested_workers, cl, seeds)
+  observer <- .semantica_dfi_execution_observer(execution)
+  if (!is.null(cl)) {
     on.exit(.semantica_stop_cluster(cl), add = TRUE)
     results <- .semantica_progress_par_lapply(
       cl, seeds, single_rep,
-      progress = progress,
+      progress = progress, observer = observer,
       label = "[DFI-SIM] Fallback CFA simulation refits",
       on_parallel_error = function(error) {
         .semantica_dfi_parallel_fallback(error, cl, verbose, "[DFI-SIM]")
@@ -972,10 +1133,16 @@ compute_dfi_by_simulation <- function(factors, items_per_factor, n_obs = 1000,
     )
   }
 
+  if (execution$retained_parallel_results + execution$retained_serial_results == 0L) {
+    observer(list(type = "retained", indices = seq_along(results), backend = "serial"))
+  }
   good <- Filter(Negate(is.null), results)
   if (length(good) == 0L) {
     if (verbose) message("[DFI-SIM] no successful fits in simulation.")
-    return(NULL)
+    return(.semantica_dfi_failed_result("model-based simulation", "model-based",
+      "no successful fits in simulation", start_time, reps, length(results),
+      n_obs = n_obs, model_syntax = fit_syntax, task_seeds = seeds,
+      parallel_workers = n_cores, execution = .semantica_dfi_execution_snapshot(execution)))
   }
 
   cfi_v <- vapply(good, `[[`, numeric(1), "cfi")
@@ -1008,7 +1175,7 @@ compute_dfi_by_simulation <- function(factors, items_per_factor, n_obs = 1000,
       parallel_workers = n_cores,
       simulation_input = if (use_covariance_input) "covariance" else "raw_data",
       covariance_wishart = isTRUE(use_covariance_input),
-      task_seeds = seeds
+      task_seeds = seeds, execution = .semantica_dfi_execution_snapshot(execution)
     )
   )
 }
@@ -1164,7 +1331,7 @@ safe_compute_dfi <- function(model_syntax, factors, items_per_factor, n_obs = 10
                                        loading_pattern, mean_loading, target_factor_cors, embed_reliability,
                                        residual_inflation, sim_reps, estimator, sim_cores, verbose,
                                        simulation_input = simulation_input)
-  if (!is.null(sim_cut)) {
+  if (!is.null(sim_cut) && !isTRUE(sim_cut$calibration_failed)) {
     sim_input <- sim_cut$telemetry$simulation_input %||% "raw_data"
     sim_cut$dfi_function <- if (identical(sim_input, "covariance")) "Wishart sample.cov+lavaan::cfa" else "simulateData+lavaan::cfa"
     sim_cut$data_type <- data_type
@@ -1176,6 +1343,10 @@ safe_compute_dfi <- function(model_syntax, factors, items_per_factor, n_obs = 10
 
   if (verbose) message("[DFI-SAFE] Simulation fallback failed -- using heuristic cutoffs.")
   heuristic <- compute_heuristic_cutoffs(length(factors), items_per_factor, n_obs)
+  if (isTRUE(sim_cut$calibration_failed)) {
+    heuristic$simulation_failure <- sim_cut
+    heuristic$telemetry <- sim_cut$telemetry
+  }
   heuristic$dynamic_reference_diagnostics <- dynamic_reference_diagnostics
   heuristic
 }
@@ -1488,10 +1659,11 @@ compute_esem_parametric_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
                                                 adaptive = FALSE, adaptive_min_reps = NULL,
                                                 adaptive_batch_reps = 50L,
                                                 adaptive_tol = 0.002,
-                                                adaptive_stable_batches = 2L) {
+                                                adaptive_stable_batches = 2L, bounds = "none") {
   if (is.null(esem_fit) || is.null(esem_syntax)) return(NULL)
   start_time <- proc.time()[["elapsed"]]
   reps <- max(20L, as.integer(reps))
+  requested_workers <- n_cores
   n_cores <- .semantica_max_workers(n_cores)
 
   pop_cov <- tryCatch(lavaan::fitted(esem_fit)$cov, error = function(e) NULL)
@@ -1514,7 +1686,7 @@ compute_esem_parametric_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
     factors = factors,
     items_per_factor = items_per_factor,
     n_obs = n_obs,
-    estimator = estimator,
+    estimator = estimator, bounds = bounds,
     rotation = rotation,
     rotation_args = rotation_args,
     reps = reps,
@@ -1536,25 +1708,8 @@ compute_esem_parametric_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
   with_task_seed <- .semantica_with_task_seed
 
   single_rep <- function(seed) {
-    with_task_seed(seed, {
-      sim_cor <- sample_correlation_from_population(pop_cor, n_obs)
-      if (is.null(sim_cor)) return(NULL)
-      dimnames(sim_cor) <- list(item_names, item_names)
-      fit <- run_esem_on_matrix(
-        esem_syntax, sim_cor, n_obs = n_obs, estimator = estimator,
-        rotation = rotation, rotation_args = rotation_args,
-        iter_max = iter_max, fallback = TRUE,
-        sample_cov_rescale = TRUE
-      )
-      converged <- tryCatch(isTRUE(lavaan::lavInspect(fit, "converged")), error = function(e) FALSE)
-      if (is.null(fit) || !converged) return(NULL)
-      fm <- tryCatch(lavaan::fitMeasures(fit, c("cfi", "tli", "rmsea", "srmr")),
-                     error = function(e) NULL)
-      if (is.null(fm) || any(!is.finite(fm))) return(NULL)
-      list(cfi = as.numeric(fm["cfi"]), tli = as.numeric(fm["tli"]),
-           rmsea = as.numeric(fm["rmsea"]), srmr = as.numeric(fm["srmr"]),
-           fit_attempt = attr(fit, "semantica_fit_attempt") %||% NA_integer_)
-    })
+    .semantica_dfi_esem_task(seed, pop_cor, item_names, esem_syntax, n_obs,
+      estimator, rotation, rotation_args, iter_max, bounds = bounds)
   }
 
   if (verbose) {
@@ -1573,6 +1728,7 @@ compute_esem_parametric_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
     owns_cluster <- !is.null(cl)
     if (owns_cluster) on.exit(.semantica_stop_cluster(cl), add = TRUE)
   }
+  execution <- .semantica_dfi_execution(requested_workers, cl, seeds)
   if (!is.null(cl)) {
     n_cores <- max(1L, length(cl))
     export_env <- new.env(parent = emptyenv())
@@ -1580,6 +1736,7 @@ compute_esem_parametric_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
     export_env$item_names <- item_names
     export_env$n_obs <- n_obs
     export_env$estimator <- estimator
+    export_env$bounds <- bounds
     export_env$rotation <- rotation
     export_env$rotation_args <- rotation_args
     export_env$iter_max <- iter_max
@@ -1587,7 +1744,9 @@ compute_esem_parametric_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
     export_env$sample_correlation_from_population <- sample_correlation_from_population
     export_env$stabilize_correlation_matrix <- stabilize_correlation_matrix
     export_env$run_esem_on_matrix <- run_esem_on_matrix
+    export_env$.semantica_solver_state <- .semantica_solver_state
     for (fn in c(
+      ".semantica_dfi_esem_task", ".semantica_with_task_seed",
       "%||%", ".semantica_fast_lavaan_se", ".semantica_try_lavaan",
       "is_admissible_esem_fit", ".semantica_assess_esem_fit",
       "assess_esem_admissibility", ".semantica_safe_lav_inspect",
@@ -1595,21 +1754,28 @@ compute_esem_parametric_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
     )) {
       if (exists(fn, mode = "function")) export_env[[fn]] <- get(fn)
     }
-    cl <- .semantica_dfi_export_or_serial(cl, export_env, verbose, "[ESEM-DFI]")
+    cl <- .semantica_dfi_export_or_serial(cl, export_env, verbose, "[ESEM-DFI]",
+      observer = .semantica_dfi_execution_observer(execution))
   }
   run_batch <- function(batch, first_batch = FALSE) {
     label <- if (isTRUE(first_batch)) "[ESEM-DFI] Parametric semantic-proxy refits" else NULL
-    if (!is.null(cl)) {
+    indices <- execution$scheduled + seq_along(batch)
+    execution$scheduled <- execution$scheduled + length(batch)
+    observer <- .semantica_dfi_execution_observer(execution, indices)
+    batch_results <- if (!is.null(cl)) {
       .semantica_progress_par_lapply(
-        cl, batch, single_rep, progress = progress, label = label,
+        cl, batch, single_rep, progress = progress, label = label, observer = observer,
         on_parallel_error = function(error) {
           .semantica_dfi_parallel_fallback(error, cl, verbose, "[ESEM-DFI]")
           cl <<- NULL
         }
       )
     } else {
-      .semantica_progress_lapply(batch, single_rep, progress = progress, label = label)
+      values <- .semantica_progress_lapply(batch, single_rep, progress = progress, label = label)
+      observer(list(type = "retained", indices = seq_along(batch), backend = "serial"))
+      values
     }
+    .semantica_dfi_collect_batch(batch_results, execution, preserve_failure = FALSE)
   }
   estimate_cutoffs <- function(batch_results) {
     batch_good <- Filter(Negate(is.null), batch_results)
@@ -1658,7 +1824,9 @@ compute_esem_parametric_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
       task_seeds = seeds[seq_along(results)],
       parallel_workers = n_cores,
       adaptive_telemetry = run$telemetry,
-      extra = list(data_type = "semantic_proxy_continuous")
+      execution = .semantica_dfi_execution_snapshot(execution),
+      extra = list(data_type = "semantic_proxy_continuous",
+        simulation_provenance = list(fit_diagnostics = execution$fit_diagnostics))
     )
     .semantica_dfi_cache_set(cache, cache_target, failed)
     return(failed)
@@ -1679,6 +1847,7 @@ compute_esem_parametric_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
     data_type = "semantic_proxy_continuous",
     loading_source = "ESEM-implied covariance",
     cutoff_calibration = "ESEM-parametric",
+    simulation_provenance = list(fit_diagnostics = execution$fit_diagnostics),
     successful_fits = length(good),
     requested_reps = reps,
     tail_probability = tail_prob,
@@ -1696,7 +1865,7 @@ compute_esem_parametric_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
         task_seeds = seeds[seq_along(results)]
       ),
       .semantica_dfi_fit_telemetry(good),
-      list(adaptive = run$telemetry)
+      list(adaptive = run$telemetry, execution = .semantica_dfi_execution_snapshot(execution))
     )
   )
 
@@ -1706,10 +1875,12 @@ compute_esem_parametric_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
     ), "\n", sep = "")
     cat(sprintf("[ESEM-DFI] cutoffs: CFI >= %.4f, TLI >= %.4f, RMSEA <= %.4f, SRMR <= %.4f\n",
                 cut$cfi, cut$tli, cut$rmsea, cut$srmr))
-    cat(sprintf("[ESEM-DFI] elapsed: %.1fs | workers: %d | successful fallback refits: %d\n",
+    cat(sprintf("[ESEM-DFI] elapsed: %.1fs | requested workers: %d | successful alternative-solver refits: %d\n",
                 cut$telemetry$elapsed_seconds,
-                cut$telemetry$parallel_workers,
+                cut$telemetry$execution$requested_workers,
                 cut$telemetry$successful_fallback_attempt))
+    cat(sprintf("[ESEM-DFI] execution mode: %s | dispatch recoveries: %d\n",
+      cut$telemetry$execution$completion_backend, length(cut$telemetry$execution$recovery_events)))
   }
   .semantica_dfi_cache_set(cache, cache_target, cut)
   cut
@@ -1746,10 +1917,11 @@ compute_semantic_approx_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
                                                 adaptive = FALSE, adaptive_min_reps = NULL,
                                                 adaptive_batch_reps = 50L,
                                                 adaptive_tol = 0.002,
-                                                adaptive_stable_batches = 2L) {
+                                                adaptive_stable_batches = 2L, bounds = "none") {
   if (is.null(esem_fit) || is.null(esem_syntax) || is.null(observed_cor)) return(NULL)
   start_time <- proc.time()[["elapsed"]]
   reps <- max(20L, as.integer(reps))
+  requested_workers <- n_cores
   n_cores <- .semantica_max_workers(n_cores)
 
   pop_cov <- tryCatch(lavaan::fitted(esem_fit)$cov, error = function(e) NULL)
@@ -1813,13 +1985,13 @@ compute_semantic_approx_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
   tail_prob <- dfi_tail_probability(level, criterion)
   cache_target <- list(
     kind = "semantic_approx",
-    provenance_version = "conditional-simulation-v2",
+    provenance_version = "conditional-simulation-v3",
     approx_cor = approx_cor,
     syntax = esem_syntax,
     factors = factors,
     items_per_factor = items_per_factor,
     n_obs = n_obs,
-    estimator = estimator,
+    estimator = estimator, bounds = bounds,
     rotation = rotation,
     rotation_args = rotation_args,
     reps = reps,
@@ -1843,25 +2015,8 @@ compute_semantic_approx_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
   with_task_seed <- .semantica_with_task_seed
 
   single_rep <- function(seed) {
-    with_task_seed(seed, {
-      sim_cor <- sample_correlation_from_population(approx_cor, n_obs)
-      if (is.null(sim_cor)) return(list(failure_category = "sampling_failed"))
-      dimnames(sim_cor) <- list(item_names, item_names)
-      fit <- run_esem_on_matrix(
-        esem_syntax, sim_cor, n_obs = n_obs, estimator = estimator,
-        rotation = rotation, rotation_args = rotation_args,
-        iter_max = iter_max, fallback = TRUE,
-        sample_cov_rescale = TRUE
-      )
-      converged <- tryCatch(isTRUE(lavaan::lavInspect(fit, "converged")), error = function(e) FALSE)
-      if (is.null(fit) || !converged) return(list(failure_category = "fit_failed_or_nonconverged"))
-      fm <- tryCatch(lavaan::fitMeasures(fit, c("cfi", "tli", "rmsea", "srmr")),
-                     error = function(e) NULL)
-      if (is.null(fm) || any(!is.finite(fm))) return(list(failure_category = "nonfinite_fit_metrics"))
-      list(cfi = as.numeric(fm["cfi"]), tli = as.numeric(fm["tli"]),
-           rmsea = as.numeric(fm["rmsea"]), srmr = as.numeric(fm["srmr"]),
-           fit_attempt = attr(fit, "semantica_fit_attempt") %||% NA_integer_)
-    })
+    .semantica_dfi_esem_task(seed, approx_cor, item_names, esem_syntax, n_obs,
+      estimator, rotation, rotation_args, iter_max, bounds = bounds)
   }
 
   if (verbose) {
@@ -1882,6 +2037,7 @@ compute_semantic_approx_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
     cl <- .semantica_make_dfi_cluster(n_cores)
     if (!is.null(cl)) on.exit(.semantica_stop_cluster(cl), add = TRUE)
   }
+  execution <- .semantica_dfi_execution(requested_workers, cl, seeds)
   if (!is.null(cl)) {
     n_cores <- max(1L, length(cl))
     export_env <- new.env(parent = emptyenv())
@@ -1889,6 +2045,7 @@ compute_semantic_approx_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
     export_env$item_names <- item_names
     export_env$n_obs <- n_obs
     export_env$estimator <- estimator
+    export_env$bounds <- bounds
     export_env$rotation <- rotation
     export_env$rotation_args <- rotation_args
     export_env$iter_max <- iter_max
@@ -1896,7 +2053,9 @@ compute_semantic_approx_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
     export_env$sample_correlation_from_population <- sample_correlation_from_population
     export_env$stabilize_correlation_matrix <- stabilize_correlation_matrix
     export_env$run_esem_on_matrix <- run_esem_on_matrix
+    export_env$.semantica_solver_state <- .semantica_solver_state
     for (fn in c(
+      ".semantica_dfi_esem_task", ".semantica_with_task_seed",
       "%||%", ".semantica_fast_lavaan_se", ".semantica_try_lavaan",
       "is_admissible_esem_fit", ".semantica_assess_esem_fit",
       "assess_esem_admissibility", ".semantica_safe_lav_inspect",
@@ -1904,21 +2063,28 @@ compute_semantic_approx_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
     )) {
       if (exists(fn, mode = "function")) export_env[[fn]] <- get(fn)
     }
-    cl <- .semantica_dfi_export_or_serial(cl, export_env, verbose, "[SEMANTIC-DFI]")
+    cl <- .semantica_dfi_export_or_serial(cl, export_env, verbose, "[SEMANTIC-DFI]",
+      observer = .semantica_dfi_execution_observer(execution))
   }
   run_batch <- function(batch, first_batch = FALSE) {
     label <- if (isTRUE(first_batch)) "[SEMANTIC-DFI] Approximate-proxy refits" else NULL
-    if (!is.null(cl)) {
+    indices <- execution$scheduled + seq_along(batch)
+    execution$scheduled <- execution$scheduled + length(batch)
+    observer <- .semantica_dfi_execution_observer(execution, indices)
+    batch_results <- if (!is.null(cl)) {
       .semantica_progress_par_lapply(
-        cl, batch, single_rep, progress = progress, label = label,
+        cl, batch, single_rep, progress = progress, label = label, observer = observer,
         on_parallel_error = function(error) {
           .semantica_dfi_parallel_fallback(error, cl, verbose, "[SEMANTIC-DFI]")
           cl <<- NULL
         }
       )
     } else {
-      .semantica_progress_lapply(batch, single_rep, progress = progress, label = label)
+      values <- .semantica_progress_lapply(batch, single_rep, progress = progress, label = label)
+      observer(list(type = "retained", indices = seq_along(batch), backend = "serial"))
+      values
     }
+    .semantica_dfi_collect_batch(batch_results, execution, preserve_failure = TRUE)
   }
   estimate_cutoffs <- function(batch_results) {
     batch_good <- Filter(function(x) !is.null(x$cfi), batch_results)
@@ -1955,6 +2121,11 @@ compute_semantic_approx_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
   })
   replication_records <- do.call(rbind, replication_records)
   provenance <- list(replications = replication_records,
+    fit_diagnostics = execution$fit_diagnostics,
+    calibration_specification = list(schema_version = "semantica-dfi-task-1",
+      population = approx_cor, item_names = item_names, syntax = esem_syntax,
+      n_obs = n_obs, estimator = estimator, bounds = bounds, rotation = rotation, rotation_args = rotation_args,
+      iter_max = iter_max, sample_cov_rescale = TRUE, fallback = TRUE, rng_kind = RNGkind()),
     requested = reps, completed = length(results), successful = length(good),
     failure_categories = table(replication_records$failure_category, useNA = "no"),
     reference_population = approx_cor,
@@ -1988,6 +2159,7 @@ compute_semantic_approx_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
       task_seeds = seeds[seq_along(results)],
       parallel_workers = n_cores,
       adaptive_telemetry = run$telemetry,
+      execution = .semantica_dfi_execution_snapshot(execution),
       extra = list(
         simulation_provenance = provenance,
         data_type = "semantic_proxy_continuous",
@@ -2057,7 +2229,7 @@ compute_semantic_approx_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
         task_seeds = seeds[seq_along(results)]
       ),
       .semantica_dfi_fit_telemetry(good),
-      list(adaptive = run$telemetry)
+      list(adaptive = run$telemetry, execution = .semantica_dfi_execution_snapshot(execution))
     )
   )
 
@@ -2065,10 +2237,12 @@ compute_semantic_approx_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, 
     cat(sprintf("[SEMANTIC-DFI] successful fits = %d / %d\n", length(good), reps))
     cat(sprintf("[SEMANTIC-DFI] cutoffs: CFI >= %.4f, TLI >= %.4f, RMSEA <= %.4f, SRMR <= %.4f\n",
                 cut$cfi, cut$tli, cut$rmsea, cut$srmr))
-    cat(sprintf("[SEMANTIC-DFI] elapsed: %.1fs | workers: %d | successful fallback refits: %d\n",
+    cat(sprintf("[SEMANTIC-DFI] elapsed: %.1fs | requested workers: %d | successful alternative-solver refits: %d\n",
                 cut$telemetry$elapsed_seconds,
-                cut$telemetry$parallel_workers,
+                cut$telemetry$execution$requested_workers,
                 cut$telemetry$successful_fallback_attempt))
+    cat(sprintf("[SEMANTIC-DFI] execution mode: %s | dispatch recoveries: %d\n",
+      cut$telemetry$execution$completion_backend, length(cut$telemetry$execution$recovery_events)))
     if (isTRUE(cut$was_degenerate)) {
       cat("[SEMANTIC-DFI] cutoffs are unusually permissive; SEMANTICA will use fallback cutoffs for the search.\n")
     }
@@ -2094,11 +2268,12 @@ compute_semantic_roc_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, ite
                                              adaptive = FALSE, adaptive_min_reps = NULL,
                                              adaptive_batch_reps = 50L,
                                              adaptive_tol = 0.002,
-                                             adaptive_stable_batches = 2L) {
+                                             adaptive_stable_batches = 2L, bounds = "none") {
   if (is.null(esem_fit) || is.null(esem_syntax) || is.null(observed_cor)) return(NULL)
   start_time <- proc.time()[["elapsed"]]
   reps <- max(40L, as.integer(reps))
   reps_per_dist <- max(20L, ceiling(reps / 2L))
+  requested_workers <- n_cores
   n_cores <- .semantica_max_workers(n_cores)
 
   pop <- make_semantic_approx_population(
@@ -2130,7 +2305,7 @@ compute_semantic_roc_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, ite
     items_per_factor = items_per_factor,
     factor_assignment = factor_assignment,
     n_obs = n_obs,
-    estimator = estimator,
+    estimator = estimator, bounds = bounds,
     rotation = rotation,
     rotation_args = rotation_args,
     reps = reps,
@@ -2160,31 +2335,9 @@ compute_semantic_roc_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, ite
   with_task_seed <- .semantica_with_task_seed
 
   single_job <- function(job) {
-    with_task_seed(job$seed, {
-      base_cor <- if (identical(job$kind, "acceptable")) acceptable_cor else misspecified_cor
-      sim_cor <- sample_correlation_from_population(base_cor, n_obs)
-      if (is.null(sim_cor)) return(NULL)
-      dimnames(sim_cor) <- list(item_names, item_names)
-      fit <- run_esem_on_matrix(
-        esem_syntax, sim_cor, n_obs = n_obs, estimator = estimator,
-        rotation = rotation, rotation_args = rotation_args,
-        iter_max = iter_max, fallback = TRUE,
-        sample_cov_rescale = TRUE
-      )
-      converged <- tryCatch(isTRUE(lavaan::lavInspect(fit, "converged")), error = function(e) FALSE)
-      if (is.null(fit) || !converged) return(NULL)
-      fm <- tryCatch(lavaan::fitMeasures(fit, c("cfi", "tli", "rmsea", "srmr")),
-                     error = function(e) NULL)
-      if (is.null(fm) || any(!is.finite(fm))) return(NULL)
-      list(
-        kind = job$kind,
-        cfi = as.numeric(fm["cfi"]),
-        tli = as.numeric(fm["tli"]),
-        rmsea = as.numeric(fm["rmsea"]),
-        srmr = as.numeric(fm["srmr"]),
-        fit_attempt = attr(fit, "semantica_fit_attempt") %||% NA_integer_
-      )
-    })
+    base_cor <- if (identical(job$kind, "acceptable")) acceptable_cor else misspecified_cor
+    .semantica_dfi_esem_task(job$seed, base_cor, item_names, esem_syntax, n_obs,
+      estimator, rotation, rotation_args, iter_max, kind = job$kind, bounds = bounds)
   }
 
   if (verbose) {
@@ -2205,6 +2358,7 @@ compute_semantic_roc_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, ite
     cl <- .semantica_make_dfi_cluster(n_cores)
     if (!is.null(cl)) on.exit(.semantica_stop_cluster(cl), add = TRUE)
   }
+  execution <- .semantica_dfi_execution(requested_workers, cl, jobs)
   if (!is.null(cl)) {
     n_cores <- max(1L, length(cl))
     export_env <- new.env(parent = emptyenv())
@@ -2213,6 +2367,7 @@ compute_semantic_roc_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, ite
     export_env$item_names <- item_names
     export_env$n_obs <- n_obs
     export_env$estimator <- estimator
+    export_env$bounds <- bounds
     export_env$rotation <- rotation
     export_env$rotation_args <- rotation_args
     export_env$iter_max <- iter_max
@@ -2220,7 +2375,9 @@ compute_semantic_roc_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, ite
     export_env$sample_correlation_from_population <- sample_correlation_from_population
     export_env$stabilize_correlation_matrix <- stabilize_correlation_matrix
     export_env$run_esem_on_matrix <- run_esem_on_matrix
+    export_env$.semantica_solver_state <- .semantica_solver_state
     for (fn in c(
+      ".semantica_dfi_esem_task", ".semantica_with_task_seed",
       "%||%", ".semantica_fast_lavaan_se", ".semantica_try_lavaan",
       "is_admissible_esem_fit", ".semantica_assess_esem_fit",
       "assess_esem_admissibility", ".semantica_safe_lav_inspect",
@@ -2228,21 +2385,28 @@ compute_semantic_roc_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, ite
     )) {
       if (exists(fn, mode = "function")) export_env[[fn]] <- get(fn)
     }
-    cl <- .semantica_dfi_export_or_serial(cl, export_env, verbose, "[SEMANTIC-ROC-DFI]")
+    cl <- .semantica_dfi_export_or_serial(cl, export_env, verbose, "[SEMANTIC-ROC-DFI]",
+      observer = .semantica_dfi_execution_observer(execution))
   }
   run_batch <- function(batch, first_batch = FALSE) {
     label <- if (isTRUE(first_batch)) "[SEMANTIC-ROC-DFI] Acceptable and misspecified proxy refits" else NULL
-    if (!is.null(cl)) {
+    indices <- execution$scheduled + seq_along(batch)
+    execution$scheduled <- execution$scheduled + length(batch)
+    observer <- .semantica_dfi_execution_observer(execution, indices)
+    batch_results <- if (!is.null(cl)) {
       .semantica_progress_par_lapply(
-        cl, batch, single_job, progress = progress, label = label,
+        cl, batch, single_job, progress = progress, label = label, observer = observer,
         on_parallel_error = function(error) {
           .semantica_dfi_parallel_fallback(error, cl, verbose, "[SEMANTIC-ROC-DFI]")
           cl <<- NULL
         }
       )
     } else {
-      .semantica_progress_lapply(batch, single_job, progress = progress, label = label)
+      values <- .semantica_progress_lapply(batch, single_job, progress = progress, label = label)
+      observer(list(type = "retained", indices = seq_along(batch), backend = "serial"))
+      values
     }
+    .semantica_dfi_collect_batch(batch_results, execution, preserve_failure = FALSE)
   }
   estimate_cutoffs <- function(batch_results) {
     batch_good <- Filter(function(x) !is.null(x) && identical(x$kind, "acceptable"), batch_results)
@@ -2337,7 +2501,9 @@ compute_semantic_roc_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, ite
       task_seeds = vapply(attempted_jobs, function(job) job$seed, integer(1L)),
       parallel_workers = n_cores,
       adaptive_telemetry = run$telemetry,
+      execution = .semantica_dfi_execution_snapshot(execution),
       extra = list(
+        simulation_provenance = list(fit_diagnostics = execution$fit_diagnostics),
         data_type = "semantic_proxy_continuous",
         loading_source = "ESEM-implied covariance plus semantic residual and misspecification alternatives",
         successful_misspecified_fits = length(bad),
@@ -2390,6 +2556,7 @@ compute_semantic_roc_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, ite
     data_type = "semantic_proxy_continuous",
     loading_source = "ESEM-implied covariance plus semantic residual and misspecification alternatives",
     cutoff_calibration = "ESEM-semantic-ROC",
+    simulation_provenance = list(fit_diagnostics = execution$fit_diagnostics),
     successful_fits = length(good),
     successful_misspecified_fits = length(bad),
     requested_reps = reps,
@@ -2421,7 +2588,7 @@ compute_semantic_roc_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, ite
         )
       ),
       .semantica_dfi_fit_telemetry(c(good, bad)),
-      list(adaptive = run$telemetry)
+      list(adaptive = run$telemetry, execution = .semantica_dfi_execution_snapshot(execution))
     )
   )
 
@@ -2434,10 +2601,12 @@ compute_semantic_roc_dfi_cutoffs <- function(esem_fit, esem_syntax, factors, ite
                 cfi_sel$sensitivity, cfi_sel$specificity,
                 rmsea_sel$sensitivity, rmsea_sel$specificity,
                 srmr_sel$sensitivity, srmr_sel$specificity))
-    cat(sprintf("[SEMANTIC-ROC-DFI] elapsed: %.1fs | workers: %d | successful fallback refits: %d\n",
+    cat(sprintf("[SEMANTIC-ROC-DFI] elapsed: %.1fs | requested workers: %d | successful alternative-solver refits: %d\n",
                 cut$telemetry$elapsed_seconds,
-                cut$telemetry$parallel_workers,
+                cut$telemetry$execution$requested_workers,
                 cut$telemetry$successful_fallback_attempt))
+    cat(sprintf("[SEMANTIC-ROC-DFI] execution mode: %s | dispatch recoveries: %d\n",
+      cut$telemetry$execution$completion_backend, length(cut$telemetry$execution$recovery_events)))
     if (isTRUE(cut$was_degenerate)) {
       cat("[SEMANTIC-ROC-DFI] cutoffs are degenerate; SEMANTICA will use fallback cutoffs for the search.\n")
     }
@@ -2562,17 +2731,29 @@ compute_dddfi_final_cutoffs <- function(esem_fit, reps = 250L,
 
 compute_equivtest_final_diagnostic <- function(esem_fit, verbose = TRUE) {
   if (is.null(esem_fit) || !requireNamespace("dynamic", quietly = TRUE)) return(NULL)
+  warning_events <- .semantica_warning_events()
+  diagnostic_error <- NULL
   out <- tryCatch(
-    dynamic::equivTest(esem_fit, plot = FALSE),
+    withCallingHandlers(dynamic::equivTest(esem_fit, plot = FALSE), warning = function(w) {
+      warning_events <<- rbind(warning_events, .semantica_warning_events(conditionMessage(w),
+        "final_equivtest", calls = paste(deparse(conditionCall(w)), collapse = " ")))
+      invokeRestart("muffleWarning")
+    }),
     error = function(e) {
+      diagnostic_error <<- conditionMessage(e)
       if (verbose) message("[equivTest] Final equivalence-test diagnostic failed: ", conditionMessage(e))
       NULL
     }
   )
-  if (is.null(out)) return(NULL)
+  cfi <- parse_dddfi_numeric(out$cfi)
+  rmsea <- parse_dddfi_numeric(out$rmsea)
+  finite <- c(is.finite(cfi), is.finite(rmsea))
   list(
-    cfi_t_size = parse_dddfi_numeric(out$cfi),
-    rmsea_t_size = parse_dddfi_numeric(out$rmsea),
+    status = if (all(finite)) "available" else if (any(finite)) "partial" else "unavailable",
+    reason = diagnostic_error %||% if (!all(finite)) "nonfinite_equivalence_statistics" else "",
+    warning_events = warning_events, raw_result = out,
+    cfi_t_size = cfi,
+    rmsea_t_size = rmsea,
     fit_table = out$fit,
     cfi_bins = c(
       poor = out$eo_c, mediocre = out$ct_c, fair = out$ft_c,
@@ -2647,11 +2828,13 @@ extract_fitted_dfi_params_esem <- function(candidate_items, factor_assignment, f
                                            n_obs = 1000, estimator = "ML", rotation = "geomin",
                                            rotation_args = list(geomin.epsilon = 0.50), heywood_ceiling = 0.97,
                                            max_fcor = 0.90, verbose = TRUE,
-                                           iter_max = 2000L, return_diagnostics = FALSE) {
+                                           iter_max = 2000L, return_diagnostics = FALSE, bounds = "none") {
   esem_run <- NULL
   finish <- function(parameters = NULL, reason = NULL) {
     if (!isTRUE(return_diagnostics)) return(parameters)
-    list(parameters = parameters, failure_reason = reason, solver = esem_run)
+    list(parameters = parameters, failure_reason = reason, solver = esem_run,
+      status = if (!is.null(parameters)) "accepted" else if (!is.null(esem_run$fit))
+        "parameter_extraction_failed" else esem_run$status %||% "input_rejected")
   }
   cos_sub <- tryCatch(extract_similarity_submatrix(cosine_sim_matrix, candidate_items), error = function(e) NULL)
   if (is.null(cos_sub)) { if (verbose) message("[Bootstrap ESEM] Could not extract submatrix."); return(finish(reason = "matrix_extraction_failed")) }
@@ -2662,7 +2845,7 @@ extract_fitted_dfi_params_esem <- function(candidate_items, factor_assignment, f
   esem_syntax <- build_esem_syntax_safe(candidate_items, factor_assignment, factors)
   esem_rotation_args <- prepare_esem_rotation_args(rotation, rotation_args, candidate_items, factor_assignment, factors)
   esem_run <- run_esem_on_matrix(esem_syntax, esem_cor, n_obs, estimator, rotation,
-    esem_rotation_args, iter_max = iter_max, return_diagnostics = TRUE, verbose = verbose)
+    esem_rotation_args, iter_max = iter_max, return_diagnostics = TRUE, verbose = verbose, bounds = bounds)
   esem_fit <- esem_run$fit
   if (is.null(esem_fit)) {
     reasons <- esem_run$rejection_assessment$reasons %||% "no_admissible_fit"
@@ -4405,7 +4588,9 @@ run_esem_on_matrix <- function(syntax, cor_matrix, n_obs = 300, estimator = "ML"
                                rotation = "geomin", rotation_args = list(geomin.epsilon = 0.50),
                                iter_max = 2000L, fallback = TRUE,
                                sample_cov_rescale = FALSE,
-                               return_diagnostics = FALSE, verbose = FALSE) {
+                               return_diagnostics = FALSE, verbose = FALSE,
+                               bounds = "none") {
+  bounds <- match.arg(bounds, c("none", "pos.var"))
   last_rejection_assessment <- NULL
   rejected_attempts <- list()
   solver_records <- list()
@@ -4440,6 +4625,8 @@ run_esem_on_matrix <- function(syntax, cor_matrix, n_obs = 300, estimator = "ML"
     if (!isTRUE(return_diagnostics)) return(fit)
     list(
       fit = fit,
+      bounds = bounds,
+      status = .semantica_solver_state(fit, solver_records, rejected_attempts),
       solver_attempts_started = as.integer(solver_attempts_started),
       accepted_attempt = if (is.null(fit)) {
         NA_integer_
@@ -4475,6 +4662,7 @@ run_esem_on_matrix <- function(syntax, cor_matrix, n_obs = 300, estimator = "ML"
   lavaan_se <- .semantica_fast_lavaan_se(estimator)
   tag_attempt <- function(fit, attempt, assessment = NULL) {
     attr(fit, "semantica_fit_attempt") <- as.integer(attempt)
+    attr(fit, "semantica_esem_bounds") <- bounds
     if (!is.null(name_map)) attr(fit, "semantica_lavaan_name_map") <- name_map
     attr(fit, "semantica_admissibility") <- assessment %||%
       is_admissible_esem_fit(fit, return_assessment = TRUE)
@@ -4482,6 +4670,8 @@ run_esem_on_matrix <- function(syntax, cor_matrix, n_obs = 300, estimator = "ML"
   }
   fit_attempt <- function(...) {
     fit_args <- list(...)
+    # lavaan only enforces variance bounds with NLMINB, including rescues.
+    if (bounds != "none") { fit_args$bounds <- bounds; fit_args$optim.method <- "nlminb" }
     if (!is.null(lavaan_se) && is.null(fit_args$se)) fit_args$se <- lavaan_se
     attempt <- length(solver_records) + 1L
     if (isTRUE(verbose)) cat(sprintf(
@@ -4491,9 +4681,11 @@ run_esem_on_matrix <- function(syntax, cor_matrix, n_obs = 300, estimator = "ML"
     started <- proc.time()[["elapsed"]]
     out <- .semantica_try_lavaan(fit_args)
     solver_records[[attempt]] <<- list(attempt = attempt,
-      rotation = fit_args$rotation, optimizer = fit_args$optim.method %||% "default",
+      rotation = fit_args$rotation, optimizer = fit_args$optim.method %||% "default", bounds = bounds,
+      parser = out$parser %||% NA_character_,
       elapsed_seconds = proc.time()[["elapsed"]] - started,
-      failure_reason = out$failure_reason, error = out$error, warnings = out$warnings)
+      failure_reason = out$failure_reason, error = out$error, warnings = out$warnings,
+      warning_calls = out$warning_calls)
     out
   }
   accept_attempt <- function(fit, attempt, fit_error = NULL, fit_warnings = character(0)) {
@@ -4517,6 +4709,7 @@ run_esem_on_matrix <- function(syntax, cor_matrix, n_obs = 300, estimator = "ML"
         solver_records[[attempt]]$failure_reason %||% "lavaan_fit_failed"))
       return(NULL)
     }
+    if (!is.null(name_map)) attr(fit, "semantica_lavaan_name_map") <- name_map
     converged <- tryCatch(isTRUE(lavaan::lavInspect(fit, "converged")), error = function(e) FALSE)
     assessment <- is_admissible_esem_fit(fit, return_assessment = TRUE)
     assessment$details$attempt <- suppressWarnings(as.integer(attempt[1L]))
@@ -4555,6 +4748,8 @@ run_esem_on_matrix <- function(syntax, cor_matrix, n_obs = 300, estimator = "ML"
 }
 
 .semantica_attach_esem_rejection <- function(fit_result, esem_run) {
+  fit_result$solver_status <- esem_run$status
+  fit_result$solver_records <- esem_run$solver_records
   assessment <- esem_run$rejection_assessment
   if (is.null(assessment)) return(fit_result)
   fit_result$admissibility <- assessment
@@ -5201,7 +5396,7 @@ compute_esem_structure_diagnostics <- function(esem_fit, observed_cor = NULL,
 extract_and_score_esem <- function(esem_fit, observed_cor = NULL, factor_assignment = NULL, factors = NULL,
                                    cutoffs = list(cfi = 0.95, tli = 0.95, rmsea = 0.06, srmr = 0.08),
                                    htmt_threshold = 0.85, verbose_decomp = FALSE,
-                                   score_mode = c("current", "structure_weighted"),
+                                   score_mode = c("current", "structure_weighted", "continuous_structure", "continuous_reconstruction", "continuous_balanced"),
                                    htmt_objective_role = c("diagnostic", "penalty")) {
   score_mode <- match.arg(score_mode)
   htmt_objective_role <- match.arg(htmt_objective_role)
@@ -5353,6 +5548,19 @@ extract_and_score_esem <- function(esem_fit, observed_cor = NULL, factor_assignm
     base_score * loading_quality * htmt_multiplier
   }
 
+  continuous_utility <- NULL
+  if (.semantica_continuous_score_mode(score_mode)) {
+    implied_cor <- if (score_mode == "continuous_structure") NULL else tryCatch({
+      implied <- .semantica_restore_lavaan_observed_names(
+        lavaan::fitted(esem_fit)$cov, attr(esem_fit, "semantica_lavaan_name_map", exact = TRUE))
+      stats::cov2cor(implied)
+    }, error = function(e) NULL)
+    continuous_utility <- .semantica_continuous_utility(aligned_solution$lambda,
+      factor_assignment, factors, observed_cor, implied_cor, score_mode)
+    continuous_utility$fit_seed <- attr(esem_fit, "semantica_utility_fit_seed", exact = TRUE) %||% NA_integer_
+    score <- if (continuous_utility$available) continuous_utility$score else NA_real_
+  }
+
   logistic_score <- function(x, center, steepness, higher_is_better = TRUE) {
     if (higher_is_better) 1 / (1 + exp(-steepness * (x - center))) else 1 / (1 + exp(steepness * (x - center)))
   }
@@ -5401,7 +5609,18 @@ extract_and_score_esem <- function(esem_fit, observed_cor = NULL, factor_assignm
                        factor_ave = factor_ave, ave_method = ave_method, ave_warnings = ave_warnings,
                        structure_diagnostics = structure_diagnostics)
 
-  if (verbose_decomp) {
+  if (!is.null(continuous_utility)) {
+    score_decomp$continuous_utility <- continuous_utility
+    score_decomp$criterion_specification$role <- "diagnostic"
+    score_decomp$component_weights <- NULL
+    score_decomp$missing_component_policy <- "required_continuous_component_unavailable_objective_NA"
+    score_decomp$objective_schema_version <- continuous_utility$schema
+    score_decomp$base_score <- score
+    score_decomp$utility_fallbacks <- list()
+    score_decomp$htmt_requested_objective_role <- htmt_objective_role
+    score_decomp$htmt_objective_role <- "diagnostic"
+  }
+  if (verbose_decomp && is.null(continuous_utility)) {
     cat("  [ESEM SCORE DECOMPOSITION]\n")
     cat(sprintf("    CFI=%.4f rm_s=%.4f log_s=%.4f | RMSEA=%.4f rm_s=%.4f log_s=%.4f | SRMR=%.4f rm_s=%.4f log_s=%.4f\n",
                 cfi, cfi_s, cfi_logistic, rmsea, rmsea_s, rmsea_logistic, srmr, srmr_s, srmr_logistic))
@@ -5415,6 +5634,17 @@ extract_and_score_esem <- function(esem_fit, observed_cor = NULL, factor_assignm
   }
 
   list(cfi = cfi, tli = tli, rmsea = rmsea, srmr = srmr, ave = ave_num,
+       fit_reference_diagnostics = data.frame(
+         metric = names(raw_fit_metrics),
+         value = unlist(raw_fit_metrics, use.names = FALSE),
+         reference = vapply(names(raw_fit_metrics), function(id) cutoffs[[id]] %||% NA_real_, numeric(1L)),
+         direction = c(">=", ">=", "<=", "<="),
+         met = vapply(names(raw_fit_metrics), function(id) {
+           value <- raw_fit_metrics[[id]]; reference <- cutoffs[[id]] %||% NA_real_
+           if (!is.finite(value) || !is.finite(reference)) return(NA)
+           if (id %in% c("cfi", "tli")) value >= reference else value <= reference
+         }, logical(1L)),
+         role = "descriptive_reference_not_acceptance_gate"),
        raw_fit_metrics = raw_fit_metrics, raw_loading_quality = loading_quality_raw,
        minimum_assigned_loading_mean_square = ave_num,
        factor_ave = factor_ave, ave_method = ave_method, ave_warnings = ave_warnings,
@@ -5430,6 +5660,8 @@ extract_and_score_esem <- function(esem_fit, observed_cor = NULL, factor_assignm
        dimensionality_mode = if (is_unidimensional) "unidimensional" else "multidimensional",
        loading_quality = loading_quality, structure_diagnostics = structure_diagnostics,
        alignment = aligned_solution$diagnostics %||% aligned_solution$mapping,
+       continuous_utility = continuous_utility,
+       objective_available = is.null(continuous_utility) || isTRUE(continuous_utility$available),
        converged = TRUE, admissible = TRUE, admissibility = admissibility,
        fit_attempt = attr(esem_fit, "semantica_fit_attempt") %||% NA_integer_,
        score = max(0, min(1, score)), score_decomp = score_decomp)
@@ -5469,14 +5701,14 @@ evaluate_semantic_n_sensitivity <- function(syntax, cor_matrix, factor_assignmen
                                             rotation_args = list(geomin.epsilon = 0.50),
                                             cutoffs = list(cfi = 0.95, tli = 0.95, rmsea = 0.06, srmr = 0.08),
                                             htmt_threshold = 0.85,
-                                            score_mode = c("current", "structure_weighted"),
+                                            score_mode = c("current", "structure_weighted", "continuous_structure", "continuous_reconstruction", "continuous_balanced"),
                                             iter_max = 800L,
                                             sample_cov_rescale = FALSE,
                                             reference_n = NULL,
                                             progress = FALSE,
                                             precomputed_reference = NULL,
                                             cluster = NULL,
-                                            on_parallel_error = NULL) {
+                                            on_parallel_error = NULL, bounds = "none") {
   score_mode <- match.arg(score_mode)
   fail <- list(
     available = FALSE,
@@ -5507,26 +5739,29 @@ evaluate_semantic_n_sensitivity <- function(syntax, cor_matrix, factor_assignmen
         is.list(precomputed_scored)) {
       return(precomputed_scored)
     }
-    fit <- run_esem_on_matrix(
+    envelope <- run_esem_on_matrix(
       syntax, cor_matrix, n_obs = n_obs, estimator = estimator,
       rotation = rotation, rotation_args = rotation_args,
       iter_max = iter_max, fallback = TRUE,
-      sample_cov_rescale = sample_cov_rescale
+      sample_cov_rescale = sample_cov_rescale, return_diagnostics = TRUE, bounds = bounds
     )
-    extract_and_score_esem(
-      fit, cor_matrix, factor_assignment, factors,
+    scored <- extract_and_score_esem(
+      envelope$fit, cor_matrix, factor_assignment, factors,
       cutoffs = cutoffs, htmt_threshold = htmt_threshold,
       score_mode = score_mode
     )
+    .semantica_attach_esem_rejection(scored, envelope)
   }
   row_from_score <- function(n_obs) {
     scored <- score_anchor(n_obs)
     sdg <- scored$structure_diagnostics %||% list()
+    usable <- isTRUE(scored$converged) && !identical(scored$admissible, FALSE)
     grid_row <- data.frame(
       n_obs = n_obs,
       is_reference_n = is.finite(reference_n) && identical(as.integer(n_obs), reference_n),
-      converged = isTRUE(scored$converged),
-      fit_references_met = isTRUE(scored$converged) &&
+      admissible = if (is.null(scored$admissible)) NA else isTRUE(scored$admissible),
+      converged = isTRUE(scored$converged), usable = usable,
+      fit_references_met = usable &&
         all(c(scalar(scored$cfi) >= cutoffs$cfi, scalar(scored$tli) >= cutoffs$tli,
               scalar(scored$rmsea) <= cutoffs$rmsea, scalar(scored$srmr) <= cutoffs$srmr)),
       cfi = scalar(scored$cfi),
@@ -5535,7 +5770,8 @@ evaluate_semantic_n_sensitivity <- function(syntax, cor_matrix, factor_assignmen
       srmr = scalar(scored$srmr),
       ave = scalar(scored$ave),
       htmt_max = scalar(scored$htmt_max),
-      loading_quality = scalar(scored$loading_quality),
+      loading_quality = if (!isTRUE(scored$converged) || identical(scored$admissible, FALSE)) NA_real_ else
+        scalar(scored$raw_loading_quality %||% scored$loading_quality),
       score = scalar(scored$score),
       mean_primary_loading = scalar(sdg$mean_primary_loading),
       median_primary_loading = scalar(sdg$median_primary_loading),
@@ -5568,7 +5804,13 @@ evaluate_semantic_n_sensitivity <- function(syntax, cor_matrix, factor_assignmen
     } else {
       item_row <- NULL
     }
-    list(grid = grid_row, item = item_row)
+    list(grid = grid_row, item = item_row, fit_diagnostics = list(
+      n_obs = n_obs,
+      reused_reference = identical(as.integer(n_obs), precomputed_n) && is.list(precomputed_scored),
+      status = scored$solver_status %||% if (isTRUE(scored$converged) &&
+        !identical(scored$admissible, FALSE)) "accepted" else "legacy_unavailable",
+      rejection_assessment = scored$admissibility,
+      solver_records = scored$solver_records %||% list()))
   }
   if (!is.null(cluster) && length(n_grid) > 1L) {
     rows <- .semantica_par_lapply_lb_or_serial(
@@ -5592,6 +5834,11 @@ evaluate_semantic_n_sensitivity <- function(syntax, cor_matrix, factor_assignmen
   grid_rows <- lapply(rows, `[[`, "grid")
   item_rows <- lapply(rows, `[[`, "item")
   grid_df <- do.call(rbind, grid_rows)
+  fit_diagnostics <- stats::setNames(lapply(rows, `[[`, "fit_diagnostics"), as.character(n_grid))
+  # Aggregate in the coordinator; worker exports need no new warning helpers.
+  warning_events <- do.call(rbind, c(list(.semantica_warning_events()),
+    lapply(fit_diagnostics, function(x) if (isTRUE(x$reused_reference)) NULL else
+      .semantica_solver_warning_events(x$solver_records, "semantic_n_sensitivity", as.character(x$n_obs)))))
   item_long <- do.call(rbind, item_rows[!vapply(item_rows, is.null, logical(1L))])
   item_stability <- NULL
   if (!is.null(item_long) && nrow(item_long) > 0L) {
@@ -5616,7 +5863,7 @@ evaluate_semantic_n_sensitivity <- function(syntax, cor_matrix, factor_assignmen
       )
     }))
   }
-  ok <- grid_df[grid_df$converged, , drop = FALSE]
+  ok <- grid_df[grid_df$usable, , drop = FALSE]
   score_range <- if (nrow(ok) > 0L && any(is.finite(ok$score))) diff(range(ok$score, na.rm = TRUE)) else NA_real_
   rmsea_range <- if (nrow(ok) > 0L && any(is.finite(ok$rmsea))) diff(range(ok$rmsea, na.rm = TRUE)) else NA_real_
   is_unidimensional <- length(unique(as.character(factors))) == 1L
@@ -5630,9 +5877,11 @@ evaluate_semantic_n_sensitivity <- function(syntax, cor_matrix, factor_assignmen
     available = TRUE,
     n_grid = n_grid,
     matrix_fingerprint = .semantica_object_md5(cor_matrix),
-    model_fingerprint = .semantica_object_md5(list(syntax, estimator, rotation, rotation_args)),
+    model_fingerprint = .semantica_object_md5(list(syntax, estimator, rotation, rotation_args, bounds)),
     grid_policy = "declared_before_refits_no_pass_seeking",
     grid_results = grid_df,
+    fit_diagnostics = fit_diagnostics,
+    warning_events = warning_events,
     item_long = item_long,
     item_stability = item_stability,
     summary = list(
@@ -6602,6 +6851,7 @@ print_semantica_phase3_summary <- function(result, digits = 4L) {
       SRMR = scalar(score_decomp$srmr_s), AVE = scalar(score_decomp$ave_score),
       loading = scalar(score_decomp$loading_quality), HTMT = scalar(score_decomp$htmt_penalty)
     )
+    if (!is.null(score_decomp$continuous_utility)) component_vals <- score_decomp$continuous_utility$components
     component_vals <- component_vals[is.finite(component_vals)]
     if (length(component_vals)) {
       cat(sprintf(
@@ -6902,8 +7152,9 @@ print_semantica_phase3_summary <- function(result, digits = 4L) {
   }
   if (!is.null(result$final_equivtest_diagnostic)) {
     eq <- result$final_equivtest_diagnostic
-    cat(sprintf("  EquivTest T-size  : CFI %s | RMSEA %s\n",
-                num(eq$cfi_t_size), num(eq$rmsea_t_size)))
+    cat(sprintf("  EquivTest T-size  : CFI %s | RMSEA %s | %s%s\n",
+                num(eq$cfi_t_size), num(eq$rmsea_t_size), eq$status %||% "legacy",
+                if (nzchar(eq$reason %||% "")) paste0(" (", eq$reason, ")") else ""))
   }
   if (!is.null(result$response_validation) &&
       !is.null(result$response_validation$result) &&
@@ -7552,7 +7803,7 @@ compute_psychometric_guard_penalty <- function(fit_result, min_loading_quality =
                                                pfa_max_abs_loading = Inf,
                                                ave_warning_action = c("penalty", "final_constraint"),
                                                warning_penalty = 0.85,
-                                               guard_action = c("penalty", "final_constraint")) {
+                                               guard_action = c("penalty", "final_constraint", "report_only")) {
   guard_action <- match.arg(guard_action)
   ave_warning_action <- match.arg(ave_warning_action)
   if (!is.finite(.semantica_metric_scalar(warning_penalty)))
@@ -7597,8 +7848,14 @@ compute_psychometric_guard_penalty <- function(fit_result, min_loading_quality =
   conv_measurement <- fit_result$converged
   measurements$converged <- if (is.logical(conv_measurement) &&
     length(conv_measurement) == 1L && !is.na(conv_measurement)) as.numeric(conv_measurement) else NA_real_
+  statuses <- list(htmt_max = fit_result$htmt_status)
+  if (!isTRUE(fit_result$converged) || identical(fit_result$admissible, FALSE)) {
+    # Keep penalty aliases, but do not label failed-fit placeholders as measurements.
+    esem_metrics <- setdiff(names(measurements), c("converged", "pfa_max_abs_loading"))
+    statuses[esem_metrics] <- rep(list("unavailable"), length(esem_metrics))
+  }
   criteria_df <- .semantica_evaluate_criteria(spec, measurements,
-    statuses = list(htmt_max = fit_result$htmt_status),
+    statuses = statuses,
     role = ifelse(spec$criterion == "converged", "numerical_admissibility",
       if (guard_action == "final_constraint") "final_constraint" else "optimization_utility"))
   criteria_df$multiplier <- vapply(seq_len(nrow(criteria_df)), function(i) {
@@ -7613,6 +7870,10 @@ compute_psychometric_guard_penalty <- function(fit_result, min_loading_quality =
   }, numeric(1L))
   criteria_df$role[criteria_df$criterion == "ave_warnings"] <-
     if (ave_warning_action == "final_constraint") "final_constraint" else "optimization_utility"
+  if (guard_action == "report_only") {
+    criteria_df$role[criteria_df$constraint_active & criteria_df$criterion != "converged"] <- "diagnostic"
+    criteria_df$multiplier[] <- 1
+  }
   resolved_configuration <- list(criteria = criteria_df[, c("criterion", "threshold",
     "direction", "constraint_active", "role", "evidence_source", "policy_version")],
     guard_action = guard_action, ave_warning_action = ave_warning_action,
@@ -7620,13 +7881,13 @@ compute_psychometric_guard_penalty <- function(fit_result, min_loading_quality =
   criteria_df$resolved_configuration_hash <- .semantica_criterion_config_hash(resolved_configuration)
   converged <- isTRUE(fit_result$converged)
   penalty <- if (converged) prod(criteria_df$multiplier) else 0.05
-  out <- max(0.05, min(1, penalty))
+  out <- if (guard_action == "report_only") 1 else max(0.05, min(1, penalty))
   attr(out, "diagnostics") <- list(
     passed = converged && all(criteria_df$passed), converged = converged,
     criteria = criteria_df, penalty = out, ave_warning_action = ave_warning_action,
     guard_action = guard_action,
     resolved_configuration_hash = unique(criteria_df$resolved_configuration_hash)[1L],
-    missing_data_policy = "required_unavailable_blocks_acceptance_multiplier_0.05",
+    missing_data_policy = if (guard_action == "report_only") "unavailable_reported_without_selection_penalty" else "required_unavailable_blocks_acceptance_multiplier_0.05",
     policy_version = "legacy-integrity-v2",
     resolved_configuration = resolved_configuration,
     note = paste("Threshold-relative semantic-proxy decision utilities; unavailable",
@@ -8591,7 +8852,7 @@ fit.function.v2 <- function(selected_vector, run_esem_now = FALSE, effective_ese
       model_info$fast_esem_iter_max %||% 500L
     },
     fallback = isTRUE(force_full_esem) || !isTRUE(model_info$fast_esem),
-    return_diagnostics = TRUE
+    return_diagnostics = TRUE, bounds = model_info$esem_bounds %||% "none"
   )
   esem_fit <- esem_run$fit
   fit_result <- extract_and_score_esem(
@@ -8614,7 +8875,8 @@ fit.function.v2 <- function(selected_vector, run_esem_now = FALSE, effective_ese
     htmt_guard_threshold = if (isTRUE(model_info$psychometric_guard_include_htmt)) model_info$htmt_threshold else Inf,
     pfa_result = pfa_result,
     pfa_max_abs_loading = model_info$pfa_max_abs_loading %||% Inf,
-    ave_warning_action = model_info$psychometric_guard_ave_warning_action %||% "penalty"
+    ave_warning_action = model_info$psychometric_guard_ave_warning_action %||% "penalty",
+    guard_action = model_info$psychometric_guard_action %||% "penalty"
   )
   guard_diagnostics <- attr(guard_penalty, "diagnostics", exact = TRUE)
   guard_violation <- .semantica_guard_violation(guard_diagnostics)
@@ -9315,7 +9577,8 @@ semantica_evaporation_config <- function(
 # =================================================================
 .semantica_dfi_search_weight_adjustment <- function(parametric_cutoffs, current_esem_weight,
                                                     configured_esem_weight = current_esem_weight,
-                                                    active_stage = NULL, requested_mode = NULL) {
+                                                    active_stage = NULL, requested_mode = NULL,
+                                                    esem_search_requested = configured_esem_weight > 0) {
   telemetry <- parametric_cutoffs$telemetry %||% NULL
   completed <- suppressWarnings(as.numeric(telemetry$completed_reps %||% NA_real_))
   successes <- suppressWarnings(as.numeric(telemetry$successful_fits %||% NA_real_))
@@ -9336,7 +9599,7 @@ semantica_evaporation_config <- function(
   model_matched <- is.null(active_stage) || active_stage %in% c(
     "semantic_roc", "semantic_approx", "esem_parametric"
   )
-  requires_esem_calibration <- requested_mode %in% c(
+  requires_esem_calibration <- isTRUE(esem_search_requested) && requested_mode %in% c(
     "auto", "semantic_roc_dfi", "semantic_approx_dfi", "esem_parametric_dfi"
   )
   disable_for_mismatch <- isTRUE(requires_esem_calibration) && !isTRUE(model_matched)
@@ -9347,13 +9610,18 @@ semantica_evaporation_config <- function(
     pre_calibration_weight = current,
     effective_weight = effective,
     cap_applied = disable_for_mismatch,
-    search_confidence = if (disable_for_mismatch) {
+    search_confidence = if (!isTRUE(esem_search_requested)) {
+      "esem_search_not_requested"
+    } else if (disable_for_mismatch) {
       "esem_search_disabled_no_model_matched_dfi"
     } else if (isTRUE(model_matched)) {
       "model_matched_esem_calibration"
     } else {
       "explicit_non_esem_calibration"
     },
+    note = if (disable_for_mismatch) sprintf(
+      "Requested ESEM calibration (%s) yielded no model-matched cutoffs; ESEM-guided search is disabled.",
+      requested_mode) else NULL,
     active_stage = active_stage %||% NA_character_,
     requested_mode = requested_mode %||% NA_character_
   )
@@ -9365,7 +9633,7 @@ semantica_evaporation_config <- function(
 .semantica_resolve_uncalibrated_esem_policy <- function(
     policy = c("fail_early", "guard_screen", "semantic_fallback"),
     dfi_weight_cap_applied = FALSE, esem_search_requested = FALSE,
-    psychometric_guard_action = c("penalty", "final_constraint")) {
+    psychometric_guard_action = c("penalty", "final_constraint", "report_only")) {
   policy <- match.arg(policy)
   psychometric_guard_action <- match.arg(psychometric_guard_action)
   active <- isTRUE(dfi_weight_cap_applied) && isTRUE(esem_search_requested) &&
@@ -9487,12 +9755,18 @@ semantica_evaporation_config <- function(
 #'   detecting approximate misfit (`reference_rmsea_poor`) against close fit
 #'   (`reference_rmsea_close`), with a covariance-stability floor for ESEM/DFI
 #'   refits when RMSEA power alone would choose a very small high-df proxy N.
+#' @param esem_exploration_slots Reserve 0 (default) or 1 existing shortlist slots
+#'   for a seeded random finite candidate outside the top cheap-score shortlist.
+#'   Does not increase the shortlist size or search-fit ceiling.
 #' @param esem_eval_top_k Number of semantically best ants to evaluate with ESEM
 #'   during ESEM iterations. `NULL` uses a conservative adaptive subset.
 #' @param fast_esem Use a faster single-pass ESEM fit during ACO search. Final
 #'   archive and final clean fits still use full ESEM fitting.
 #' @param fast_esem_iter_max Iteration cap for fast ACO ESEM fits.
 #' @param full_esem_iter_max Iteration cap for full final/archive ESEM fits.
+#' @param esem_bounds Native semantic-proxy variance bounds: `"none"` (default)
+#'   or `"pos.var"`. See [semantica_esem_config()] for boundary interpretation
+#'   and calibration restrictions. Requires `final_dddfi = FALSE`.
 #' @param elite_k Number of solutions to retain in the elite archive.
 #' @param rotation Rotation method for ESEM. In addition to exploratory rotations
 #'   such as `"geomin"` and `"oblimin"`, `"target"` and partial-target `"pst"`
@@ -9525,6 +9799,8 @@ semantica_evaporation_config <- function(
 #'   subsets before SEMANTICA concludes that model-matched ESEM calibration is
 #'   unavailable and continues with diagnostic fallbacks;
 #'   explicitly requesting `"semantic_roc_dfi"` preserves the ROC attempt.
+#' @param dfi_bootstrap_candidates Maximum distinct semantic-ranked warm-up forms
+#'   considered for bootstrap calibration. Defaults to three; failed forms are retained.
 #' @param dfi_esem_reps Replications for ESEM DFI calibration. `NULL` uses a
 #'   bounded value derived from `dfi_reps` to avoid excessive ESEM refits.
 #' @param dfi_search_reps Optional explicit replication budget for search-time
@@ -9630,6 +9906,9 @@ semantica_evaporation_config <- function(
 #'   `"final_constraint"` also requires archived final candidates to pass the
 #'   declared guardrails and returns a machine-readable no-solution condition
 #'   when none do.
+#'   `"report_only"` retains reference diagnostics without a guard penalty,
+#'   guard-based rejection, diagnostic bonus reranking, or structural repair.
+#'   Numerical admissibility remains required for an active ESEM objective.
 #' @param uncalibrated_esem_policy Handling when automatic or explicitly requested ESEM DFI calibration
 #'   disables ESEM scoring while final guardrails are hard constraints:
 #'   `"fail_early"` (default), `"guard_screen"`, or explicit
@@ -9698,6 +9977,12 @@ semantica_evaporation_config <- function(
 #' @param semantic_esem_score_mode ESEM score mode. `"current"` preserves the
 #'   existing fit-index-weighted score; `"structure_weighted"` gives semantic
 #'   factorial-structure diagnostics more weight.
+#'   Experimental `"continuous_structure"`, `"continuous_reconstruction"`, and
+#'   `"continuous_balanced"` use continuous loading structure, off-diagonal
+#'   reconstruction improvement over identity, or their harmonic combination.
+#'   See [continuous_structural_utility]. Search DFI and legacy diagnostic bonus
+#'   reranking are not used by these modes. Omitted guard action and final
+#'   selection resolve to `"report_only"` and `"scalar"` for continuous modes.
 #' @param validation_n_diagnostic Logical; estimate a response-data planning N
 #'   from a PFA-derived population using fast Wishart Monte Carlo ESEM refits.
 #' @param validation_n_reps Number of Monte Carlo replications per candidate N.
@@ -9725,10 +10010,13 @@ semantica_evaporation_config <- function(
 #'   do not supply both arguments.
 #' @param final_structure_repair Logical; after archive reranking, try a limited
 #'   same-factor item-swap pass guided by already computed ESEM/PFA structural
-#'   diagnostics. The pass only accepts swaps that improve the full objective.
+#'   diagnostics. Failing hard guards use feasibility before utility; otherwise
+#'   swaps must improve the declared objective.
 #' @param final_structure_repair_max_swaps,final_structure_repair_candidates_per_factor,final_structure_repair_min_delta
 #'   Limits for the optional final repair pass: accepted swap count, candidate
-#'   replacements inspected per factor, and minimum objective improvement.
+#'   facet-feasible replacements inspected per factor, and minimum objective
+#'   improvement. Risk-ranked targets with no legal move are skipped. Exact-fit
+#'   shortlists interleave surrogate-ranked proposals across affected factors.
 #' @param final_structure_repair_max_seconds,final_structure_repair_max_evals
 #'   Exact-fit launch-time and evaluation budgets for final repair. With a
 #'   finite seconds budget, SEMANTICA checks the deadline before each expensive
@@ -9737,8 +10025,10 @@ semantica_evaporation_config <- function(
 #'   in-flight fit. Defaults are 60 seconds and 20 exact evaluations; `Inf`
 #'   explicitly removes a budget.
 #' @param final_structure_repair_prefilter_top_k Optional cheap surrogate
-#'   prefilter size per repair step before full ESEM objective evaluation. The
-#'   default is 10; `Inf` keeps all candidate swaps.
+#'   batch size before full ESEM objective evaluation. If a batch has no
+#'   preferred move, the next untested batch is examined within the same fit/time
+#'   budgets. The default is 10; `Inf` evaluates all generated proposals at once.
+#'   Diagnostics retain per-round coverage, cache use, phase and stopping reason.
 #' @param final_structure_repair_auto_skip_infeasible Skip final repair when
 #'   pool-health diagnostics show no semantic-eligible same-factor replacement
 #'   slack or infeasible duplicate constraints.
@@ -9889,7 +10179,7 @@ ACO_with_ESEM <- function(
     facet_min_per_facet = 1L,
     facet_max_imbalance = 1L,
     psychometric_guard_weight = 0.50,
-    psychometric_guard_action = c("penalty", "final_constraint"),
+    psychometric_guard_action = c("penalty", "final_constraint", "report_only"),
     uncalibrated_esem_policy = c("fail_early", "guard_screen", "semantic_fallback"),
     psychometric_guard_min_ave = 0.30,
     psychometric_guard_min_loading = 0.40,
@@ -9919,7 +10209,7 @@ ACO_with_ESEM <- function(
     semantic_n_grid = NULL,
     semantic_n_multipliers = c(0.5, 1, 1.5, 2),
     semantic_n_iter_max = 800L,
-    semantic_esem_score_mode = c("current", "structure_weighted"),
+    semantic_esem_score_mode = c("current", "structure_weighted", "continuous_structure", "continuous_reconstruction", "continuous_balanced"),
     validation_n_diagnostic = FALSE,
     validation_n_reps = 20L,
     validation_n_grid = NULL,
@@ -9959,15 +10249,23 @@ ACO_with_ESEM <- function(
     esem_cadence_mode = c("adaptive", "fixed"),
     htmt_objective_role = c("diagnostic", "penalty"),
     elite_multicriteria_rerank = NULL,
-    preaco_relaxation_level = c("strict", "wording_forbidden_relaxed"), ...) {
+    preaco_relaxation_level = c("strict", "wording_forbidden_relaxed"),
+    dfi_bootstrap_candidates = 3L, esem_bounds = "none", esem_exploration_slots = 0L, ...) {
 
+  if (length(esem_exploration_slots) != 1L || is.na(esem_exploration_slots) || !esem_exploration_slots %in% c(0, 1)) stop("esem_exploration_slots must be 0 or 1.")
+
+  execution_call <- sys.call()
+  runtime_warning_events <- .semantica_warning_events()
+  withCallingHandlers({
   if (debug_mode) { pheromone_update <- "best_ant"; fixed_evaporation <- 0.05; archive_stable_window <- 3L; verbose <- TRUE }
   pheromone_update <- match.arg(pheromone_update)
   esem_failure_policy <- match.arg(esem_failure_policy)
   dfi_mode <- match.arg(dfi_mode)
+  esem_bounds <- .semantica_validate_esem_bounds(esem_bounds, dfi_mode, final_dddfi)
   dfi_esem_reps_supplied <- !is.null(dfi_esem_reps)
   dfi_search_reps_supplied <- !is.null(dfi_search_reps)
   dfi_esem_strategy <- match.arg(dfi_esem_strategy)
+  dfi_bootstrap_candidates <- .semantica_assert_positive_integer(dfi_bootstrap_candidates, "dfi_bootstrap_candidates")
   dfi_fallback_policy <- match.arg(dfi_fallback_policy)
   final_dddfi_mad_target <- match.arg(final_dddfi_mad_target)
   pfa_mode <- match.arg(pfa_mode)
@@ -9976,6 +10274,9 @@ ACO_with_ESEM <- function(
   pfa_final_extraction <- match.arg(pfa_final_extraction)
   pfa_rotation <- match.arg(pfa_rotation)
   semantic_esem_score_mode <- match.arg(semantic_esem_score_mode)
+  continuous_scoring <- .semantica_continuous_score_mode(semantic_esem_score_mode)
+  if (missing(psychometric_guard_action) && continuous_scoring) psychometric_guard_action <- "report_only"
+  if (missing(final_selection_mode) && continuous_scoring) final_selection_mode <- "scalar"
   esem_cadence_mode <- match.arg(esem_cadence_mode)
   history_mode <- match.arg(history_mode)
   content_alignment_mode <- match.arg(content_alignment_mode)
@@ -10315,6 +10616,13 @@ ACO_with_ESEM <- function(
     final_structure_repair_auto_skip_infeasible,
     "final_structure_repair_auto_skip_infeasible"
   )
+  utility_policy_requested <- list(guard_weight = psychometric_guard_weight,
+    final_structure_repair = final_structure_repair, elite_multicriteria_rerank = elite_multicriteria_rerank)
+  if (psychometric_guard_action == "report_only") {
+    psychometric_guard_weight <- 0
+    final_structure_repair <- FALSE
+  }
+  if (continuous_scoring || psychometric_guard_action == "report_only") elite_multicriteria_rerank <- FALSE
   reference_rmsea_close <- as.numeric(reference_rmsea_close)
   reference_rmsea_poor <- as.numeric(reference_rmsea_poor)
   reference_power <- as.numeric(reference_power)
@@ -11012,7 +11320,21 @@ ACO_with_ESEM <- function(
   pheromone <- matrix(1.0, nrow = n_items, ncol = 2L, dimnames = list(item.vector, c("not_selected", "selected")))
 
   heuristic_cutoffs <- compute_heuristic_cutoffs(n_factors, i.per.f, esem_sample_size)
-  dfi_enabled <- !identical(dfi_mode, "heuristic_semantic")
+  calibration_rng_state <- dots$calibration_rng_state %||% NULL
+  calibration_rng_restore <- NULL
+  if (!is.null(calibration_rng_state)) {
+    if (!is.integer(calibration_rng_state) || length(calibration_rng_state) != 7L ||
+        anyNA(calibration_rng_state) || calibration_rng_state[1L] %% 100L != 7L)
+      stop("'calibration_rng_state' must be a seven-integer L'Ecuyer-CMRG RNG state.")
+    calibration_rng_restore <- list(kind = RNGkind(), state = get(".Random.seed", .GlobalEnv))
+    on.exit(if (!is.null(calibration_rng_restore)) {
+      do.call(RNGkind, as.list(calibration_rng_restore$kind))
+      assign(".Random.seed", calibration_rng_restore$state, .GlobalEnv)
+    }, add = TRUE)
+    RNGkind("L'Ecuyer-CMRG")
+    assign(".Random.seed", calibration_rng_state, .GlobalEnv)
+  }
+  dfi_enabled <- !identical(dfi_mode, "heuristic_semantic") && !continuous_scoring
   shared_search_calibration <- !is.null(search_calibration)
   dfi_bootstrap_requested <- run_esem_during_search && dfi_enabled && !shared_search_calibration
   if (verbose) {
@@ -11028,7 +11350,7 @@ ACO_with_ESEM <- function(
     cat(sprintf("\nPHASE 1 -- %s\nWarm-up: %d iters | Rotation: %s\n", phase1_label, dfi_warmup_iters, rotation))
   }
 
-  model_info_warmup <- list(
+  model_info_warmup <- list(esem_bounds = esem_bounds,
     model_type = model_type, n_obs = esem_sample_size,
     estimator = switch(data_type, "categorical" = "WLSMV", "nonnormal" = "MLR", "ML"),
     data_type = data_type, esem_weight = esem_weight, dfi_mode = dfi_mode,
@@ -11155,7 +11477,7 @@ ACO_with_ESEM <- function(
       if (length(score) == 1L && is.finite(score)) score else -Inf
     }, numeric(1L))
     warmup_candidates <- .semantica_update_warmup_candidates(
-      warmup_candidates, wu_solutions, wu_sem_scores, keep = 3L
+      warmup_candidates, wu_solutions, wu_sem_scores, keep = dfi_bootstrap_candidates
     )
     best_wu_idx <- which.max(wu_objs)
     if (wu_objs[best_wu_idx] > warmup_best_obj) { warmup_best_obj <- wu_objs[best_wu_idx]; warmup_best_vector <- wu_solutions[[best_wu_idx]] }
@@ -11187,6 +11509,11 @@ ACO_with_ESEM <- function(
   } else {
     "not-used"
   }
+  if (shared_search_calibration && !identical(search_calibration$esem_bounds %||% "none", esem_bounds))
+    stop("Shared search calibration uses a different ESEM bounds policy.", call. = FALSE)
+  if (shared_search_calibration && !identical(
+      search_calibration$semantic_esem_score_mode %||% "current", semantic_esem_score_mode))
+    stop("Shared search calibration uses a different ESEM utility policy.", call. = FALSE)
   if (shared_search_calibration) {
     dfi_loading_source <- search_calibration$dfi_loading_source %||% dfi_loading_source
   }
@@ -11203,14 +11530,17 @@ ACO_with_ESEM <- function(
         "\n  Step 1B -- bootstrap ESEM candidate %d/%d on %d items\n",
         bootstrap_esem_attempts, length(warmup_candidates), length(wu_items)
       ))
+      bootstrap_rng_state <- get0(".Random.seed", envir = .GlobalEnv, inherits = FALSE)
+      bootstrap_rng_kind <- RNGkind()
       bootstrap_run <- extract_fitted_dfi_params_esem(
         wu_items, wu_fa, factors, cosine_sim_matrix, esem_sample_size,
         model_info_warmup$estimator, rotation, rotation_args, 0.97, 0.90, verbose,
-        iter_max = model_info_warmup$full_esem_iter_max, return_diagnostics = TRUE
+        iter_max = model_info_warmup$full_esem_iter_max, return_diagnostics = TRUE, bounds = esem_bounds
       )
       candidate_params <- bootstrap_run$parameters
       bootstrap_esem_records[[bootstrap_esem_attempts]] <- list(
         candidate = bootstrap_esem_attempts, items = wu_items,
+        rng_kind = bootstrap_rng_kind, rng_state = bootstrap_rng_state,
         accepted = !is.null(candidate_params), failure_reason = bootstrap_run$failure_reason,
         solver = bootstrap_run$solver)
       # Calibration telemetry retains solver metadata, not a second fitted model.
@@ -11279,7 +11609,7 @@ ACO_with_ESEM <- function(
     if (!is.null(search_dfi_cl)) .semantica_stop_cluster(search_dfi_cl)
   }, add = TRUE)
 
-  if (!shared_search_calibration && run_esem_during_search && dfi_mode %in% c("auto", "semantic_roc_dfi") && !isTRUE(dfi_auto_skipped_semantic_roc) && !is.null(bootstrap_params$esem_fit)) {
+  if (dfi_enabled && !shared_search_calibration && run_esem_during_search && dfi_mode %in% c("auto", "semantic_roc_dfi") && !isTRUE(dfi_auto_skipped_semantic_roc) && !is.null(bootstrap_params$esem_fit)) {
     warmup_syntax <- if (!is.null(bootstrap_params$esem_syntax)) {
       bootstrap_params$esem_syntax
     } else {
@@ -11314,12 +11644,12 @@ ACO_with_ESEM <- function(
       adaptive_min_reps = dfi_adaptive_min_reps,
       adaptive_batch_reps = dfi_adaptive_batch_reps,
       adaptive_tol = dfi_adaptive_tol,
-      adaptive_stable_batches = dfi_adaptive_stable_batches
+      adaptive_stable_batches = dfi_adaptive_stable_batches, bounds = esem_bounds
     )
   }
 
   if (
-    !shared_search_calibration && run_esem_during_search &&
+    dfi_enabled && !shared_search_calibration && run_esem_during_search &&
     dfi_mode %in% c("auto", "semantic_roc_dfi", "semantic_approx_dfi") &&
     !isTRUE(dfi_auto_skipped_semantic_approx) &&
     !is.null(bootstrap_params$esem_fit) &&
@@ -11359,11 +11689,11 @@ ACO_with_ESEM <- function(
       adaptive_min_reps = dfi_adaptive_min_reps,
       adaptive_batch_reps = dfi_adaptive_batch_reps,
       adaptive_tol = dfi_adaptive_tol,
-      adaptive_stable_batches = dfi_adaptive_stable_batches
+      adaptive_stable_batches = dfi_adaptive_stable_batches, bounds = esem_bounds
     )
   }
 
-  need_exact_esem_dfi <- !shared_search_calibration && run_esem_during_search &&
+  need_exact_esem_dfi <- dfi_enabled && !shared_search_calibration && run_esem_during_search &&
     dfi_mode %in% c("auto", "semantic_roc_dfi", "semantic_approx_dfi", "esem_parametric_dfi") &&
     !is.null(bootstrap_params$esem_fit) &&
     (
@@ -11404,7 +11734,7 @@ ACO_with_ESEM <- function(
       adaptive_min_reps = dfi_adaptive_min_reps,
       adaptive_batch_reps = dfi_adaptive_batch_reps,
       adaptive_tol = dfi_adaptive_tol,
-      adaptive_stable_batches = dfi_adaptive_stable_batches
+      adaptive_stable_batches = dfi_adaptive_stable_batches, bounds = esem_bounds
     )
   }
   if (!is.null(search_dfi_cl)) {
@@ -11412,7 +11742,7 @@ ACO_with_ESEM <- function(
     search_dfi_cl <- NULL
   }
 
-  if (!shared_search_calibration && run_esem_during_search && dfi_mode == "strict_cfa_dfi") {
+  if (dfi_enabled && !shared_search_calibration && run_esem_during_search && dfi_mode == "strict_cfa_dfi") {
     strict_dfi_cutoffs <- compute_dfi_cutoffs_from_model_spec(
       factors, i.per.f, esem_sample_size,
       if (!is.null(dfi_population_params)) dfi_population_params$fitted_loadings else NULL,
@@ -11425,7 +11755,7 @@ ACO_with_ESEM <- function(
   }
 
   strict_search_reps <- .semantica_strict_search_reps(dfi_reps, dfi_esem_reps)
-  if (
+  if (dfi_enabled && esem_bounds == "none" &&
     !shared_search_calibration && run_esem_during_search &&
     dfi_mode == "auto" &&
     (is.null(semantic_roc_cutoffs) || isTRUE(semantic_roc_cutoffs$was_degenerate)) &&
@@ -11449,7 +11779,7 @@ ACO_with_ESEM <- function(
     }
   }
 
-  if (
+  if (dfi_enabled && esem_bounds == "none" &&
     !shared_search_calibration && run_esem_during_search &&
     !(dfi_mode %in% c("heuristic_semantic", "strict_cfa_dfi")) &&
     !.semantica_dfi_stage_usable(semantic_roc_cutoffs) &&
@@ -11564,6 +11894,10 @@ ACO_with_ESEM <- function(
     },
     bootstrap_esem_attempts = bootstrap_esem_attempts,
     bootstrap_esem_records = bootstrap_esem_records,
+    bootstrap_policy = list(candidate_limit = dfi_bootstrap_candidates,
+      ranking = "semantic_component", candidate_keys = names(warmup_candidates),
+      stop_reason = if (!dfi_bootstrap_requested) "not_requested" else if (!is.null(bootstrap_params))
+        "usable_candidate_found" else "candidate_budget_exhausted"),
     warmup_telemetry = warmup_telemetry,
     warmup_all_infeasible = warmup_all_infeasible,
     strict_cfa_diagnostic_only = isTRUE(auto_strict_diagnostic_only),
@@ -11577,16 +11911,21 @@ ACO_with_ESEM <- function(
     active_cutoff_source = cutoff_source,
     shared_across_restarts = shared_search_calibration,
     calibration_id = search_calibration$calibration_id %||% NA_character_,
-    requested_reps = active_cutoffs$dfi_requested_reps %||% NA_integer_,
-    actual_simulation_reps = active_cutoffs$dfi_simulation_reps %||% NA_integer_
+    telemetry = .semantica_calibration_telemetry(active_cutoffs, active_cutoff_stage)
   )
+  dfi_calibration_path$warning_events <- do.call(rbind, c(list(.semantica_warning_events()),
+    lapply(seq_along(bootstrap_esem_records), function(i) .semantica_solver_warning_events(
+      bootstrap_esem_records[[i]]$solver$solver_records, "bootstrap", as.character(i)))))
+  dfi_calibration_path$requested_reps <- dfi_calibration_path$telemetry$requested_reps
+  dfi_calibration_path$actual_simulation_reps <- dfi_calibration_path$telemetry$completed_reps
 
   dfi_weight_policy <- .semantica_dfi_search_weight_adjustment(
     esem_parametric_cutoffs,
     current_esem_weight = esem_weight,
     configured_esem_weight = configured_esem_weight,
     active_stage = active_cutoff_stage,
-    requested_mode = dfi_mode
+    requested_mode = if (continuous_scoring) "heuristic_semantic" else dfi_mode,
+    esem_search_requested = esem_search_requested
   )
   parametric_telemetry <- esem_parametric_cutoffs$telemetry %||% NULL
   parametric_completed <- suppressWarnings(as.numeric(parametric_telemetry$completed_reps %||% NA_real_))
@@ -11623,15 +11962,20 @@ ACO_with_ESEM <- function(
     stop(cond)
   }
   if (isTRUE(dfi_weight_cap_applied) && verbose) {
-    message(
-      "[DFI] No requested model-matched ESEM DFI calibration remained; ",
-      "strict-CFA DFI is diagnostic-only and ESEM-guided search is disabled."
-    )
+    message("[DFI] ", dfi_weight_policy$note)
   }
   dfi_calibration_path$parametric_success_rate <- parametric_success_rate
   dfi_calibration_path$parametric_completed_reps <- parametric_completed
   dfi_calibration_path$parametric_successful_fits <- parametric_successes
   dfi_calibration_path$search_confidence <- dfi_weight_policy$search_confidence
+  dfi_calibration_path$search_calibration_role <- if (continuous_scoring) "not_required_continuous_utility" else "fit_reference_utility"
+  if (continuous_scoring) {
+    cutoff_source <- search_cutoff_source <- "Descriptive heuristic references; continuous utility does not use cutoffs"
+    active_cutoff_stage <- "not_required_continuous_utility"
+    dfi_calibration_path$active_stage <- active_cutoff_stage
+    dfi_calibration_path$active_cutoff_source <- cutoff_source
+    dfi_calibration_path$search_confidence <- "continuous_utility_no_fit_calibration_required"
+  }
   dfi_calibration_path$configured_esem_weight <- configured_esem_weight
   dfi_calibration_path$pre_calibration_esem_weight <- dfi_weight_policy$pre_calibration_weight
   dfi_calibration_path$effective_esem_weight <- esem_weight
@@ -11646,14 +11990,17 @@ ACO_with_ESEM <- function(
       cutoff_source = search_cutoff_source,
       active_cutoff_stage = active_cutoff_stage,
       dfi_mode = dfi_mode,
+      semantic_esem_score_mode = semantic_esem_score_mode,
       dfi_esem_reps = dfi_esem_reps,
       estimator = model_info_warmup$estimator,
+      esem_bounds = esem_bounds,
       n_obs = esem_sample_size,
       rotation = rotation,
       rotation_args = rotation_args
     )))
   }
-  search_calibration_record <- list(
+  search_calibration_record <- list(esem_bounds = esem_bounds,
+    semantic_esem_score_mode = semantic_esem_score_mode,
     calibration_id = calibration_id,
     active_cutoffs = search_active_cutoffs,
     cutoff_source = search_cutoff_source,
@@ -11666,13 +12013,15 @@ ACO_with_ESEM <- function(
     dfi_loading_source = dfi_loading_source
   )
   dfi_calibration_path$calibration_id <- calibration_id
+  dfi_calibration_path$esem_bounds <- esem_bounds
+  dfi_calibration_path$strict_cfa_supported <- identical(esem_bounds, "none")
   run_esem_during_search <- if (isTRUE(uncalibrated_esem_resolution$run_guard_screen)) {
     TRUE
   } else {
     run_esem_during_search && esem_weight > 0
   }
 
-  model_info <- list(
+  model_info <- list(esem_bounds = esem_bounds,
     model_type = model_type, n_obs = esem_sample_size,
     estimator = switch(data_type, "categorical" = "WLSMV", "nonnormal" = "MLR", "ML"),
     data_type = data_type, esem_weight = esem_weight,
@@ -11748,6 +12097,12 @@ ACO_with_ESEM <- function(
     history_mode = history_mode
   )
 
+  calibration_rng_exit <- if (!is.null(calibration_rng_state)) get(".Random.seed", .GlobalEnv) else NULL
+  if (!is.null(calibration_rng_restore)) {
+    do.call(RNGkind, as.list(calibration_rng_restore$kind))
+    assign(".Random.seed", calibration_rng_restore$state, .GlobalEnv)
+    calibration_rng_restore <- NULL
+  }
   if (verbose) {
     search_label <- if (run_esem_during_search) {
       "full-ESEM"
@@ -11843,6 +12198,8 @@ ACO_with_ESEM <- function(
       export_env$.SEMANTICA_DECISION_POLICY <- .semantica_decision_policy()
       fns <- c(
         ".semantica_decision_policy", ".semantica_metric_scalar",
+        ".semantica_continuous_score_mode", ".semantica_continuous_utility",
+        ".semantica_utility_fit_seed",
         ".semantica_evaluate_criteria", ".semantica_criterion_config_hash",
         ".semantica_score_reference_spec", ".semantica_object_md5",
         ".semantica_lower_guard_multiplier", ".semantica_upper_guard_multiplier",
@@ -11857,7 +12214,7 @@ ACO_with_ESEM <- function(
         "sanitize_lavaan_name", "extract_similarity_submatrix",
         "compute_semantic_sim_index_v2", "compute_manual_srmr",
         "transform_cosine_for_esem", "stabilize_correlation_matrix",
-        "run_esem_on_matrix", "diagnose_esem_solution_propriety",
+        "run_esem_on_matrix", ".semantica_solver_state", "diagnose_esem_solution_propriety",
         ".semantica_attach_esem_rejection", "extract_and_score_esem",
         "compute_ave_esem", "compute_htmt_esem",
         "compute_esem_structure_diagnostics", "compute_duplicate_penalty",
@@ -11900,8 +12257,13 @@ ACO_with_ESEM <- function(
     "semantic-relative-v2"
   } else "semantic-v1"
   pfa_score_schema <- "pfa-proposal-v2"
+  esem_score_schema <- if (continuous_scoring) paste0("esem-", semantic_esem_score_mode, "-v1") else "esem-guided-v1"
   objective_schema <- list(
     version = "SEMANTICA-objective-v4",
+    utility_policy = list(requested = utility_policy_requested,
+      effective = list(guard_weight = psychometric_guard_weight,
+        final_structure_repair = final_structure_repair, elite_multicriteria_rerank = elite_multicriteria_rerank),
+      continuous_utility_schema = if (continuous_scoring) "semantica-continuous-utility-v1" else NULL),
     semantic = list(active = TRUE, score_schema = semantic_score_schema, mode = semantic_objective_mode),
     pfa = list(
       active = requested_pfa_search, mode = pfa_mode, weight = pfa_weight,
@@ -11913,9 +12275,10 @@ ACO_with_ESEM <- function(
       weight = esem_weight, every = esem_every,
       failure_policy = esem_failure_policy,
       runtime_weight_policy = if (run_esem_during_search) "cumulative_admissible_fit_fraction" else "inactive",
-      score_schema = if (run_esem_during_search) "esem-guided-v1" else NA_character_
+      score_schema = if (run_esem_during_search) esem_score_schema else NA_character_,
+      score_mode = semantic_esem_score_mode
     ),
-    psychometric_guard = list(weight = psychometric_guard_weight),
+    psychometric_guard = list(weight = psychometric_guard_weight, action = psychometric_guard_action),
     evidence_grouping = list(
       semantic_content = list(
         source_family = "embedding_semantic",
@@ -12091,10 +12454,8 @@ ACO_with_ESEM <- function(
     esem_failed <- 0L
     if (do_esem) {
         checkpoint_started <- proc.time()[["elapsed"]]
-        esem_candidates <- which(is.finite(proposal_objectives) & !is.na(proposal_objectives))
+        esem_candidates <- .semantica_esem_shortlist(proposal_objectives, esem_eval_top_k_eff, esem_exploration_slots, ant_solutions)
         if (length(esem_candidates) > 0L) {
-          esem_candidates <- esem_candidates[order(proposal_objectives[esem_candidates], decreasing = TRUE)]
-          esem_candidates <- esem_candidates[seq_len(min(length(esem_candidates), esem_eval_top_k_eff))]
           batch_plan <- .semantica_plan_esem_batch(
             evaluation_broker,
             candidate_indices = esem_candidates,
@@ -12395,12 +12756,12 @@ ACO_with_ESEM <- function(
               runtime_esem_weight = checkpoint_esem_weight,
               iteration = iteration,
               score_type = "esem_guided",
-              score_schema = "esem-guided-v1"
+              score_schema = esem_score_schema
             )
           })
           elite_archives$esem <- update_elite_archive(
             elite_archives$esem, esem_entries, elite_k,
-            rank_field = "esem_guided_score", score_schema = "esem-guided-v1"
+            rank_field = "esem_guided_score", score_schema = esem_score_schema
           )
           archive_states$esem <- .semantica_update_archive_state(
             archive_states$esem, elite_archives$esem
@@ -12514,7 +12875,10 @@ ACO_with_ESEM <- function(
                     semraw_text, rho, ph_entropy))
         if (!is.null(cached_best) && !is.null(cached_best$fit_result) && !is.null(cached_best$fit_result$score_decomp)) {
           d <- cached_best$fit_result$score_decomp
-          if (identical(d$dimensionality_mode %||% "", "unidimensional")) {
+          if (!is.null(d$continuous_utility)) {
+            cat(sprintf("         Sem=%.4f | Utility=%s | ESEM_score=%.4f\n",
+              cached_best$sem_score, d$score_mode, d$final_score))
+          } else if (identical(d$dimensionality_mode %||% "", "unidimensional")) {
             cat(sprintf("         Sem=%.4f | CFI_s=%.3f | RMSEA_s=%.3f | SRMR_s=%.3f | AVE_s=%.3f | LQ=%.3f | HTMT_pen=N/A | ESEM_score=%.4f\n", cached_best$sem_score, d$cfi_s, d$rmsea_s, d$srmr_s, d$ave_score, d$loading_quality, d$final_score))
           } else {
             cat(sprintf("         Sem=%.4f | CFI_s=%.3f | RMSEA_s=%.3f | SRMR_s=%.3f | AVE_s=%.3f | LQ=%.3f | HTMT_pen=%.3f | ESEM_score=%.4f\n", cached_best$sem_score, d$cfi_s, d$rmsea_s, d$srmr_s, d$ave_score, d$loading_quality, d$htmt_penalty, d$final_score))
@@ -12744,12 +13108,17 @@ ACO_with_ESEM <- function(
     syntax <- build_esem_syntax_safe(sel_items, fa, factors)
     archive_rotation_args <- prepare_esem_rotation_args(rotation, rotation_args, sel_items, fa, factors)
     archive_esem_started <- proc.time()[["elapsed"]]
-    esem_run <- run_esem_on_matrix(
+    fit_archive <- function() run_esem_on_matrix(
       syntax, esem_cor, esem_sample_size, model_info$estimator, rotation, archive_rotation_args,
       iter_max = full_esem_iter_max, fallback = TRUE,
-      return_diagnostics = TRUE
+      return_diagnostics = TRUE, bounds = esem_bounds
     )
+    # Stable candidate-specific starts make opt-in archive scores comparable
+    # across serial and worker execution without advancing the caller's RNG.
+    archive_seed <- if (continuous_scoring) .semantica_utility_fit_seed(seed, sel_items) else NULL
+    esem_run <- if (is.null(archive_seed)) fit_archive() else .semantica_with_task_seed(archive_seed, fit_archive())
     esem_fit <- esem_run$fit
+    if (!is.null(esem_fit) && !is.null(archive_seed)) attr(esem_fit, "semantica_utility_fit_seed") <- archive_seed
     r <- extract_and_score_esem(
       esem_fit, esem_cor, fa, factors, active_cutoffs, htmt_threshold,
       score_mode = semantic_esem_score_mode,
@@ -12763,7 +13132,7 @@ ACO_with_ESEM <- function(
       fit_result = r, error = if (isTRUE(r$converged) && isTRUE(r$admissible)) NA_character_ else "archive ESEM unavailable or inadmissible",
       fallback_used = esem_run$fallback_used %||% NA
     )
-    if (!isTRUE(r$converged) || !isTRUE(r$admissible)) {
+    if (!isTRUE(r$converged) || !isTRUE(r$admissible) || identical(r$objective_available, FALSE)) {
       return(list(
         score = -Inf,
         proposal_score = search_score_final,
@@ -12867,10 +13236,20 @@ ACO_with_ESEM <- function(
   # the most expensive finalization steps; retaining their payloads avoids a
   # duplicate refit when fallback selection later chooses an inadmissible
   # candidate by its semantic/PFA proposal score.
+  .evaluate_archive_worker <- function(entry) {
+    # Local closures serialize their namespace by name. Resolve helpers through
+    # the current worker exports even when its installed package is older.
+    evaluator <- .evaluate_archive_solution
+    context <- new.env(parent = environment(evaluator))
+    helpers <- environment(get("extract_and_score_esem", envir = .GlobalEnv, inherits = FALSE))
+    for (name in ls(helpers, all.names = TRUE)) context[[name]] <- get(name, helpers, inherits = FALSE)
+    environment(evaluator) <- context
+    evaluator(entry)
+  }
   archive_evaluations <- .record_final_timing("archive_refit_seconds", {
     if (!is.null(cl) && length(elite_archive) > 1L) {
       .semantica_par_lapply_lb_or_serial(
-        cl, elite_archive, .evaluate_archive_solution,
+        cl, elite_archive, .evaluate_archive_worker,
         serial_fun = .evaluate_archive_solution,
         on_parallel_error = function(error) {
           record_final_parallel_fallback("archive-refit", error, length(elite_archive))
@@ -12935,8 +13314,8 @@ ACO_with_ESEM <- function(
             message = paste(
               "No archived candidate satisfied the declared final psychometric",
               "guardrails, and no admissible full-ESEM archive candidate was",
-              "available as a bounded repair seed. Increase/recover the item pool",
-              "or relax the declared thresholds explicitly.",
+              "available as a bounded repair seed. Inspect the archived fit,",
+              "content and pool diagnostics before changing the design.",
               sprintf(
                 "Best archived candidate: %d active criterion violation(s), total normalized violation %s.",
                 as.integer(best_violation$n_failed %||% NA_integer_),
@@ -12951,6 +13330,11 @@ ACO_with_ESEM <- function(
             archive_item_ids = lapply(elite_archive, function(entry) item.vector[entry$vec == 1L]),
             archive_factor_assignment = item.factor.lookup,
             dfi_calibration_path = dfi_calibration_path,
+            failure_stage = "structural_guard",
+            evaluation_telemetry = .semantica_evaluation_snapshot(evaluation_broker),
+            esem_error_log = esem_error_log,
+            termination_reason = termination_reason, total_iterations = iteration,
+            max_total_iter = max_total_iter, max_esem_fits = max_esem_fits,
             search_parallel_recoveries = search_parallel_recoveries,
             search_parallel_fallbacks = search_parallel_fallbacks,
             final_parallel_fallbacks = final_parallel_fallbacks
@@ -13056,12 +13440,20 @@ ACO_with_ESEM <- function(
     prefilter_top_k = final_structure_repair_prefilter_top_k,
     surrogate_policy = paste(
       "loading_risk + cross_loading_risk + PFA_margin_risk + semantic_heuristic_gain;",
-      "reserve one proposal per structurally deficient factor before exact top-k evaluation"
+      "interleave surrogate-ranked proposals across structurally deficient factors; widen stalled exact-fit batches within existing budgets"
     ),
+    candidate_policy = "facet-feasible replacements before heuristic cap; active guard targets; interleave factors and selected-item targets",
+    feasible_proposals = 0L,
+    targets_without_feasible_swaps = 0L,
+    prefilter_discarded = 0L,
+    budget_discarded = 0L,
+    scope = "Bounded proposal search; failure does not establish pool-wide infeasibility.",
     auto_skip_infeasible = final_structure_repair_auto_skip_infeasible,
     infeasible_factors = repair_infeasible_factors,
     time_budget_exhausted = FALSE,
     eval_budget_exhausted = FALSE,
+    swap_limit_reached = FALSE,
+    rounds = data.frame(),
     swaps = empty_repair_swaps,
     reason = if (final_structure_repair) "not_attempted" else "disabled"
   )
@@ -13116,40 +13508,63 @@ ACO_with_ESEM <- function(
           "ave", "loading_quality", "min_primary_loading", "primary_ge_50"
         )
     )
-    if (!any(risk > 1e-12) && guard_failed && global_loading_failure &&
-        any(is.finite(primary))) {
-      # AVE and the proportion-above-.50 criterion are aggregate properties.
-      # They may fail even when no item crosses the configured minimum-loading
-      # floor. In that case, test bounded same-factor substitutions from the
-      # lowest primary-loading items rather than declaring that no target exists.
-      finite_primary <- primary[is.finite(primary)]
-      ceiling_primary <- max(finite_primary)
-      risk <- ifelse(is.finite(primary), ceiling_primary - primary, 0)
-      if ("primary_ge_50" %in% failed_criteria$criterion) {
-        risk <- risk + ifelse(is.finite(primary), pmax(0.50 - primary, 0), 0)
+    if (guard_failed && global_loading_failure) {
+      # Use the resolved failed criteria, not unrelated descriptive risks.
+      # A joint factor fit can improve by replacing ANY item in a deficient
+      # factor, including one whose individual loading already passes.
+      failed <- failed_criteria[which(failed_criteria$constraint_active &
+        failed_criteria$violation > 0), , drop = FALSE]
+      targets <- rep(FALSE, nrow(item_diag))
+      for (i in seq_len(nrow(failed))) {
+        threshold <- failed$threshold[[i]]
+        affected <- switch(failed$criterion[[i]],
+          ave = {
+            fa <- evaluation$esem_result$factor_ave
+            if (length(fa) && !is.null(names(fa)) && all(is.finite(fa)))
+              item_diag$assigned_factor %in% names(fa)[fa < threshold]
+            else rep(TRUE, nrow(item_diag))
+          },
+          loading_quality = rep(TRUE, nrow(item_diag)),
+          min_primary_loading = primary < threshold,
+          primary_ge_50 = primary < 0.50,
+          max_cross_loading = cross > threshold,
+          simple_structure = !item_diag$simple_structure,
+          correct_dominance = dominant_mismatch,
+          # Non-local constraints (e.g. HTMT) cannot identify a single item.
+          rep(TRUE, nrow(item_diag)))
+        affected[is.na(affected)] <- FALSE
+        targets <- targets | item_diag$assigned_factor %in%
+          item_diag$assigned_factor[affected]
       }
-      if (!any(risk > 1e-12)) risk[is.finite(primary)] <- 1
+      risk <- ifelse(targets & is.finite(primary), 1 + pmax(0, 1 - primary), 0)
     }
     if (!any(risk > 1e-12)) {
-      return(structure(character(0), reason = "no_item_level_target_for_remaining_guard"))
+      return(structure(character(0), reason = if (!guard_failed) "no_repair_needed" else
+        "no_item_level_target_for_remaining_guard"))
     }
     item_diag$risk <- risk
     item_diag <- item_diag[item_diag$risk > 1e-12, , drop = FALSE]
     if (!nrow(item_diag)) {
       return(structure(character(0), reason = "no_item_level_target_for_remaining_guard"))
     }
-    by_factor <- split(item_diag, item_diag$assigned_factor)
-    top_by_factor <- lapply(by_factor, function(z) z[order(z$risk, decreasing = TRUE), , drop = FALSE][1L, , drop = FALSE])
-    ranked <- do.call(rbind, top_by_factor)
-    ranked <- ranked[order(ranked$risk, decreasing = TRUE), , drop = FALSE]
-    ranked$ID
+    # Keep fallback targets: a factor's worst item may have no legal replacement.
+    item_diag$ID[order(-item_diag$risk, item_diag$ID)]
   }
 
-  .repair_candidates_for <- function(current_vector, factor_name) {
+  .repair_candidates_for <- function(current_vector, factor_name, remove_item) {
     selected <- item.vector[current_vector == 1L]
     candidates <- setdiff(eligible.items[[factor_name]] %||% character(0), selected)
     candidates <- intersect(candidates, item.vector)
-    if (!length(candidates)) return(character(0))
+    if (!length(candidates) || !remove_item %in% selected) return(character(0))
+    # Use the actual credited facets and declared constraint, including presence,
+    # balance and lost facet credit. A factor-wide cap must not hide legal moves.
+    candidates <- candidates[vapply(candidates, function(add_item) {
+      ids <- c(setdiff(selected, remove_item), add_item)
+      constraint <- .semantica_facet_constraint_diagnostics(ids, item.factor.lookup[ids],
+        item.facet.lookup, facets.by.factor, i.per.f, facet_constraint_mode,
+        facet_min_per_facet, facet_max_imbalance)
+      !isTRUE(constraint$active) || isTRUE(constraint$passed)
+    }, logical(1L))]
     h <- item_heuristics[[factor_name]]
     hvals <- if (!is.null(h) && length(h)) suppressWarnings(as.numeric(h[candidates])) else rep(NA_real_, length(candidates))
     hvals[!is.finite(hvals)] <- 0
@@ -13205,6 +13620,23 @@ ACO_with_ESEM <- function(
       }
     }
     loading_risk + cross_loading_risk + pfa_margin_risk + semantic_gain
+  }
+
+  .repair_proposal_order <- function(tasks) {
+    proxy <- vapply(tasks, `[[`, numeric(1L), "proxy_score")
+    factors <- vapply(tasks, `[[`, character(1L), "factor")
+    targets <- vapply(tasks, function(x) x$removed_item %||% x$factor, character(1L))
+    target_depth <- integer(length(tasks))
+    for (indices in split(seq_along(tasks), targets)) {
+      target_depth[indices[order(-proxy[indices], indices)]] <- seq_along(indices)
+    }
+    depth <- integer(length(tasks))
+    for (indices in split(seq_along(tasks), factors)) {
+      depth[indices[order(target_depth[indices], -proxy[indices], indices)]] <- seq_along(indices)
+    }
+    # Apply both shortlist and remaining-fit limits to this order. A larger
+    # budget advances within each factor instead of repeatedly starving others.
+    order(depth, -proxy, seq_along(tasks))
   }
 
   if (final_structure_repair) {
@@ -13310,8 +13742,117 @@ ACO_with_ESEM <- function(
       repair_violation <- function(evaluation) {
         evaluation$guard_violation %||% .semantica_guard_violation(evaluation$guard_diagnostics)
       }
+      .repair_search_round <- function(step_tasks) {
+        step_tasks <- step_tasks[.repair_proposal_order(step_tasks)]
+        available <- length(step_tasks)
+        cursor <- tested <- cached <- batches <- 0L
+        best_rank <- NA_integer_
+        step_best <- NULL
+        fits_before <- repair_evaluated_swaps
+        current_total <- repair_violation(current_evaluation)$total
+        best_total <- current_total
+        stop_reason <- "proposal_list_exhausted"
+        while (cursor < available) {
+          if (proc.time()[["elapsed"]] >= repair_deadline) {
+            stop_reason <- "max_seconds_exhausted"
+            break
+          }
+          remaining <- floor(final_structure_repair_max_evals) - repair_evaluated_swaps
+          if (remaining <= 0) {
+            stop_reason <- "max_evals_exhausted"
+            break
+          }
+          batch_size <- min(available - cursor, floor(final_structure_repair_prefilter_top_k))
+          if (batch_size < 1L) {
+            stop_reason <- "empty_prefilter"
+            break
+          }
+          indices <- seq.int(cursor + 1L, cursor + batch_size)
+          batch <- step_tasks[indices]
+          keys <- vapply(batch, `[[`, character(1L), "key")
+          in_cache <- vapply(keys, exists, logical(1L), envir = repair_cache, inherits = FALSE)
+          needs_fit <- !in_cache & !duplicated(keys)
+          # Cached forms (including duplicates in a batch) do not consume fits.
+          keep <- which(cumsum(needs_fit) <= remaining)
+          batch <- batch[keep]
+          batches <- batches + 1L
+          step_evaluations <- repair_eval_many(batch)
+          observed <- !vapply(step_evaluations, is.null, logical(1L))
+          tested <- tested + sum(observed)
+          cached <- cached + sum(observed & !needs_fit[keep])
+          # Compare only this batch, retaining the established preference rules.
+          for (task_idx in seq_along(batch)) {
+            evaluated <- step_evaluations[[task_idx]]
+            if (is.null(evaluated)) next
+            candidate_score <- suppressWarnings(as.numeric(evaluated$score %||% -Inf))
+            candidate_utility <- repair_utility(evaluated)
+            candidate_violation <- repair_violation(evaluated)
+            current_violation <- repair_violation(current_evaluation)
+            hard_guard_active <- isTRUE(hard_guard_repair_pending)
+            if (!hard_guard_active && (length(candidate_score) != 1L || !is.finite(candidate_score))) next
+            delta <- candidate_utility - current_repair_utility
+            feasibility_preference <- if (hard_guard_active) {
+              .semantica_compare_guard_feasibility(evaluated, current_evaluation)
+            } else NA
+            preferred_to_current <- if (!is.na(feasibility_preference)) {
+              isTRUE(feasibility_preference)
+            } else if (identical(final_selection_mode, "pareto")) {
+              identical(.semantica_choose_pareto_archive(list(current_evaluation, evaluated))$index, 2L)
+            } else {
+              delta > final_structure_repair_min_delta
+            }
+            step_feasibility_preference <- if (is.null(step_best) || !hard_guard_active) {
+              NA
+            } else {
+              .semantica_compare_guard_feasibility(evaluated, step_best$evaluation)
+            }
+            preferred_to_step_best <- if (is.null(step_best)) {
+              TRUE
+            } else if (!is.na(step_feasibility_preference)) {
+              isTRUE(step_feasibility_preference)
+            } else if (identical(final_selection_mode, "pareto")) {
+              identical(.semantica_choose_pareto_archive(list(step_best$evaluation, evaluated))$index, 2L)
+            } else {
+              candidate_utility > step_best$utility
+            }
+            if (isTRUE(preferred_to_current) && isTRUE(preferred_to_step_best)) {
+              best_rank <- cursor + task_idx
+              step_best <- list(
+                vector = batch[[task_idx]]$vector,
+                evaluation = evaluated,
+                score = candidate_score,
+                utility = candidate_utility,
+                delta = delta,
+                guard_violation = candidate_violation,
+                factor = batch[[task_idx]]$factor,
+                removed_item = batch[[task_idx]]$removed_item,
+                added_item = batch[[task_idx]]$added_item
+              )
+            }
+          }
+          totals <- vapply(step_evaluations[observed], function(x) repair_violation(x)$total, numeric(1L))
+          best_total <- min(c(best_total, totals), na.rm = TRUE)
+          cursor <- cursor + length(batch)
+          if (!is.null(step_best)) {
+            stop_reason <- "preferred_move_found"
+            break
+          }
+          if (isTRUE(final_structure_repair_diagnostics$time_budget_exhausted)) {
+            stop_reason <- "max_seconds_exhausted"
+            break
+          }
+        }
+        list(best = step_best, reason = stop_reason, record = data.frame(
+          phase = if (isTRUE(hard_guard_repair_pending) &&
+                      !isTRUE(repair_violation(current_evaluation)$passed)) "feasibility" else "refinement",
+          available = available, considered = cursor, tested = tested, cached = cached,
+          exact_evals = repair_evaluated_swaps - fits_before, batches = batches,
+          untested = available - tested, best_rank = best_rank,
+          best_observed_deficit_change = current_total - best_total,
+          stop_reason = stop_reason, stringsAsFactors = FALSE))
+      }
       current_repair_utility <- repair_utility(current_evaluation)
-      swap_rows <- list()
+      swap_rows <- round_rows <- list()
       last_reason <- "no_structurally_weak_selected_items"
       for (repair_step in seq_len(final_structure_repair_max_swaps)) {
         if (proc.time()[["elapsed"]] >= repair_deadline) {
@@ -13320,7 +13861,7 @@ ACO_with_ESEM <- function(
           break
         }
         if (is.finite(final_structure_repair_max_evals) &&
-            repair_evaluated_swaps >= final_structure_repair_max_evals) {
+            repair_evaluated_swaps >= floor(final_structure_repair_max_evals)) {
           final_structure_repair_diagnostics$eval_budget_exhausted <- TRUE
           last_reason <- "max_evals_exhausted"
           break
@@ -13336,9 +13877,12 @@ ACO_with_ESEM <- function(
         for (remove_item in targets) {
           factor_name <- as.character(item.factor.lookup[remove_item])
           if (!length(factor_name) || is.na(factor_name) || !nzchar(factor_name)) next
-          candidates <- .repair_candidates_for(current_vector, factor_name)
-          if (!length(candidates)) next
-          h <- item_heuristics[[factor_name]]
+          candidates <- .repair_candidates_for(current_vector, factor_name, remove_item)
+          if (!length(candidates)) {
+            final_structure_repair_diagnostics$targets_without_feasible_swaps <-
+              final_structure_repair_diagnostics$targets_without_feasible_swaps + 1L
+            next
+          }
           remove_idx <- match(remove_item, item.vector)
           if (!is.finite(remove_idx) || is.na(remove_idx)) next
           for (add_item in candidates) {
@@ -13350,20 +13894,6 @@ ACO_with_ESEM <- function(
             candidate_vector <- current_vector
             candidate_vector[remove_idx] <- 0L
             candidate_vector[add_idx] <- 1L
-            candidate_items <- item.vector[candidate_vector == 1L]
-            candidate_fa <- item.factor.lookup[candidate_items]
-            candidate_facet_constraint <- .semantica_facet_constraint_diagnostics(
-              selected_items = candidate_items,
-              factor_assignment = candidate_fa,
-              item_facet_lookup = item.facet.lookup,
-              facets_by_factor = facets.by.factor,
-              i_per_f = i.per.f,
-              mode = facet_constraint_mode,
-              min_per_facet = facet_min_per_facet,
-              max_imbalance = facet_max_imbalance
-            )
-            if (isTRUE(candidate_facet_constraint$active) &&
-                !isTRUE(candidate_facet_constraint$passed)) next
             step_tasks[[length(step_tasks) + 1L]] <- list(
               vector = candidate_vector,
               key = repair_key(candidate_vector),
@@ -13374,88 +13904,40 @@ ACO_with_ESEM <- function(
             )
           }
         }
-        if (length(step_tasks) && is.finite(final_structure_repair_prefilter_top_k) &&
-            length(step_tasks) > final_structure_repair_prefilter_top_k) {
-          proxy_scores <- vapply(step_tasks, `[[`, numeric(1L), "proxy_score")
-          global_order <- order(proxy_scores, decreasing = TRUE)
-          # A global semantic surrogate can otherwise spend the whole exact-fit
-          # budget on one factor. Preserve one strongest proposal per affected
-          # factor, then fill the remaining budget by the surrogate ranking.
-          first_by_factor <- vapply(unique(vapply(step_tasks, `[[`, character(1L), "factor")), function(factor_name) {
-            candidates <- which(vapply(step_tasks, `[[`, character(1L), "factor") == factor_name)
-            candidates[[which.max(proxy_scores[candidates])]]
-          }, integer(1L))
-          reserve <- first_by_factor[order(proxy_scores[first_by_factor], decreasing = TRUE)]
-          keep <- head(unique(c(reserve, global_order)), as.integer(final_structure_repair_prefilter_top_k))
-          step_tasks <- step_tasks[keep]
+        final_structure_repair_diagnostics$feasible_proposals <-
+          final_structure_repair_diagnostics$feasible_proposals + length(step_tasks)
+        if (!length(step_tasks)) {
+          last_reason <- "no_facet_feasible_same_factor_swap"
+          break
         }
-        if (length(step_tasks) && is.finite(final_structure_repair_max_evals)) {
-          remaining_evals <- as.integer(final_structure_repair_max_evals - repair_evaluated_swaps)
-          if (remaining_evals <= 0L) {
-            final_structure_repair_diagnostics$eval_budget_exhausted <- TRUE
-            last_reason <- "max_evals_exhausted"
-            break
-          }
-          if (length(step_tasks) > remaining_evals) {
-            step_tasks <- step_tasks[seq_len(remaining_evals)]
-            final_structure_repair_diagnostics$eval_budget_exhausted <- TRUE
-          }
+        round <- .repair_search_round(step_tasks)
+        step_best <- round$best
+        round_rows[[length(round_rows) + 1L]] <- cbind(step = repair_step, round$record)
+        untested <- round$record$untested
+        if (identical(round$reason, "preferred_move_found")) {
+          final_structure_repair_diagnostics$prefilter_discarded <-
+            final_structure_repair_diagnostics$prefilter_discarded + untested
         }
-        step_evaluations <- repair_eval_many(step_tasks)
-        for (task_idx in seq_along(step_tasks)) {
-          evaluated <- step_evaluations[[task_idx]]
-          if (is.null(evaluated)) next
-          candidate_score <- suppressWarnings(as.numeric(evaluated$score %||% -Inf))
-          candidate_utility <- repair_utility(evaluated)
-          candidate_violation <- repair_violation(evaluated)
-          current_violation <- repair_violation(current_evaluation)
-          hard_guard_active <- isTRUE(hard_guard_repair_pending)
-          if (!hard_guard_active && (length(candidate_score) != 1L || !is.finite(candidate_score))) next
-          delta <- candidate_utility - current_repair_utility
-          feasibility_preference <- if (hard_guard_active) {
-            .semantica_compare_guard_feasibility(evaluated, current_evaluation)
-          } else NA
-          preferred_to_current <- if (!is.na(feasibility_preference)) {
-            isTRUE(feasibility_preference)
-          } else if (identical(final_selection_mode, "pareto")) {
-            identical(.semantica_choose_pareto_archive(list(current_evaluation, evaluated))$index, 2L)
-          } else {
-            delta > final_structure_repair_min_delta
-          }
-          step_feasibility_preference <- if (is.null(step_best) || !hard_guard_active) {
-            NA
-          } else {
-            .semantica_compare_guard_feasibility(evaluated, step_best$evaluation)
-          }
-          preferred_to_step_best <- if (is.null(step_best)) {
-            TRUE
-          } else if (!is.na(step_feasibility_preference)) {
-            isTRUE(step_feasibility_preference)
-          } else if (identical(final_selection_mode, "pareto")) {
-            identical(.semantica_choose_pareto_archive(list(step_best$evaluation, evaluated))$index, 2L)
-          } else {
-            candidate_utility > step_best$utility
-          }
-          if (isTRUE(preferred_to_current) && isTRUE(preferred_to_step_best)) {
-            step_best <- list(
-              vector = step_tasks[[task_idx]]$vector,
-              evaluation = evaluated,
-              score = candidate_score,
-              utility = candidate_utility,
-              delta = delta,
-              guard_violation = candidate_violation,
-              factor = step_tasks[[task_idx]]$factor,
-              removed_item = step_tasks[[task_idx]]$removed_item,
-              added_item = step_tasks[[task_idx]]$added_item
-            )
-          }
+        if (identical(round$reason, "max_evals_exhausted")) {
+          final_structure_repair_diagnostics$budget_discarded <-
+            final_structure_repair_diagnostics$budget_discarded + untested
+          final_structure_repair_diagnostics$eval_budget_exhausted <- TRUE
+        }
+        if (identical(round$reason, "max_seconds_exhausted")) {
+          final_structure_repair_diagnostics$time_budget_exhausted <- TRUE
         }
         if (is.null(step_best) && isTRUE(final_structure_repair_diagnostics$time_budget_exhausted)) {
           last_reason <- "max_seconds_exhausted"
           break
         }
+        if (is.null(step_best) && isTRUE(final_structure_repair_diagnostics$eval_budget_exhausted)) {
+          last_reason <- "max_evals_exhausted"
+          break
+        }
         if (is.null(step_best)) {
-          last_reason <- if (isTRUE(hard_guard_repair_pending) &&
+          last_reason <- if (identical(round$reason, "empty_prefilter")) {
+            "empty_prefilter"
+          } else if (isTRUE(hard_guard_repair_pending) &&
                              !isTRUE(repair_violation(current_evaluation)$passed)) {
             "no_guard_violation_reducing_same_factor_swap"
           } else if (identical(final_selection_mode, "pareto")) {
@@ -13491,6 +13973,25 @@ ACO_with_ESEM <- function(
           "accepted_objective_improving_same_factor_swaps"
         }
       }
+      final_structure_repair_diagnostics$swap_limit_reached <-
+        length(swap_rows) >= final_structure_repair_max_swaps
+      final_structure_repair_diagnostics$eval_budget_exhausted <-
+        is.finite(final_structure_repair_max_evals) &&
+        repair_evaluated_swaps >= floor(final_structure_repair_max_evals)
+      final_structure_repair_diagnostics$time_budget_exhausted <-
+        isTRUE(final_structure_repair_diagnostics$time_budget_exhausted) ||
+        proc.time()[["elapsed"]] >= repair_deadline
+      # Report the actual exhausted limit even if the last move attained feasibility.
+      last_reason <- if (isTRUE(final_structure_repair_diagnostics$time_budget_exhausted)) {
+        "max_seconds_exhausted"
+      } else if (isTRUE(final_structure_repair_diagnostics$eval_budget_exhausted)) {
+        "max_evals_exhausted"
+      } else if (isTRUE(final_structure_repair_diagnostics$swap_limit_reached)) {
+        "max_swaps_exhausted"
+      } else last_reason
+      final_structure_repair_diagnostics$rounds <- if (length(round_rows)) {
+        do.call(rbind, round_rows)
+      } else data.frame()
       final_structure_repair_diagnostics$accepted_swaps <- length(swap_rows)
       final_structure_repair_diagnostics$evaluated_swaps <- repair_evaluated_swaps
       final_structure_repair_diagnostics$elapsed_seconds <- proc.time()[["elapsed"]] - repair_started_at
@@ -13537,8 +14038,8 @@ ACO_with_ESEM <- function(
         message = paste(
           "No archived candidate satisfied the declared final psychometric",
           "guardrails, and bounded final structure repair did not recover a",
-          "guard-passing candidate. Increase/recover the item pool or relax the",
-          "declared thresholds explicitly.",
+          "guard-passing candidate. Inspect the archived fit, content and pool",
+          "diagnostics before changing the design.",
           sprintf(
             "Best explored candidate: %d active criterion violation(s), total normalized violation %s.",
             as.integer(best_violation$n_failed %||% NA_integer_),
@@ -13554,6 +14055,11 @@ ACO_with_ESEM <- function(
         archive_item_ids = lapply(elite_archive, function(entry) item.vector[entry$vec == 1L]),
         archive_factor_assignment = item.factor.lookup,
         dfi_calibration_path = dfi_calibration_path,
+        failure_stage = "structural_guard",
+        evaluation_telemetry = .semantica_evaluation_snapshot(evaluation_broker),
+        esem_error_log = esem_error_log,
+        termination_reason = termination_reason, total_iterations = iteration,
+        max_total_iter = max_total_iter, max_esem_fits = max_esem_fits,
         search_parallel_recoveries = search_parallel_recoveries,
         search_parallel_fallbacks = search_parallel_fallbacks,
         final_parallel_fallbacks = final_parallel_fallbacks
@@ -13645,6 +14151,7 @@ ACO_with_ESEM <- function(
   final_active_cutoffs <- active_cutoffs
   final_cutoff_source <- cutoff_source
   final_esem_run <- NULL
+  final_unconstrained_diagnostic <- NULL
   final_esem_result <- list(converged = FALSE, score = 0, cfi = NA, tli = NA, rmsea = NA, srmr = NA,
                             ave = NA, htmt_max = NA, htmt_violations = Inf,
                             loading_quality = 0, score_decomp = NULL)
@@ -13661,7 +14168,7 @@ ACO_with_ESEM <- function(
       final_esem_run <- run_esem_on_matrix(
         final_syntax, final_esem_cor, esem_sample_size, model_info$estimator, rotation, final_rotation_args,
         iter_max = full_esem_iter_max, fallback = TRUE,
-        return_diagnostics = TRUE
+        return_diagnostics = TRUE, bounds = esem_bounds
       )
       final_esem_fit <- final_esem_run$fit
     }
@@ -13717,7 +14224,7 @@ ACO_with_ESEM <- function(
           adaptive_min_reps = dfi_adaptive_min_reps,
           adaptive_batch_reps = dfi_adaptive_batch_reps,
           adaptive_tol = dfi_adaptive_tol,
-          adaptive_stable_batches = dfi_adaptive_stable_batches
+          adaptive_stable_batches = dfi_adaptive_stable_batches, bounds = esem_bounds
         )
       }
       if ((is.null(final_dfi_cutoffs) || isTRUE(final_dfi_cutoffs$was_degenerate)) &&
@@ -13748,7 +14255,7 @@ ACO_with_ESEM <- function(
           adaptive_min_reps = dfi_adaptive_min_reps,
           adaptive_batch_reps = dfi_adaptive_batch_reps,
           adaptive_tol = dfi_adaptive_tol,
-          adaptive_stable_batches = dfi_adaptive_stable_batches
+          adaptive_stable_batches = dfi_adaptive_stable_batches, bounds = esem_bounds
         )
       }
       need_final_exact_esem_dfi <- dfi_mode == "esem_parametric_dfi" ||
@@ -13779,7 +14286,7 @@ ACO_with_ESEM <- function(
           adaptive_min_reps = dfi_adaptive_min_reps,
           adaptive_batch_reps = dfi_adaptive_batch_reps,
           adaptive_tol = dfi_adaptive_tol,
-          adaptive_stable_batches = dfi_adaptive_stable_batches
+          adaptive_stable_batches = dfi_adaptive_stable_batches, bounds = esem_bounds
         )
       }
       if (!is.null(final_dfi_cl)) {
@@ -13829,6 +14336,27 @@ ACO_with_ESEM <- function(
         error = if (isTRUE(final_esem_result$converged) && isTRUE(final_esem_result$admissible)) NA_character_ else "final ESEM unavailable or inadmissible",
         fallback_used = final_esem_run$fallback_used %||% NA
       )
+    }
+
+    if (esem_bounds != "none") {
+      # Post-selection only: preserve unconstrained evidence without changing
+      # rankings, the constrained fit, or the caller's random stream.
+      diagnostic_started <- proc.time()[["elapsed"]]
+      .semantica_record_final_esem_fit(evaluation_broker)
+      diagnostic_run <- .semantica_preserve_caller_rng(run_esem_on_matrix(
+        final_syntax, final_esem_cor, esem_sample_size, model_info$estimator,
+        rotation, final_rotation_args, iter_max = full_esem_iter_max,
+        fallback = FALSE, return_diagnostics = TRUE, bounds = "none"))
+      assessment <- if (is.null(diagnostic_run$fit)) diagnostic_run$rejection_assessment else
+        is_admissible_esem_fit(diagnostic_run$fit, return_assessment = TRUE)
+      final_unconstrained_diagnostic <- list(bounds = "none", status = diagnostic_run$status,
+        converged = isTRUE(assessment$details$converged), admissible = isTRUE(assessment$admissible),
+        admissibility = assessment, solver_records = diagnostic_run$solver_records,
+        note = "Post-selection diagnostic only; never used for ranking or acceptance.")
+      final_timing$unconstrained_diagnostic_seconds <- proc.time()[["elapsed"]] - diagnostic_started
+      .semantica_append_esem_event(evaluation_broker, stage = "unconstrained_diagnostic",
+        elapsed_seconds = final_timing$unconstrained_diagnostic_seconds,
+        fit_result = final_unconstrained_diagnostic)
     }
 
     if (semantic_n_sensitivity) {
@@ -13882,7 +14410,7 @@ ACO_with_ESEM <- function(
           record_final_parallel_fallback(
             "semantic-n-sensitivity", error, length(semantic_n_grid_eff)
           )
-        }
+        }, bounds = esem_bounds
         )
       )
     }
@@ -14119,6 +14647,29 @@ ACO_with_ESEM <- function(
   }
 
   run_warnings <- character(0)
+  if (isTRUE(final_esem_result$admissibility$details$variance_boundary))
+    run_warnings <- c(run_warnings, "Semantic-proxy ESEM has a residual variance at the zero boundary; this is not evidence of perfect psychological reliability.")
+  warning_events <- rbind(evaluation_broker$warning_events %||% .semantica_warning_events(), runtime_warning_events)
+  for (i in seq_along(bootstrap_esem_records)) warning_events <- rbind(warning_events,
+    .semantica_solver_warning_events(bootstrap_esem_records[[i]]$solver$solver_records,
+      "bootstrap", as.character(i)))
+  calibration_objects <- list(semantic_roc = semantic_roc_cutoffs, semantic_approx = semantic_approx_cutoffs,
+    esem_parametric = esem_parametric_cutoffs, final_dfi = final_dfi_cutoffs)
+  for (stage in names(calibration_objects)) {
+    records <- calibration_objects[[stage]]$simulation_provenance$fit_diagnostics
+    for (i in seq_along(records)) warning_events <- rbind(warning_events,
+      .semantica_solver_warning_events(records[[i]]$solver_records, stage, as.character(i)))
+  }
+  warning_events <- rbind(warning_events,
+    semantic_n_sensitivity_result$warning_events %||% .semantica_warning_events(),
+    final_equivtest_diagnostic$warning_events %||% .semantica_warning_events())
+  if (nrow(warning_events)) run_warnings <- unique(c(run_warnings,
+    paste0(warning_events$stage, ": ", warning_events$message)))
+  fit_refs <- final_esem_result$fit_reference_diagnostics
+  if (!is.null(fit_refs) && any(!fit_refs$met | is.na(fit_refs$met)))
+    run_warnings <- c(run_warnings, paste0("Global semantic-proxy fit references not met or unavailable: ",
+      paste(fit_refs$metric[is.na(fit_refs$met) | !fit_refs$met], collapse = ", "),
+      ". These references are separate from the structural acceptance guards."))
   proxy_quality_reasons <- character(0L)
   if (length(repair_infeasible_reasons) > 0L) {
     proxy_quality_reasons <- c(proxy_quality_reasons, repair_infeasible_reasons)
@@ -14260,10 +14811,7 @@ ACO_with_ESEM <- function(
     }
   }
   if (isTRUE(dfi_weight_cap_applied)) {
-    run_warnings <- c(run_warnings, paste(
-      "No model-matched ESEM DFI calibration was available in auto mode;",
-      "strict-CFA DFI was retained as a diagnostic only and ESEM-guided search was disabled."
-    ))
+    run_warnings <- c(run_warnings, dfi_weight_policy$note)
   }
   if (final_dfi_recalibrate && requested_esem_search &&
       dfi_mode %in% c("auto", "semantic_roc_dfi", "semantic_approx_dfi", "esem_parametric_dfi") &&
@@ -14280,7 +14828,8 @@ ACO_with_ESEM <- function(
   if (final_dddfi && is.null(final_dddfi_cutoffs)) {
     run_warnings <- c(run_warnings, "Final DDDFI unavailable -- ESEM-parametric cutoffs reported")
   }
-  if (final_equivtest && is.null(final_equivtest_diagnostic)) {
+  if (final_equivtest && (is.null(final_equivtest_diagnostic) ||
+      !identical(final_equivtest_diagnostic$status, "available"))) {
     run_warnings <- c(run_warnings, "Final dynamic equivalence-test diagnostic unavailable")
   }
   if (!isTRUE(final_esem_result$admissible)) {
@@ -14407,6 +14956,8 @@ ACO_with_ESEM <- function(
     "failed_pool_feasibility"
   } else if (!isTRUE(final_esem_result$admissible)) {
     "proxy_evidence_incomplete"
+  } else if (psychometric_guard_action == "report_only") {
+    "proxy_references_reported"
   } else if (!isTRUE(final_guard_diagnostics$passed)) {
     "failed_structural_guard"
   } else if (length(run_warnings) > 0L) {
@@ -14429,15 +14980,20 @@ ACO_with_ESEM <- function(
   )
   structural_guard <- list(
     action = psychometric_guard_action,
+    selection_active = psychometric_guard_action != "report_only",
     passed = isTRUE(final_guard_diagnostics$passed),
     diagnostics = final_guard_diagnostics,
     violation = final_guard_violation
   )
-  eligible_for_participant_validation <- proxy_quality_status %in% c(
+  eligible_for_participant_validation <- if (psychometric_guard_action == "report_only") {
+    NA
+  } else proxy_quality_status %in% c(
     "proxy_guards_passed", "proxy_warnings"
   ) && isTRUE(preaco_feasibility_gate$feasible) &&
     isTRUE(final_esem_result$admissible) && isTRUE(final_guard_diagnostics$passed)
-  validation_status <- if (eligible_for_participant_validation) {
+  validation_status <- if (is.na(eligible_for_participant_validation)) {
+    "not_assessed_report_only"
+  } else if (eligible_for_participant_validation) {
     "eligible_for_participant_validation"
   } else {
     "not_eligible_for_participant_validation"
@@ -14512,6 +15068,8 @@ ACO_with_ESEM <- function(
     rng_kind = rng_kind_initial,
     master_seed = seed,
     initial_rng_state = rng_state_initial,
+    calibration_rng_entry_state = calibration_rng_state,
+    calibration_rng_exit_state = calibration_rng_exit,
     semantic_pair_perturbation_seed = semantic_perturbation_seed,
     search_esem_task_seeds = if (length(esem_task_seed_records) > 0L) {
       do.call(rbind, esem_task_seed_records)
@@ -14534,6 +15092,7 @@ ACO_with_ESEM <- function(
       legacy_max_iter = max.iter, max_total_iter = max_total_iter,
       max_esem_fits = max_esem_fits, esem_every = esem_every, esem_cadence_mode = esem_cadence_mode,
       esem_eval_top_k = esem_eval_top_k_eff,
+      esem_exploration_slots = esem_exploration_slots,
       esem_search_requested = requested_esem_search,
       run_esem_during_search = run_esem_during_search,
       esem_search_reliability = esem_search_reliability,
@@ -14912,7 +15471,7 @@ ACO_with_ESEM <- function(
       } else if (isTRUE(elite_multicriteria_rerank)) {
         "final-esem-multicriteria-rerank-v2"
       } else {
-        "esem-guided-v1"
+        esem_score_schema
       }
     } else {
       if (pfa_component_used) pfa_score_schema else semantic_score_schema
@@ -15093,6 +15652,7 @@ ACO_with_ESEM <- function(
                   loading_quality = final_esem_result$loading_quality,
                   esem_admissible = final_esem_result$admissible %||% FALSE,
                   esem_admissibility = final_esem_result$admissibility,
+                  esem_unconstrained_diagnostic = final_unconstrained_diagnostic,
                   esem_alignment = final_esem_result$alignment,
                   structure_diagnostics = final_esem_result$structure_diagnostics,
                  item_structure_diagnostics = final_esem_result$structure_diagnostics$item_diagnostics %||% NULL,
@@ -15102,6 +15662,7 @@ ACO_with_ESEM <- function(
                  esem_parametric_cutoffs = esem_parametric_cutoffs,
                  final_dfi_cutoffs = final_dfi_cutoffs, final_dddfi_cutoffs = final_dddfi_cutoffs,
                  final_equivtest_diagnostic = final_equivtest_diagnostic,
+                 warning_events = warning_events,
                  response_validation = response_validation,
                  active_cutoffs = final_active_cutoffs, cutoff_source = final_cutoff_source,
                  search_active_cutoffs = search_active_cutoffs, search_cutoff_source = search_cutoff_source,
@@ -15173,6 +15734,19 @@ ACO_with_ESEM <- function(
   class(result) <- c("semantica_result", "list")
   if (verbose) print_semantica_phase3_summary(result)
   result
+  }, warning = function(w) {
+    runtime_warning_events <<- rbind(runtime_warning_events,
+      .semantica_warning_events(conditionMessage(w), "runtime",
+        calls = paste(deparse(conditionCall(w)), collapse = " ")))
+  }, error = function(e) {
+    # Keep direct validation errors compact after installing a calling handler.
+    # Preserve dependency calls and every custom condition class/detail.
+    call <- conditionCall(e)
+    if (is.call(call) && identical(call[[1L]], quote(withCallingHandlers))) {
+      e$call <- execution_call
+      stop(e)
+    }
+  })
 }
 
 # =================================================================
@@ -15444,6 +16018,7 @@ report_semantica_v2 <- function(result, digits = 4) {
   es_state <- result$esem_state %||% NULL
   if (!is.null(es_state)) {
     cat(sprintf("  ESEM technical state : %s\n", es_state$technical_state %||% "unavailable"))
+    if (identical(es_state$variance_state, "boundary")) cat("  ESEM variance state  : zero boundary (not an interior solution)\n")
     cat(sprintf("  ESEM structural qual.: %s\n", es_state$structural_quality %||% "not_assessed"))
     if (identical(es_state$structural_quality %||% "", "admissible_but_structurally_mixed")) {
       cat("  [!] ESEM is technically admissible but structurally mixed; do not read admissibility as clean intended structure.\n")
@@ -15531,6 +16106,12 @@ report_semantica_v2 <- function(result, digits = 4) {
   if (!is.null(cr$score_decomp)) {
     cat("\n-- SCORE DECOMPOSITION -----------------------------------\n")
     d <- cr$score_decomp
+    if (!is.null(d$continuous_utility)) {
+      cat(sprintf("  Continuous utility: %s\n", d$score_mode))
+      z <- d$continuous_utility$components
+      for (name in names(z)) cat(sprintf("  %-18s: %.4f\n", name, z[[name]]))
+      cat(sprintf("  Final ESEM score  : %.4f\n", d$final_score))
+    } else {
     cat(sprintf("  CFI ratio score  : %.4f  | logistic: %.4f\n", d$cfi_s, d$cfi_logistic))
     cat(sprintf("  RMSEA ratio score: %.4f  | logistic: %.4f\n", d$rmsea_s, d$rmsea_logistic))
     cat(sprintf("  SRMR ratio score : %.4f  | logistic: %.4f\n", d$srmr_s, d$srmr_logistic))
@@ -15545,6 +16126,7 @@ report_semantica_v2 <- function(result, digits = 4) {
     }
     cat(sprintf("  Base score       : %.4f\n", d$base_score))
     cat(sprintf("  Final ESEM score : %.4f\n", d$final_score))
+    }
   }
   cat("\n-- VALIDITY CRITERIA -------------------------------------\n")
   if (!is.null(result$response_validation) && !is.null(result$response_validation$result)) {

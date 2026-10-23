@@ -19,7 +19,7 @@ semantica_quality_config(
   facet_min_per_facet = 1L,
   facet_max_imbalance = 1L,
   psychometric_guard_weight = NULL,
-  psychometric_guard_action = c("auto", "penalty", "final_constraint"),
+  psychometric_guard_action = c("auto", "penalty", "final_constraint", "report_only"),
   psychometric_guard_min_ave = NULL,
   psychometric_guard_min_loading = NULL,
   psychometric_guard_min_primary_ge_50 = NULL,
@@ -96,7 +96,13 @@ structure.}
 search penalty or also a final admissibility constraint. \code{"auto"} preserves
 legacy penalty-only behavior unless structural thresholds are explicitly
 supplied (or the strict profile is used), in which case final candidates
-must pass the declared guardrails.}
+must pass the declared guardrails.
+\code{"report_only"} retains reference exceedances and unavailable evidence as
+diagnostics, with no guard multiplier, guard-based final rejection,
+diagnostic bonus reranking, or structural repair. It does not remove
+reference terms from a separately selected legacy ESEM score. Numerical
+fit admissibility and content constraints remain active. Participant
+validation eligibility is not assessed by this action.}
 
 \item{psychometric_guard_min_ave, psychometric_guard_min_loading, psychometric_guard_min_primary_ge_50}{Minimum proxy-structure guardrails.}
 
@@ -113,9 +119,11 @@ warnings remain a soft penalty (default) or become an explicit final
 admissibility constraint.}
 
 \item{final_structure_repair}{Enable a bounded same-factor repair pass after
-archive reranking. Accepted swaps must improve the declared objective.}
+archive reranking. Failing hard guards use feasibility before utility;
+otherwise accepted swaps must improve the declared objective.}
 
-\item{final_structure_repair_max_swaps, final_structure_repair_candidates_per_factor, final_structure_repair_min_delta}{Limits for the optional final repair pass.}
+\item{final_structure_repair_max_swaps, final_structure_repair_candidates_per_factor, final_structure_repair_min_delta}{Limits for the optional final repair pass. Candidate limits apply after
+declared facet constraints; exact-fit shortlists interleave affected factors.}
 
 \item{final_structure_repair_max_seconds, final_structure_repair_max_evals}{Exact-fit launch-time and evaluation budgets for final repair. A finite
 seconds budget is checked before each expensive fit; an in-flight fit is
@@ -123,7 +131,9 @@ allowed to finish. Defaults are 60 seconds and 20 exact evaluations; \code{Inf}
 explicitly removes a budget.}
 
 \item{final_structure_repair_prefilter_top_k}{Optional cheap surrogate
-prefilter size per repair step. The default is 10; \code{Inf} keeps all candidate swaps.}
+batch size for exact final-repair evaluations. A stalled batch advances to
+the next untested proposals within the same fit/time limits. The default is
+10; \code{Inf} evaluates all generated proposals at once.}
 
 \item{final_structure_repair_auto_skip_infeasible}{Automatically skip final
 repair when the selected factor pools have no semantic-eligible slack or

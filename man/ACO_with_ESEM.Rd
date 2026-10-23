@@ -72,7 +72,7 @@ ACO_with_ESEM(
   facet_min_per_facet = 1L,
   facet_max_imbalance = 1L,
   psychometric_guard_weight = 0.5,
-  psychometric_guard_action = c("penalty", "final_constraint"),
+  psychometric_guard_action = c("penalty", "final_constraint", "report_only"),
   uncalibrated_esem_policy = c("fail_early", "guard_screen", "semantic_fallback"),
   psychometric_guard_min_ave = 0.3,
   psychometric_guard_min_loading = 0.4,
@@ -102,7 +102,8 @@ ACO_with_ESEM(
   semantic_n_grid = NULL,
   semantic_n_multipliers = c(0.5, 1, 1.5, 2),
   semantic_n_iter_max = 800L,
-  semantic_esem_score_mode = c("current", "structure_weighted"),
+  semantic_esem_score_mode = c("current", "structure_weighted", "continuous_structure",
+    "continuous_reconstruction", "continuous_balanced"),
   validation_n_diagnostic = FALSE,
   validation_n_reps = 20L,
   validation_n_grid = NULL,
@@ -154,6 +155,9 @@ ACO_with_ESEM(
   htmt_objective_role = c("diagnostic", "penalty"),
   elite_multicriteria_rerank = NULL,
   preaco_relaxation_level = c("strict", "wording_forbidden_relaxed"),
+  dfi_bootstrap_candidates = 3L,
+  esem_bounds = "none",
+  esem_exploration_slots = 0L,
   ...
 )
 }
@@ -378,7 +382,10 @@ standardized parameters.}
 \item{psychometric_guard_action}{\code{"penalty"} retains the soft-search behavior;
 \code{"final_constraint"} also requires archived final candidates to pass the
 declared guardrails and returns a machine-readable no-solution condition
-when none do.}
+when none do.
+\code{"report_only"} retains reference diagnostics without a guard penalty,
+guard-based rejection, diagnostic bonus reranking, or structural repair.
+Numerical admissibility remains required for an active ESEM objective.}
 
 \item{uncalibrated_esem_policy}{Handling when automatic or explicitly requested ESEM DFI calibration
 disables ESEM scoring while final guardrails are hard constraints:
@@ -465,7 +472,13 @@ N-sensitivity refits.}
 
 \item{semantic_esem_score_mode}{ESEM score mode. \code{"current"} preserves the
 existing fit-index-weighted score; \code{"structure_weighted"} gives semantic
-factorial-structure diagnostics more weight.}
+factorial-structure diagnostics more weight.
+Experimental \code{"continuous_structure"}, \code{"continuous_reconstruction"}, and
+\code{"continuous_balanced"} use continuous loading structure, off-diagonal
+reconstruction improvement over identity, or their harmonic combination.
+See \link{continuous_structural_utility}. Search DFI and legacy diagnostic bonus
+reranking are not used by these modes. Omitted guard action and final
+selection resolve to \code{"report_only"} and \code{"scalar"} for continuous modes.}
 
 \item{validation_n_diagnostic}{Logical; estimate a response-data planning N
 from a PFA-derived population using fast Wishart Monte Carlo ESEM refits.}
@@ -499,10 +512,13 @@ do not supply both arguments.}
 
 \item{final_structure_repair}{Logical; after archive reranking, try a limited
 same-factor item-swap pass guided by already computed ESEM/PFA structural
-diagnostics. The pass only accepts swaps that improve the full objective.}
+diagnostics. Failing hard guards use feasibility before utility; otherwise
+swaps must improve the declared objective.}
 
 \item{final_structure_repair_max_swaps, final_structure_repair_candidates_per_factor, final_structure_repair_min_delta}{Limits for the optional final repair pass: accepted swap count, candidate
-replacements inspected per factor, and minimum objective improvement.}
+facet-feasible replacements inspected per factor, and minimum objective
+improvement. Risk-ranked targets with no legal move are skipped. Exact-fit
+shortlists interleave surrogate-ranked proposals across affected factors.}
 
 \item{final_structure_repair_max_seconds, final_structure_repair_max_evals}{Exact-fit launch-time and evaluation budgets for final repair. With a
 finite seconds budget, SEMANTICA checks the deadline before each expensive
@@ -512,8 +528,10 @@ in-flight fit. Defaults are 60 seconds and 20 exact evaluations; \code{Inf}
 explicitly removes a budget.}
 
 \item{final_structure_repair_prefilter_top_k}{Optional cheap surrogate
-prefilter size per repair step before full ESEM objective evaluation. The
-default is 10; \code{Inf} keeps all candidate swaps.}
+batch size before full ESEM objective evaluation. If a batch has no
+preferred move, the next untested batch is examined within the same fit/time
+budgets. The default is 10; \code{Inf} evaluates all generated proposals at once.
+Diagnostics retain per-round coverage, cache use, phase and stopping reason.}
 
 \item{final_structure_repair_auto_skip_infeasible}{Skip final repair when
 pool-health diagnostics show no semantic-eligible same-factor replacement
@@ -621,6 +639,17 @@ concept conflicts for the named recovered factor(s); robust construct
 mismatch and polarity remain hard. Unresolved factor-alignment calibration
 is diagnostic after one bounded top-up refresh rather than an item-level
 exclusion. Direct ACO calls default to \code{"strict"}.}
+
+\item{dfi_bootstrap_candidates}{Maximum distinct semantic-ranked warm-up forms
+considered for bootstrap calibration. Defaults to three; failed forms are retained.}
+
+\item{esem_bounds}{Native semantic-proxy variance bounds: \code{"none"} (default)
+or \code{"pos.var"}. See \code{\link[=semantica_esem_config]{semantica_esem_config()}} for boundary interpretation
+and calibration restrictions. Requires \code{final_dddfi = FALSE}.}
+
+\item{esem_exploration_slots}{Reserve 0 (default) or 1 existing shortlist slots
+for a seeded random finite candidate outside the top cheap-score shortlist.
+Does not increase the shortlist size or search-fit ceiling.}
 
 \item{...}{Additional arguments (unused).}
 }

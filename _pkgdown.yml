@@ -77,6 +77,7 @@ reference:
     Supported component boundary for workflows that begin after item generation.
   contents:
   - semantica_import_embeddings
+  - semantica_prepare_inputs
   - semantica_connect
   - print.semantica_session
   - semantica_backend_preflight
@@ -86,6 +87,7 @@ reference:
   - semantica_standardize_item_metadata
   - semantica_wrap
   - ACO_with_ESEM
+  - continuous_structural_utility
   - semantica_reload
   - semantica_reload_optimizer
 
@@ -186,4 +188,5 @@ articles:
   - semantica-troubleshooting
 - title: "Advanced optimizer notes"
   contents:
+  - continuous-aco
   - aco-esem-roadmap

@@ -30,10 +30,33 @@ test_that("generation parser ignores prose around an actual list", {
 test_that("generation parser reports duplicates and short responses", {
   x <- parse_case("1. Alpha item text\n2. Alpha item text\n3. Beta item text")
   expect_lte(x$metadata$retained, 2L)
-  expect_true("duplicates_removed" %in% x$metadata$rejection_reasons || x$metadata$parsed == 2L)
+  expect_true("duplicates_removed" %in% x$metadata$rejection_reasons)
+  expect_identical(x$metadata$parsed, 3L)
+  expect_identical(x$metadata$duplicate_exact, 1L)
+  expect_identical(x$metadata$rejected, 0L)
+  expect_false("fewer_than_requested" %in% x$metadata$rejection_reasons)
 
   short <- parse_case("1. Alpha item text", n = 3L)
   expect_true("fewer_than_requested" %in% short$metadata$rejection_reasons)
+})
+
+test_that("candidate accounting partitions exact copies, lexical copies and truncation", {
+  items <- c("I notice changes in my friends' moods.",
+    "I notice changes in my friends' moods.",
+    "I NOTICE CHANGES IN MY FRIENDS' MOODS!", "I enjoy exploring unfamiliar places.",
+    "I finish difficult jobs ahead of schedule.")
+  for (mode in c("numbered", "json")) {
+    raw <- if (mode == "json") jsonlite::toJSON(list(items = items)) else paste0(seq_along(items), ". ", items, collapse = "\n")
+    x <- parse_case(raw, mode, n = 3L)
+    m <- x$metadata
+    expect_identical(m$parsed, 5L)
+    expect_identical(m$duplicate_exact, 1L)
+    expect_identical(m$duplicate_lexical, 1L)
+    expect_identical(m$truncated, 1L)
+    expect_identical(m$parsed, m$retained + m$duplicate + m$truncated)
+    expect_identical(x$items, SEMANTICA:::.dedup_items(head(unique(items), 3L)))
+    expect_true("more_than_requested_truncated" %in% m$rejection_reasons)
+  }
 })
 
 test_that("generation parser does not invent items from empty/refusal responses", {

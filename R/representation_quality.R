@@ -321,7 +321,28 @@ semantica_embedding_spec <- function(
 .semantica_definition_alignment <- function(items_tbl, embeddings, factors, embed_session,
                                              cache = TRUE, cache_dir = NULL,
                                              cache_namespace = NULL, batch_size = 64L,
-                                             exclusions = NULL) {
+                                             exclusions = NULL, reference_embeddings = NULL) {
+  retained_vectors <- list(); retained_texts <- character()
+  embed_reference <- function(refs) {
+    ids <- refs$ref_id
+    if (is.null(reference_embeddings)) {
+      vectors <- semantica_embed(refs, embed_session, text_col = "ref_text", id_col = "ref_id",
+        batch_size = batch_size, normalize = TRUE, cache = cache, cache_dir = cache_dir,
+        cache_namespace = paste0(cache_namespace %||% "default", "::definitions"), verbose = FALSE)$embeddings
+    } else {
+      v <- reference_embeddings$vectors; texts <- reference_embeddings$texts
+      if (!is.matrix(v) || any(!is.finite(v)) || anyDuplicated(rownames(v)) ||
+          !all(ids %in% rownames(v)) || !all(ids %in% names(texts)) ||
+          !identical(unname(as.character(texts[ids])), as.character(refs$ref_text)))
+        stop("Recorded definition vectors or exact reference texts do not match.")
+      vectors <- v[ids, , drop = FALSE]
+      if (ncol(vectors) != ncol(embeddings) || any(rowSums(vectors^2) <= 0))
+        stop("Invalid recorded definition vector dimensions or norms.")
+    }
+    retained_vectors[[length(retained_vectors) + 1L]] <<- vectors
+    retained_texts[ids] <<- as.character(refs$ref_text)
+    vectors
+  }
   fail <- function(note) list(available = FALSE, note = note, table = NULL)
   if (!is.list(factors) || is.null(names(factors))) {
     return(fail("factor definitions unavailable"))
@@ -377,14 +398,7 @@ semantica_embedding_spec <- function(
     ref_text = unname(factor_ref_text),
     stringsAsFactors = FALSE
   )
-  ref_emb <- semantica_embed(
-    refs, embed_session,
-    text_col = "ref_text", id_col = "ref_id",
-    batch_size = batch_size, normalize = TRUE, cache = cache,
-    cache_dir = cache_dir,
-    cache_namespace = paste0(cache_namespace %||% "default", "::definitions"),
-    verbose = FALSE
-  )$embeddings
+  ref_emb <- embed_reference(refs)
 
   ids <- as.character(x[[id_col]])
   common <- intersect(ids, rownames(embeddings))
@@ -522,14 +536,7 @@ semantica_embedding_spec <- function(
       ref_text = paste(f, "excluded concept", vals, sep = ". "),
       stringsAsFactors = FALSE
     )
-    ee <- semantica_embed(
-      er, embed_session,
-      text_col = "ref_text", id_col = "ref_id",
-      batch_size = batch_size, normalize = TRUE, cache = cache,
-      cache_dir = cache_dir,
-      cache_namespace = paste0(cache_namespace %||% "default", "::definitions"),
-      verbose = FALSE
-    )$embeddings
+    ee <- embed_reference(er)
     ii <- which(assigned == f)
     if (!length(ii)) next
     es <- .semantica_cosine_cross(item_emb_common[ii, , drop = FALSE], ee)
@@ -606,14 +613,7 @@ semantica_embedding_spec <- function(
         ref_text = paste(f, f_desc[[f]], fn, fd, sep = ". "),
         stringsAsFactors = FALSE
       )
-      fe <- semantica_embed(
-        fr, embed_session,
-        text_col = "ref_text", id_col = "ref_id",
-        batch_size = batch_size, normalize = TRUE, cache = cache,
-        cache_dir = cache_dir,
-        cache_namespace = paste0(cache_namespace %||% "default", "::definitions"),
-        verbose = FALSE
-      )$embeddings
+      fe <- embed_reference(fr)
       ii <- which(assigned == f)
       if (!length(ii)) next
       fs <- .semantica_cosine_cross(embeddings[common[ii], , drop = FALSE], fe)
@@ -652,6 +652,7 @@ semantica_embedding_spec <- function(
     available = TRUE,
     table = out,
     factor_similarity = sim,
+    reference_embeddings = list(vectors = do.call(rbind, retained_vectors), texts = retained_texts),
     evidence_role = "semantic_definition_alignment",
     reference_policy = "single_declared_factor_prototype_with_declared_facets",
     reference_texts = stats::setNames(refs$ref_text, f_names),
@@ -788,4 +789,33 @@ semantica_embedding_spec <- function(
       "It does not automatically alter embeddings or choose a more favorable cosine preprocessing."
     )
   ), class = c("semantica_representation_evidence_state", "list"))
+}
+.semantica_selected_alignment_summary <- function(metadata, mode, n_selected) {
+  out <- list(available = FALSE, mode = mode, n_selected = n_selected)
+  if (!is.data.frame(metadata) || !"semantica_factor_alignment_status" %in% names(metadata) ||
+      !any(!is.na(metadata$semantica_factor_alignment_status))) return(out)
+  raw <- as.character(metadata$semantica_factor_alignment_status)
+  centered <- metadata$semantica_factor_alignment_status_centered
+  count <- function(x) if (is.null(x) || all(is.na(x))) NA_integer_ else as.integer(sum(x, na.rm = TRUE))
+  out$available <- TRUE
+  out$aligned_n <- if ("semantica_factor_aligned" %in% names(metadata))
+    count(as.logical(metadata$semantica_factor_aligned)) else count(raw == "aligned")
+  out$ambiguous_n <- count(raw == "ambiguous")
+  out$alignment_unresolved_n <- count(raw == "alignment_unresolved")
+  # Preserve the legacy raw-view count; robust exclusion is a distinct decision.
+  out$clear_mismatch_n <- out$raw_clear_mismatch_n <- count(raw == "clear_mismatch")
+  out$centered_clear_mismatch_n <- count(centered == "clear_mismatch")
+  out$robust_factor_mismatch_n <- if (is.null(centered)) NA_integer_ else
+    count(raw == "clear_mismatch" & centered == "clear_mismatch")
+  out$preprocessing_disagreement_n <- if (is.null(centered)) NA_integer_ else
+    count(xor(raw == "clear_mismatch", centered == "clear_mismatch"))
+  out$guard_excluded_n <- count(!as.logical(metadata$semantica_content_guard_pass))
+  flagged <- c(out$raw_clear_mismatch_n, out$centered_clear_mismatch_n, out$alignment_unresolved_n)
+  out$warning <- if (any(flagged > 0, na.rm = TRUE)) paste0(
+    "Selected-item definition screening: ", out$raw_clear_mismatch_n, " raw mismatch flag(s), ",
+    out$robust_factor_mismatch_n, " robust factor mismatch(es), ",
+    out$preprocessing_disagreement_n, " preprocessing disagreement(s), and ",
+    out$alignment_unresolved_n, " unresolved alignment(s). Content mode: ", mode,
+    ". These embedding-based flags require content review; raw-only flags do not imply a guard violation.") else NULL
+  out
 }

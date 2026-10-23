@@ -63,6 +63,17 @@ stored inside `semantica_esem_config()`.
 Use the standard input columns `item_id`, `factor`, optional `facet`, and
 `item_text`. See the user-workflows vignette for a complete recipe.
 
+`semantica_prepare_inputs()` additionally freezes recorded item and definition
+vectors for `semantica_run_custom(prepared_inputs = ...)`, recomputing native
+diagnostics without provider requests or pool top-up.
+
+For experimental continuous structural objectives, use
+`semantica_esem_config(score_mode = "continuous_balanced")` together with
+`semantica_quality_config(psychometric_guard_action = "report_only",
+final_selection_mode = "scalar")`. The alternatives are `continuous_structure`
+and `continuous_reconstruction`. See `vignette("continuous-aco", package =
+"SEMANTICA")` for their explicit definitions and comparison limits.
+
 # Resources and recovery
 
 - `semantica_capabilities()`

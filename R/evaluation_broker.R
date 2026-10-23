@@ -72,6 +72,7 @@
   broker$archive_esem_fits_started <- 0L
   broker$final_esem_fits_started <- 0L
   broker$esem_events <- list()
+  broker$warning_events <- .semantica_warning_events()
   class(broker) <- c("semantica_evaluation_broker", "environment")
   broker
 }
@@ -165,6 +166,8 @@
                                          error = NA_character_, fallback_used = NA) {
   if (!inherits(broker, "semantica_evaluation_broker")) return(invisible(broker))
   fit_result <- fit_result %||% list()
+  if (!isTRUE(cache_hit)) broker$warning_events <- rbind(broker$warning_events,
+    .semantica_solver_warning_events(fit_result$solver_records, stage, candidate_key %||% NA_character_))
   admissibility <- fit_result$admissibility %||% list()
   reason <- error
   if (is.null(reason) || length(reason) == 0L || is.na(reason) || !nzchar(reason)) {
@@ -312,6 +315,7 @@
     archive_esem_fits_started = broker$archive_esem_fits_started,
     final_esem_fits_started = broker$final_esem_fits_started,
     esem_events = events,
+    warning_events = broker$warning_events,
     max_esem_fits = broker$max_esem_fits,
     max_esem_fits_definition =
       "Maximum unique search-time ESEM candidate jobs admitted to execution; cache hits and coalesced duplicate requests do not consume the budget."

@@ -90,6 +90,10 @@ test_that("structural rejection retains archived fits and candidate identities",
   for (repair in c(FALSE, TRUE)) {
     outcome <- reject(repair)
     expect_s3_class(outcome, "semantica_error_structural_guard")
+    expect_identical(outcome$failure_stage, "structural_guard")
+    expect_gt(nrow(outcome$evaluation_telemetry$esem_events), 0L)
+    expect_gt(outcome$evaluation_telemetry$archive_esem_fits_started, 0L)
+    expect_equal(outcome$total_iterations, 1L)
     if (repair) expect_type(outcome$final_structure_repair, "list")
     expect_gt(length(outcome$archive_evaluations), 0L)
     expect_length(outcome$archive_item_ids, length(outcome$archive_evaluations))
@@ -107,6 +111,7 @@ test_that("structural rejection retains archived fits and candidate identities",
     saveRDS(details, path)
     expect_identical(readRDS(path)$archive_evaluations, outcome$archive_evaluations)
     expect_identical(readRDS(path)$search_parallel_recoveries, outcome$search_parallel_recoveries)
+    expect_identical(readRDS(path)$evaluation_telemetry, outcome$evaluation_telemetry)
     expect_identical(serialize(outcome, NULL), before)
     unlink(path)
   }

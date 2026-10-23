@@ -42,3 +42,8 @@ semantica_embedding_cache/
 
 # Generated HEXACO Monte Carlo study artifacts
 simulation_results/
+
+# Local verification, runtime checkpoints, and interrupted workspace saves
+audit-verification/
+semantica_checkpoints/
+.RDataTmp

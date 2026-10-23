@@ -357,6 +357,10 @@ test_that("final repair targets global AVE and primary-loading failures", {
   expect_gt(err$final_structure_repair$evaluated_swaps, 0L)
   expect_equal(
     err$final_structure_repair$reason,
-    "no_guard_violation_reducing_same_factor_swap"
+    "max_evals_exhausted"
   )
+  expect_true(err$final_structure_repair$eval_budget_exhausted)
+  expect_equal(err$final_structure_repair$evaluated_swaps, 6L)
+  expect_equal(sum(err$final_structure_repair$rounds$exact_evals), 6L)
+  expect_true(all(err$final_structure_repair$rounds$phase == "feasibility"))
 })

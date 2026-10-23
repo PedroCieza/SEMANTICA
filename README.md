@@ -379,6 +379,65 @@ prepared <- semantica_wrap(imported, verbose = FALSE)
 
 SEMANTICA does not guess positional embedding/item alignment; IDs must match explicitly.
 
+### D. Replay a recorded pool without model calls
+
+`semantica_prepare_inputs()` freezes item text, item vectors, the substantive
+blueprint, exact definition-reference texts/vectors, and the representation
+policy. Pass the resulting object to `semantica_run_custom(prepared_inputs = ...)`
+to reuse native alignment and selection without generation, embedding requests,
+or pool top-up. Diagnostic/pass columns supplied in the item table are discarded
+and recomputed. Changed input fingerprints, source definitions, blueprints, or
+representation settings require a newly prepared object.
+
+See `?semantica_prepare_inputs` and the
+[existing-item workflows](https://PedroCieza.github.io/SEMANTICA/articles/semantica-user-workflows.html)
+for the required reference-vector evidence. Recorded vectors must come from a
+compatible encoder and preprocessing policy; the package cannot authenticate
+their declared model identity.
+
+## Experimental continuous ACO objectives
+
+ACO can optimize a declared continuous structural proxy instead of the existing
+reference-based ESEM utility:
+
+```r
+esem_options <- semantica_esem_config(score_mode = "continuous_balanced")
+quality_options <- semantica_quality_config(
+  psychometric_guard_action = "report_only",
+  final_selection_mode = "scalar"
+)
+# Pass these as esem = esem_options and quality = quality_options to
+# semantica_run_custom(), with your ordinary inputs or prepared_inputs.
+```
+
+| ESEM score mode | Preference |
+|---|---|
+| `continuous_structure` | Intended absolute loading strength and separation from cross-loadings, balanced across factors |
+| `continuous_reconstruction` | Reconstruction of the selected input matrix relative to a zero-association baseline |
+| `continuous_balanced` | Harmonic mean of structure and reconstruction |
+
+These experimental utilities use no conventional loading bands, fit-index,
+AVE, or HTMT cutoffs. They retain the supplied factor count and intended item
+assignments; they do not discover a factor structure or validate participant
+responses. Strength-based modes still express a preference for the intended
+loading organization. Perfect reconstruction alone does not establish it.
+
+Continuous modes skip search DFI. The separate semantic objective, numerical
+admissibility checks, content constraints, and any separately configured PFA
+objective remain active. When quality options are omitted, continuous modes
+resolve to report-only guards and scalar final selection; explicit quality
+options take precedence. Report-only guards retain diagnostics but disable guard
+penalties, guard-based rejection, structural repair, and diagnostic-bonus
+reranking. A legacy score still contains its reference terms even with
+report-only guards. Existing default score definitions remain available.
+
+Compare policies through common outcome measurements and matched inputs,
+budgets, and seeds. Their differently defined objective scores are not a common
+quality scale. Read the
+[continuous ACO guide](https://PedroCieza.github.io/SEMANTICA/articles/continuous-aco.html)
+or `vignette("continuous-aco", package = "SEMANTICA")` for formulas, limitations,
+optional variance bounds, and generation/audit controls.
+
 ## Participant-response validation after a pilot
 
 Participant-response validation is configured through `semantica_run_custom()`.

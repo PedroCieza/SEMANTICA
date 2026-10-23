@@ -75,7 +75,8 @@ semantica_pipeline(
   embed_backend_spec = NULL,
   generation_seed = NULL,
   allow_provider_key_forwarding = FALSE,
-  allow_insecure_auth = FALSE
+  allow_insecure_auth = FALSE,
+  generation_checkpoint = NULL
 )
 }
 \arguments{
@@ -250,6 +251,8 @@ origin. Defaults to \code{FALSE}.}
 
 \item{allow_insecure_auth}{Logical; allow credentials over non-loopback HTTP.
 Defaults to \code{FALSE}; loopback HTTP remains supported for local servers.}
+
+\item{generation_checkpoint}{Optional callback receiving generated items and provenance before embedding.}
 }
 \value{
 A \code{semantica_pipeline_result} ready for \code{ACO_with_ESEM()}, including

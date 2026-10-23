@@ -279,7 +279,8 @@ summary.semantica_full_pipeline_result <- function(object, sections = "all", ...
     quality_status = object$quality_status %||% opt$quality_status %||% object$proxy_quality$status %||% "unknown",
     quality_reasons = object$proxy_quality$reasons %||% opt$proxy_quality$reasons %||% character(0L),
     validation_status = object$validation_status %||% opt$validation_status %||% "unknown",
-    eligible_for_participant_validation = isTRUE(object$eligible_for_participant_validation %||% opt$eligible_for_participant_validation),
+    eligible_for_participant_validation = if (identical(object$validation_status %||% opt$validation_status,
+      "not_assessed_report_only")) NA else isTRUE(object$eligible_for_participant_validation %||% opt$eligible_for_participant_validation),
     content_alignment_warning = object$selected_content_alignment_warning %||% NULL,
     dimensionality_mode = dimensionality_mode,
     unidimensional_diagnostics = object$unidimensional_diagnostics %||% object$optimization$unidimensional_diagnostics %||%

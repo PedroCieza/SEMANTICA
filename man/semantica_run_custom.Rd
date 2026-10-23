@@ -49,7 +49,9 @@ semantica_run_custom(
   seed = NULL,
   restart_seeds = NULL,
   verbose = TRUE,
-  console_language = c("English", "Spanish")
+  console_language = c("English", "Spanish"),
+  prepared_inputs = NULL,
+  calibration_rng_state = NULL
 )
 }
 \arguments{
@@ -170,7 +172,8 @@ the sanitized full result or an incomplete-run marker on function exit.}
 
 \item{seed}{Optional master seed. It controls SEMANTICA's stochastic analysis
 and is also inherited by LLM generation when the configured generation
-backend exposes an implemented seed contract (currently Ollama).}
+backend exposes an implemented seed contract (Ollama or the llama.cpp/Unsloth
+local server presets).}
 
 \item{restart_seeds}{Optional nonnegative optimizer seeds. When supplied,
 the generated pool and all optimizer settings are held fixed across starts;
@@ -182,6 +185,11 @@ optimizer-sensitivity diagnostic, not validation evidence.}
 
 \item{console_language}{Language for console feedback: \code{"English"} (the
 default) or \code{"Spanish"}. This does not change \code{generation$language}.}
+
+\item{prepared_inputs}{Optional immutable object from \code{\link[=semantica_prepare_inputs]{semantica_prepare_inputs()}}.}
+
+\item{calibration_rng_state}{Optional seven-integer L'Ecuyer-CMRG state for
+an independent calibration/warm-up stream. NULL preserves legacy RNG behavior.}
 }
 \value{
 A compact \code{semantica_run_result}; \verb{$advanced} retains the complete

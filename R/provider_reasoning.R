@@ -564,6 +564,9 @@
     if (!is.null(seed)) body$options$seed <- seed
     body$max_tokens <- NULL
     body$max_completion_tokens <- NULL
+  } else if (isTRUE(.semantica_generation_seed_capability(session)$supported)) {
+    seed <- .semantica_normalize_generation_seed(seed)
+    if (!is.null(seed)) body$seed <- seed
   }
   body
 }
@@ -584,7 +587,7 @@
       as.integer(x$newly_retained %||% x$retained %||% 0L)
     )
     if (length(reasons)) fields <- paste0(fields, ", reasons=", paste(reasons, collapse = "+"))
-    for (field in c("duplicate_previous_units", "duplicate_current_unit")) {
+    for (field in c("duplicate_previous_units", "duplicate_current_unit", "candidate_validation_rejected")) {
       if (!is.null(x[[field]])) fields <- paste0(fields, ", ", field, "=", x[[field]])
     }
     if (length(backend_error) && !is.na(backend_error) && nzchar(backend_error)) {

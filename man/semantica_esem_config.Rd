@@ -8,7 +8,8 @@ semantica_esem_config(
   proxy_reference_n = "auto",
   rotation = "geomin",
   rotation_args = list(geomin.epsilon = 0.5),
-  score_mode = c("current", "structure_weighted"),
+  score_mode = c("current", "structure_weighted", "continuous_structure",
+    "continuous_reconstruction", "continuous_balanced"),
   esem_every = NULL,
   run_esem_during_search = NULL,
   esem_weight = NULL,
@@ -18,7 +19,9 @@ semantica_esem_config(
   fast_esem_iter_max = NULL,
   full_esem_iter_max = NULL,
   esem_eval_top_k = NULL,
-  cadence_mode = c("adaptive", "fixed")
+  cadence_mode = c("adaptive", "fixed"),
+  bounds = c("none", "pos.var"),
+  exploration_slots = 0L
 )
 }
 \arguments{
@@ -33,7 +36,16 @@ geomin fit is inadmissible (and vice versa).}
 
 \item{score_mode}{ESEM proxy score aggregation: \code{"current"} preserves the
 established fit/quality score; \code{"structure_weighted"} additionally
-emphasizes simple-structure and intended-factor dominance diagnostics.}
+emphasizes simple-structure and intended-factor dominance diagnostics.
+Experimental \code{"continuous_structure"} rewards factor-balanced loading
+strength and positive assigned-versus-cross-loading margins;
+\code{"continuous_reconstruction"} rewards off-diagonal squared-error improvement
+over an identity correlation matrix; \code{"continuous_balanced"} combines both
+by harmonic mean. None uses fit cutoffs, loading bands, AVE or HTMT targets.
+One-factor structure omits the inapplicable cross-loading component.
+Search DFI is skipped; numerical admissibility still applies. When quality
+options are omitted in \code{\link[=semantica_run_custom]{semantica_run_custom()}}, these modes use report-only
+guards and scalar final selection. Explicit quality options take precedence.}
 
 \item{esem_every, run_esem_during_search, esem_weight, fast_esem, fast_esem_iter_max, full_esem_iter_max, esem_eval_top_k}{Optional convenience overrides for ESEM search controls. The canonical
 configurable interface keeps these as top-level \code{\link[=semantica_run_custom]{semantica_run_custom()}}
@@ -53,6 +65,17 @@ disables ESEM scoring while final guardrails are hard constraints:
 \item{cadence_mode}{ESEM checkpoint scheduler. \code{"adaptive"} preserves the
 established entropy-responsive advanced behavior; \code{"fixed"} evaluates at
 the declared \code{esem_every} interval exactly.}
+
+\item{bounds}{Native semantic-proxy variance bounds: \code{"none"} (unchanged
+default) or \code{"pos.var"} (nonnegative variances with NLMINB, including
+numerical fallback). Zero-boundary fits are flagged; an unconstrained
+diagnostic is retained for the final form, outside the search and without
+advancing its RNG stream. Requires native ESEM/heuristic calibration and
+\code{final_fit = "off"}; dependency-owned strict-CFA/DDDFI refits cannot guarantee
+these bounds. Embeddings, PFA, Semantic Index and guard thresholds are unchanged.}
+
+\item{exploration_slots}{Reserve 0 or 1 shortlist positions for a seeded
+random candidate outside the top cheap-score shortlist; fit limits stay fixed.}
 }
 \value{
 A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.
@@ -61,4 +84,13 @@ A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom
 Collects advanced proxy-ESEM scheduling and scoring options for
 \code{\link[=semantica_run_custom]{semantica_run_custom()}}. Normal scale-construction workflows should prefer
 \code{\link[=semantica_run]{semantica_run()}} and its coherent ACO presets.
+}
+\references{
+Savalei, V., & Kolenikov, S. (2008). Constrained versus
+unconstrained estimation in structural equation modeling.
+\emph{Psychological Methods}, 13(2), 150--170.
+\doi{10.1037/1082-989X.13.2.150}.
+}
+\seealso{
+\url{https://search.r-project.org/CRAN/refmans/lavaan/html/efa.html}
 }

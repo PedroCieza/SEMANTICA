@@ -160,7 +160,8 @@ test_that("new generation controls preserve legacy positional API order", {
   gen_formals <- names(formals(SEMANTICA::semantica_generate_items))
   pipe_formals <- names(formals(SEMANTICA::semantica_pipeline))
 
-  expect_identical(tail(gen_formals, 2L), c("verbose", "seed"))
+  expect_identical(gen_formals[15:16], c("verbose", "seed"))
+  expect_gt(match("prompt_history", gen_formals), match("seed", gen_formals))
   expect_gt(match("generation_seed", pipe_formals), match("...", pipe_formals))
 })
 

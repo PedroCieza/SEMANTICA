@@ -96,3 +96,60 @@ test_that("DFI export failure disables a stale cluster", {
   )
   expect_null(cl)
 })
+
+test_that("DFI observers retain chunks, task identities and RNG across recovery modes", {
+  for (fail_at in c(1L, 2L)) for (progress in c(FALSE, TRUE)) {
+    calls <- 0L; evaluated <- integer(); errors <- 0L
+    local_mocked_bindings(parLapplyLB = function(cl, x, fun) {
+      calls <<- calls + 1L
+      if (calls == fail_at) stop("injected connection failure")
+      lapply(x, fun)
+    }, .package = "parallel")
+    tasks <- as.list(seq_len(12L))
+    evaluate <- function(seed) {
+      evaluated <<- c(evaluated, seed)
+      SEMANTICA:::.semantica_with_task_seed(seed, runif(2L))
+    }
+    expected <- lapply(tasks, function(seed) SEMANTICA:::.semantica_with_task_seed(seed, runif(2L)))
+    cl <- list(NULL, NULL)
+    state <- SEMANTICA:::.semantica_dfi_execution(2L, cl, tasks)
+    set.seed(717L); before <- .Random.seed
+    capture.output(out <- SEMANTICA:::.semantica_progress_par_lapply(
+      cl, tasks, evaluate, progress = progress,
+      observer = SEMANTICA:::.semantica_dfi_execution_observer(state),
+      on_parallel_error = function(error) { errors <<- errors + 1L }))
+    expect_identical(out, expected)
+    expect_identical(.Random.seed, before)
+    expect_identical(evaluated, seq_len(12L))
+    snapshot <- SEMANTICA:::.semantica_dfi_execution_snapshot(state)
+    expect_equal(snapshot$retained_parallel_results + snapshot$retained_serial_results, 12L)
+    should_fail <- progress || fail_at == 1L
+    expect_length(snapshot$recovery_events, as.integer(should_fail))
+    expect_equal(errors, as.integer(should_fail))
+    if (should_fail) {
+      event <- snapshot$recovery_events[[1L]]
+      completed <- if (progress && fail_at == 2L) 2L else 0L
+      expect_equal(event$retained_completed_tasks, completed)
+      expect_equal(vapply(event$tasks, `[[`, integer(1L), "seed"), seq.int(completed + 1L, 12L))
+      expect_identical(event$stage, "dispatch")
+      expect_true(event$serial_recovery_scheduled)
+    }
+  }
+})
+
+test_that("export observers record recovery and stop the cluster once", {
+  stopped <- 0L
+  local_mocked_bindings(
+    .semantica_cluster_export_environment = function(...) stop("export unavailable"),
+    .semantica_stop_cluster = function(cl) { stopped <<- stopped + 1L }, .package = "SEMANTICA")
+  jobs <- list(list(seed = 1L, kind = "acceptable"), list(seed = 1L, kind = "misspecified"))
+  state <- SEMANTICA:::.semantica_dfi_execution(3L, list(NULL), jobs)
+  out <- SEMANTICA:::.semantica_dfi_export_or_serial(list(NULL), new.env(), FALSE, "test",
+    observer = SEMANTICA:::.semantica_dfi_execution_observer(state))
+  expect_null(out)
+  expect_equal(stopped, 1L)
+  event <- state$recovery_events[[1L]]
+  expect_identical(event$stage, "export")
+  expect_equal(event$requested_workers, 3L)
+  expect_equal(vapply(event$tasks, `[[`, character(1L), "branch"), c("acceptable", "misspecified"))
+})

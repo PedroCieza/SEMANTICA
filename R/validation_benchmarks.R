@@ -258,6 +258,9 @@ semantica_benchmark_matrix_prediction <- function(semantic_matrix,
 #'   either `response_matrix` or `response_data`.
 #' @param method Calibration method.
 #' @param cor_method Correlation method for response data.
+#' @param splits Optional named list of training scale IDs for each held-out
+#'   scale. Use group/family exclusions frozen before fitting; related items,
+#'   paraphrases and respondents may not cross an explicit split.
 #' @return Per-scale holdout metrics and pooled summary.
 #' @details Optional `item_ids`, `paraphrase_groups`, and `respondent_ids` in each
 #'   dataset support overlap checks. Missing declarations leave independence unknown.
@@ -265,7 +268,8 @@ semantica_benchmark_matrix_prediction <- function(semantic_matrix,
 semantica_leave_one_scale_out_calibration <- function(
   datasets,
   method = c("isotonic", "linear", "fisher_linear"),
-  cor_method = "pearson"
+  cor_method = "pearson",
+  splits = NULL
 ) {
   method <- match.arg(method)
   if (!is.list(datasets) || length(datasets) < 2L) stop("Provide at least two scale datasets.")
@@ -273,8 +277,18 @@ semantica_leave_one_scale_out_calibration <- function(
   if (any(!nzchar(names(datasets))) || anyDuplicated(names(datasets))) {
     stop("'datasets' must have unique, non-empty scale names so holdout provenance is unambiguous.")
   }
+  if (is.null(splits)) {
+    training <- stats::setNames(lapply(names(datasets), function(id) setdiff(names(datasets), id)), names(datasets))
+  } else {
+    if (!is.list(splits) || !setequal(names(splits), names(datasets)) || anyDuplicated(names(splits)))
+      stop("Explicit splits must name every held-out scale exactly once.")
+    training <- splits[names(datasets)]
+    for (id in names(training)) if (!is.character(training[[id]]) || !length(training[[id]]) ||
+        anyDuplicated(training[[id]]) || id %in% training[[id]] || !all(training[[id]] %in% names(datasets)))
+      stop("Invalid training membership for held-out scale: ", id)
+  }
   split_manifest <- do.call(rbind, lapply(seq_along(datasets), function(i) {
-    train <- datasets[-i]; held <- datasets[[i]]
+    train <- datasets[training[[i]]]; held <- datasets[[i]]
     overlap <- function(field) {
       if (is.null(held[[field]]) || any(vapply(train, function(d) is.null(d[[field]]), logical(1L)))) return(NA_integer_)
       length(intersect(as.character(held[[field]]), unique(unlist(lapply(train, `[[`, field)))))
@@ -285,6 +299,8 @@ semantica_leave_one_scale_out_calibration <- function(
   }))
   split_manifest$overlap_status <- apply(split_manifest[, -1, drop = FALSE], 1L, function(z)
     if (any(z > 0, na.rm = TRUE)) "overlap_detected" else if (anyNA(z)) "unknown" else "declared_disjoint")
+  if (!is.null(splits) && any(split_manifest$overlap_status == "overlap_detected"))
+    stop("Explicit calibration splits contain shared items, paraphrases or respondents.")
   pairsets <- lapply(datasets, function(d) {
     rm <- d$response_matrix %||% NULL
     if (is.null(rm)) {
@@ -296,7 +312,7 @@ semantica_leave_one_scale_out_calibration <- function(
   rows <- vector("list", length(pairsets))
   all_predictions <- vector("list", length(pairsets))
   for (i in seq_along(pairsets)) {
-    train <- do.call(rbind, pairsets[-i])
+    train <- do.call(rbind, pairsets[training[[i]]])
     test <- pairsets[[i]]
     train <- train[is.finite(train$semantic) & is.finite(train$empirical), , drop = FALSE]
     test <- test[is.finite(test$semantic) & is.finite(test$empirical), , drop = FALSE]
@@ -305,8 +321,8 @@ semantica_leave_one_scale_out_calibration <- function(
     rows[[i]] <- data.frame(
       scale = names(pairsets)[i],
       held_out_scale = names(pairsets)[i],
-      training_scales = paste(names(pairsets)[-i], collapse = " | "),
-      n_train_scales = length(pairsets) - 1L,
+      training_scales = paste(training[[i]], collapse = " | "),
+      n_train_scales = length(training[[i]]),
       n_train_pairs = nrow(train),
       n_test_pairs = nrow(test),
       pearson = suppressWarnings(stats::cor(pred, test$empirical, method = "pearson")),
@@ -322,6 +338,7 @@ semantica_leave_one_scale_out_calibration <- function(
   list(
     method = method,
     per_scale = metrics,
+    macro_scale = lapply(metrics[c("pearson", "spearman", "rmse", "mae")], mean),
     pooled = list(
       pearson = suppressWarnings(stats::cor(pred_all$predicted, pred_all$empirical, method = "pearson")),
       spearman = suppressWarnings(stats::cor(pred_all$predicted, pred_all$empirical, method = "spearman")),
@@ -330,8 +347,8 @@ semantica_leave_one_scale_out_calibration <- function(
     ),
     predictions = pred_all,
     split_manifest = split_manifest,
-    split_fingerprint = .semantica_object_md5(lapply(datasets, function(d)
-      d[c("item_ids", "paraphrase_groups", "respondent_ids")])),
+    split_fingerprint = .semantica_object_md5(list(training = training,
+      declarations = lapply(datasets, function(d) d[c("item_ids", "paraphrase_groups", "respondent_ids")]))),
     validation_status = "out_of_scale_external_cross_validation",
     held_out_independence = if (all(split_manifest$overlap_status == "declared_disjoint")) "declared_disjoint" else "not_established",
     leakage_control = "entire_scale_holdout_no_within_instrument_pair_split",

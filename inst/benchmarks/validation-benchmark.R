@@ -16,7 +16,7 @@
 #   )
 # )
 
-run_semantica_validation_benchmark <- function(datasets) {
+run_semantica_validation_benchmark <- function(datasets, splits = NULL) {
   stopifnot(is.list(datasets), length(datasets) >= 2L)
 
   per_scale <- lapply(datasets, function(d) {
@@ -28,18 +28,19 @@ run_semantica_validation_benchmark <- function(datasets) {
 
   loso_linear <- semantica_leave_one_scale_out_calibration(
     datasets,
-    method = "linear"
+    method = "linear", splits = splits
   )
   loso_fisher <- semantica_leave_one_scale_out_calibration(
     datasets,
-    method = "fisher_linear"
+    method = "fisher_linear", splits = splits
   )
   loso_isotonic <- semantica_leave_one_scale_out_calibration(
     datasets,
-    method = "isotonic"
+    method = "isotonic", splits = splits
   )
 
   list(
+    comparison_role = "Exploratory mapping comparison; choose mappings inside inner training folds and evaluate the frozen choice on untouched instruments.",
     hypotheses = c(
       matrix_prediction = "Semantic relations predict non-trivial rank-order information in independent human item correlations.",
       calibration = "A mapping learned on other instruments predicts held-out instrument correlations better than identity mapping.",

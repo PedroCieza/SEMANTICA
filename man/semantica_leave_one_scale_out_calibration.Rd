@@ -7,7 +7,8 @@
 semantica_leave_one_scale_out_calibration(
   datasets,
   method = c("isotonic", "linear", "fisher_linear"),
-  cor_method = "pearson"
+  cor_method = "pearson",
+  splits = NULL
 )
 }
 \arguments{
@@ -17,6 +18,10 @@ either \code{response_matrix} or \code{response_data}.}
 \item{method}{Calibration method.}
 
 \item{cor_method}{Correlation method for response data.}
+
+\item{splits}{Optional named list of training scale IDs for each held-out
+scale. Use group/family exclusions frozen before fitting; related items,
+paraphrases and respondents may not cross an explicit split.}
 }
 \value{
 Per-scale holdout metrics and pooled summary.

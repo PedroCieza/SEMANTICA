@@ -85,6 +85,36 @@ test_that("generation failure evidence reaches the native incomplete checkpoint"
   expect_identical(saved$failure_details$generation_failure, evidence)
 })
 
+test_that("embedding checkpoint preserves producer vectors before structural rejection", {
+  ids <- c("z9", "a2", "m4", "b1")
+  vectors <- matrix(seq_len(12L) / 7, 4L, dimnames = list(ids, c("v3", "v1", "v2")))
+  cosine <- diag(4L)
+  dimnames(cosine) <- list(rev(ids), rev(ids))
+  raw <- data.frame(item = ids, factor = rep(c("A", "B"), each = 2L),
+                    item_text = paste("Offline item", ids))
+  local_mocked_bindings(semantica_pipeline = function(retain_embeddings, ...) list(
+    embed_result = list(embeddings = if (retain_embeddings) vectors else NULL),
+    cosine_sim_matrix = cosine, df = raw, items_tbl_raw = raw, items_tbl = raw
+  ), .package = "SEMANTICA")
+  paths <- character()
+  on.exit(unlink(paths, recursive = TRUE), add = TRUE)
+  for (retain in c(TRUE, FALSE)) {
+    path <- tempfile("embedding-checkpoint-")
+    paths <- c(paths, path)
+    expect_error(SEMANTICA:::.semantica_execute_pipeline(
+      backend = "ollama", scale_name = "Offline", scale_description = "Offline",
+      factors = list(A = list(description = "A"), B = list(description = "B")),
+      i.per.f = c(A = 3L, B = 3L), retain_embeddings = retain,
+      checkpoint_dir = path, content_alignment_mode = "off", polarity_screen = FALSE,
+      polarity_action = "off", pfa_mode = "off", pfa_unit_diagnostics = FALSE, verbose = FALSE
+    ), "pool|feasib|structur", ignore.case = TRUE)
+    saved <- readRDS(file.path(path, "02_embeddings.rds"))
+    expect_identical(saved$embeddings, if (retain) vectors else NULL)
+    expect_identical(saved$cosine_sim_matrix, cosine)
+    expect_true(file.exists(file.path(path, "03_preaco_diagnostics.rds")))
+  }
+})
+
 test_that("yield-adaptive replenishment scales to the remaining generation deficit", {
   plan <- SEMANTICA:::.semantica_generation_replenishment_plan(
     deficit = 4L,

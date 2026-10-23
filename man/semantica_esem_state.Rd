@@ -34,5 +34,6 @@ admissibility from being mistaken for favorable structure.
 \description{
 Keeps convergence/admissibility separate from structural quality. An
 admissible sample-free ESEM fit is not automatically interpreted as good
-structure or participant-based validity evidence.
+structure or participant-based validity evidence. Recorded global fit
+references are reported separately from structural acceptance guards.
 }

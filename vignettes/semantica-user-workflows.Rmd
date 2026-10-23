@@ -18,6 +18,7 @@ knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
 | construct/factor definitions only | `semantica_run()` |
 | item text but no embeddings | `semantica_embed()` -> `semantica_wrap()` |
 | item text plus external embeddings | `semantica_import_embeddings()` -> `semantica_wrap()` |
+| recorded item and definition vectors plus a substantive blueprint | `semantica_prepare_inputs()` -> `semantica_run_custom()` |
 | participant responses after a pilot | `semantica_run_custom(..., validation_data = ...)` |
 
 # Item-table schema
@@ -102,6 +103,58 @@ prepared <- semantica_wrap(imported, verbose = FALSE)
 
 Embedding IDs and item IDs must match exactly; positional row alignment is not
 assumed.
+
+# Immutable replay with recorded definition vectors
+
+For a complete provider-free pipeline replay, retain the item vectors and the
+definition-reference evidence from native alignment. `recorded_references` must
+contain a `vectors` matrix with reference row IDs and a named `texts` character
+vector with the exact corresponding reference wording. Include the native
+factor/facet/exclusion references required by the blueprint. Item vectors and
+reference vectors must share a compatible encoder and preprocessing policy.
+Their declared model identity is provenance, not independently authenticated.
+
+```{r eval=FALSE}
+compute_cfg <- semantica_compute_config(retain_embeddings = TRUE)
+frozen <- semantica_prepare_inputs(
+  items = items,
+  embeddings = embedding_matrix,
+  factors = factors,
+  reference_embeddings = recorded_references,
+  compute = compute_cfg,
+  provenance = list(model = "recorded-encoder", data_version = "pool-v1")
+)
+
+replayed <- semantica_run_custom(
+  scale_name = "Recorded pool",
+  scale_description = "Selection from a fixed, previously embedded pool",
+  factors = factors,
+  prepared_inputs = frozen,
+  compute = compute_cfg,
+  item_counts = semantica_item_count_config(pool = 15L, selected = 3L),
+  ants = 4L, max_total_iter = 2L, max_esem_fits = 4L,
+  esem = semantica_esem_config(score_mode = "continuous_balanced"),
+  quality = semantica_quality_config(
+    psychometric_guard_action = "report_only", final_selection_mode = "scalar"
+  ),
+  resources = semantica_resource_config(cpu_cores = 1L),
+  diagnostics = semantica_diagnostics_config(final_fit = "off"),
+  plots = semantica_plot_config(level = "none"),
+  seed = 101L
+)
+```
+
+Choose counts and a search budget appropriate to the actual pool. Preparation
+discards supplied diagnostic/pass fields and recomputes native alignment and
+cosine diagnostics. Replay skips generation, embedding requests, and top-up;
+an insufficient pool fails rather than silently requesting more items.
+Fingerprints reject changed objects, blueprints, representation policies, or
+preparation source definitions. Prepare a new version after such changes.
+Fingerprint verification detects mutation; it does not authenticate an untrusted
+serialized object. Load only trusted RDS files.
+
+The [continuous ACO guide](continuous-aco.html) explains the selected utility,
+guard roles, resource controls, and how to compare replayed policies.
 
 # Participant responses after a pilot
 

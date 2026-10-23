@@ -27,7 +27,8 @@ semantica_fit_calibration_config(
   loading_pattern = "varied",
   embed_reliability = 1,
   residual_inflation = 0,
-  warmup_iters = 5L
+  warmup_iters = 5L,
+  bootstrap_candidates = 3L
 )
 }
 \arguments{
@@ -69,6 +70,9 @@ assumptions and otherwise fall back transparently.}
 \item{target_loadings, target_factor_cors, loading_pattern, embed_reliability, residual_inflation}{Population assumptions for fallback DFI.}
 
 \item{warmup_iters}{Warm-up iterations before DFI calibration.}
+
+\item{bootstrap_candidates}{Maximum distinct semantic-ranked warm-up forms
+considered for bootstrap ESEM calibration.}
 }
 \value{
 A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.

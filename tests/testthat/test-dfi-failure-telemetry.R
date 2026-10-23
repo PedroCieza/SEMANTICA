@@ -135,3 +135,161 @@ test_that("ordinary strict DFI retains the established simulation floor", {
 
   expect_equal(captured$sim_reps, 200L)
 })
+
+test_that("native DFI tasks preserve diagnostic envelopes without extra fitter calls", {
+  calls <- 0L
+  local_mocked_bindings(sample_correlation_from_population = function(population, n_obs) population,
+    run_esem_on_matrix = function(..., return_diagnostics) {
+      calls <<- calls + 1L
+      expect_true(return_diagnostics)
+      envelope
+    }, .package = "SEMANTICA")
+  local_mocked_bindings(lavInspect = function(fit, what) fit$converged,
+    fitMeasures = function(fit, ...) fit$metrics, .package = "lavaan")
+  metrics <- c(cfi = .95, tli = .94, rmsea = .04, srmr = .05)
+  rejected <- list(attempt = 1L, converged = FALSE, reasons = "nonconvergence")
+  population <- diag(4L); dimnames(population) <- list(letters[1:4], letters[1:4])
+  evaluate <- function() SEMANTICA:::.semantica_dfi_esem_task(131L, population,
+    letters[1:4], "model", 1000L, "ML", "geomin", list(), 1000L)
+  set.seed(29L); before <- .Random.seed
+  for (reason in c("success", "nonconvergence", "negative_residual_variance", "solver_exception", "nonfinite")) {
+    fit <- if (reason %in% c("success", "nonfinite")) list(converged = TRUE,
+      metrics = if (reason == "nonfinite") replace(metrics, 1L, NA_real_) else metrics) else NULL
+    if (!is.null(fit)) attr(fit, "semantica_fit_attempt") <- 2L
+    envelope <- list(fit = fit, solver_attempts_started = 2L,
+      accepted_attempt = if (is.null(fit)) NA_integer_ else 2L,
+      rejection_assessment = if (is.null(fit)) list(reasons = reason) else NULL,
+      rejected_attempts = list(rejected),
+      solver_records = list(list(attempt = 1L, optimizer = "default", warnings = "recorded warning"),
+        list(attempt = 2L, optimizer = "BFGS", error = if (reason == "solver_exception") "failed" else NULL)))
+    record <- evaluate()
+    expect_identical(.Random.seed, before)
+    expect_identical(record$fit_diagnostics$seed, 131L)
+    expect_equal(record$fit_diagnostics$solver_attempts_started, 2L)
+    expect_length(record$fit_diagnostics$solver_records, 2L)
+    if (reason == "success") {
+      expect_identical(unlist(record$value[names(metrics)]), metrics)
+      expect_identical(record$fit_diagnostics$outcome, "success")
+      expect_equal(record$fit_diagnostics$accepted_attempt, 2L)
+    } else {
+      expect_null(record$value)
+      expect_true(reason %in% record$fit_diagnostics$reasons || reason == "nonfinite")
+    }
+    path <- tempfile(fileext = ".rds"); saveRDS(record, path)
+    expect_identical(readRDS(path), record); unlink(path)
+  }
+  expect_equal(calls, 5L)
+  local_mocked_bindings(sample_correlation_from_population = function(...) NULL, .package = "SEMANTICA")
+  expect_identical(evaluate()$failure_category, "sampling_failed")
+  expect_equal(calls, 5L)
+})
+
+test_that("semantic calibration retains all failures, cache records and later-batch recoveries", {
+  # Real reference fit only supplies the existing implied covariance boundary.
+  population <- matrix(.4, 4L, 4L); diag(population) <- 1
+  dimnames(population) <- list(letters[1:4], letters[1:4])
+  fit <- suppressWarnings(lavaan::cfa("F =~ a+b+c+d", sample.cov = population, sample.nobs = 500L))
+  stopifnot(lavaan::lavInspect(fit, "converged"))
+  for (successful in c(TRUE, FALSE)) {
+    calls <- 0L; stopped <- 0L
+    local_mocked_bindings(
+      .semantica_cluster_export_environment = function(...) invisible(NULL),
+      .semantica_stop_cluster = function(...) { stopped <<- stopped + 1L },
+      .semantica_dfi_esem_task = function(seed, ...) {
+        ok <- successful || seed %% 2L == 0L
+        list(value = if (ok) list(cfi = .95, tli = .94, rmsea = .04, srmr = .05, fit_attempt = 1L) else NULL,
+          failure_category = if (!ok) "fit_failed_or_nonconverged" else NULL,
+          fit_diagnostics = list(seed = seed, outcome = if (ok) "success" else "failed",
+            reasons = if (ok) character() else "negative_residual_variance"))
+      }, .package = "SEMANTICA")
+    local_mocked_bindings(parLapplyLB = function(cl, x, fun) {
+      calls <<- calls + 1L
+      if (calls == 2L) stop("later adaptive batch lost connection")
+      lapply(x, fun)
+    }, .package = "parallel")
+    cache <- SEMANTICA:::.semantica_new_dfi_cache()
+    args <- list(esem_fit = fit, esem_syntax = "F =~ a+b+c+d", factors = "F",
+      items_per_factor = c(F = 4L), observed_cor = population, reps = 30L,
+      adaptive = TRUE, adaptive_min_reps = 20L, adaptive_batch_reps = 5L,
+      adaptive_stable_batches = 100L, cluster = list(NULL, NULL),
+      n_cores = 2L, progress = FALSE, verbose = FALSE, cache = cache)
+    set.seed(631L); expected_seeds <- sample.int(.Machine$integer.max, 30L)
+    set.seed(631L)
+    out <- do.call(SEMANTICA:::compute_semantic_approx_dfi_cutoffs, args)
+    expected_rng <- .Random.seed
+    set.seed(631L); invisible(sample.int(.Machine$integer.max, 30L))
+    expect_identical(expected_rng, .Random.seed)
+    execution <- out$telemetry$execution
+    expect_equal(execution$retained_parallel_results, 20L)
+    expect_equal(execution$retained_serial_results, 10L)
+    expect_identical(execution$completion_backend, "mixed")
+    expect_length(execution$recovery_events, 1L)
+    expect_equal(execution$recovery_events[[1L]]$tasks[[1L]]$replication, 21L)
+    expect_identical(out$telemetry$task_seeds, expected_seeds)
+    expect_equal(stopped, 1L) # Borrowed pool: fallback owns its existing stop.
+    diagnostics <- out$simulation_provenance$fit_diagnostics
+    expect_identical(names(diagnostics), as.character(seq_len(30L)))
+    expect_identical(vapply(diagnostics, `[[`, integer(1L), "seed"), setNames(expected_seeds, names(diagnostics)))
+    expected_success <- if (successful) 30L else sum(expected_seeds %% 2L == 0L)
+    expect_equal(out$successful_fits, expected_success)
+    expect_identical(isTRUE(out$calibration_failed), !successful)
+    if (successful) expect_equal(unlist(out[c("cfi", "tli", "rmsea", "srmr")]),
+      c(cfi = .95, tli = .94, rmsea = .04, srmr = .05))
+    cached <- do.call(SEMANTICA:::compute_semantic_approx_dfi_cutoffs, args)
+    expect_true(cached$telemetry$cache_hit)
+    expect_identical(cached$telemetry$execution, execution)
+    path <- tempfile(fileext = ".rds"); saveRDS(out, path)
+    expect_identical(readRDS(path)$simulation_provenance, out$simulation_provenance); unlink(path)
+  }
+})
+
+test_that("unexpected native DFI task exceptions remain terminal", {
+  local_mocked_bindings(sample_correlation_from_population = function(...) stop("programming defect"),
+    .package = "SEMANTICA")
+  expect_error(SEMANTICA:::.semantica_dfi_esem_task(1L, diag(3), letters[1:3], "model",
+    1000L, "ML", "geomin", list(), 1000L), "programming defect")
+})
+
+test_that("other native ESEM routes keep diagnostic records on success and failure", {
+  population <- matrix(.4, 4L, 4L); diag(population) <- 1
+  dimnames(population) <- list(letters[1:4], letters[1:4])
+  fit <- suppressWarnings(lavaan::cfa("F =~ a+b+c+d", sample.cov = population, sample.nobs = 500L))
+  local_mocked_bindings(
+    make_semantic_approx_population = function(...) list(approx_cor = population, observed_cor = population,
+      item_names = letters[1:4], residual_cap_quantile = .95, residual_q95 = 0,
+      residual_max = 0, embed_reliability = 1),
+    make_semantic_misspecified_population = function(...) population,
+    .semantica_dfi_esem_task = function(seed, ..., kind = NULL) list(
+      value = if (successful) c(if (!is.null(kind)) list(kind = kind),
+        list(cfi = .95, tli = .94, rmsea = .04, srmr = .05, fit_attempt = 1L)) else NULL,
+      fit_diagnostics = list(seed = seed, branch = kind, outcome = if (successful) "success" else "failed",
+        reasons = if (successful) character() else "unknown")), .package = "SEMANTICA")
+  for (successful in c(TRUE, FALSE)) for (route in c("compute_esem_parametric_dfi_cutoffs", "compute_semantic_roc_dfi_cutoffs")) {
+    args <- list(esem_fit = fit, esem_syntax = "F =~ a+b+c+d", factors = "F",
+      items_per_factor = c(F = 4L), n_cores = 1L, reps = 40L, verbose = FALSE)
+    if (grepl("roc", route)) args$observed_cor <- population
+    set.seed(811L)
+    out <- do.call(getFromNamespace(route, "SEMANTICA"), args)
+    diagnostics <- out$simulation_provenance$fit_diagnostics
+    expect_length(diagnostics, out$telemetry$completed_reps)
+    expect_identical(isTRUE(out$calibration_failed), !successful)
+    expect_identical(out$telemetry$execution$completion_backend, "serial")
+    expect_equal(out$telemetry$execution$retained_serial_results, out$telemetry$completed_reps)
+    if (grepl("roc", route)) expect_equal(vapply(diagnostics[1:2], `[[`, character(1L), "branch"),
+      c("1" = "acceptable", "2" = "misspecified"))
+  }
+})
+
+test_that("model-based failed telemetry preserves the established heuristic fallback", {
+  execution <- list(schema_version = "semantica-dfi-execution-1", completion_backend = "serial",
+    retained_serial_results = 20L, retained_parallel_results = 0L, recovery_events = list())
+  failed <- SEMANTICA:::.semantica_dfi_failed_result("test", "model-based", "no successful fits",
+    proc.time()[["elapsed"]], 20L, 20L, execution = execution)
+  local_mocked_bindings(compute_dfi_by_simulation = function(...) failed, .package = "SEMANTICA")
+  expected <- SEMANTICA:::compute_heuristic_cutoffs(2L, c(A = 3L, B = 3L), 1000L)
+  out <- SEMANTICA:::safe_compute_dfi(model_syntax = "A =~ a+b+c\nB =~ d+e+f", factors = c("A", "B"),
+    items_per_factor = c(A = 3L, B = 3L), n_obs = 1000L, prefer_simulation = TRUE, verbose = FALSE)
+  expect_identical(out[c("cfi", "tli", "rmsea", "srmr")], expected[c("cfi", "tli", "rmsea", "srmr")])
+  expect_identical(out$simulation_failure, failed)
+  expect_identical(out$telemetry$execution, execution)
+})

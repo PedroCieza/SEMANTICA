@@ -32,7 +32,7 @@ test_that("semantic N sensitivity reuses the precomputed reference anchor", {
       args <- list(...)
       fit_calls <<- fit_calls + 1L
       fitted_n <<- c(fitted_n, as.integer(args$n_obs))
-      list(n_obs = as.integer(args$n_obs))
+      list(fit = list(n_obs = as.integer(args$n_obs)), status = "accepted", solver_records = list())
     },
     extract_and_score_esem = function(fit, ...) {
       scored_for(fit$n_obs, cfi = 0.80)

@@ -1,3 +1,10 @@
+.semantica_validate_esem_bounds <- function(bounds, dfi_mode, final_dddfi = FALSE) {
+  bounds <- match.arg(bounds, c("none", "pos.var"))
+  if (bounds != "none" && (identical(dfi_mode, "strict_cfa_dfi") || isTRUE(final_dddfi)))
+    stop("Nonnegative ESEM bounds require native ESEM DFI or heuristic calibration and final_dddfi = FALSE; dependency-owned CFA/DDDFI refits cannot guarantee these bounds.", call. = FALSE)
+  bounds
+}
+
 # Internal helpers for ESEM factor-axis identification and fit admissibility.
 
 .semantica_lexicographically_less <- function(x, y) {
@@ -440,6 +447,9 @@ assess_esem_admissibility <- function(
       theta_sym <- (theta + t(theta)) / 2
       residual_variances <- diag(theta_sym)
       details$min_residual_variance <- min(residual_variances)
+      details$residual_variances <- residual_variances
+      details$boundary_items <- names(residual_variances)[abs(residual_variances) <= residual_tolerance * theta_scale]
+      details$variance_boundary <- any(abs(residual_variances) <= residual_tolerance * theta_scale)
       if (any(residual_variances < -residual_tolerance * theta_scale)) {
         reasons <- c(reasons, "negative_residual_variance")
       }
@@ -580,6 +590,14 @@ assess_esem_admissibility <- function(
       estimated = estimated$error
     )
   )
+  mapping <- attr(esem_fit, "semantica_lavaan_name_map", exact = TRUE)$internal_to_item
+  if (!is.null(mapping)) {
+    for (field in c("residual_variances", "boundary_items")) {
+      labels <- if (field == "boundary_items") out$details[[field]] else names(out$details[[field]])
+      mapped <- unname(mapping[labels]); mapped[is.na(mapped)] <- labels[is.na(mapped)]
+      if (field == "boundary_items") out$details[[field]] <- mapped else names(out$details[[field]]) <- mapped
+    }
+  }
   out
 }
 
@@ -674,7 +692,8 @@ extract_aligned_esem_solution <- function(
 #'
 #' Keeps convergence/admissibility separate from structural quality. An
 #' admissible sample-free ESEM fit is not automatically interpreted as good
-#' structure or participant-based validity evidence.
+#' structure or participant-based validity evidence. Recorded global fit
+#' references are reported separately from structural acceptance guards.
 #'
 #' @param requested Whether the ESEM evaluation was requested.
 #' @param attempted Whether an evaluation was actually attempted.
@@ -739,6 +758,10 @@ semantica_esem_state <- function(requested = TRUE, attempted = requested,
       cross_loading = is.finite(sd$no_large_cross_loading %||% NA_real_) && (sd$no_large_cross_loading %||% 1) < 1
     )
   }
+  fit_refs <- esem_result$fit_reference_diagnostics
+  if (!is.null(fit_refs) && nrow(fit_refs)) quality_flags <- c(quality_flags,
+    global_fit_reference_not_met = any(!fit_refs$met, na.rm = TRUE),
+    global_fit_reference_unavailable = anyNA(fit_refs$met))
   structural_quality <- if (!admissible) {
     "not_assessed"
   } else if (is_unidimensional) {
@@ -754,7 +777,7 @@ semantica_esem_state <- function(requested = TRUE, attempted = requested,
   ))
   reasons <- reasons[!is.na(reasons) & nzchar(reasons)]
   quality_message <- if (identical(structural_quality, "admissible_but_structurally_mixed")) {
-    "Technically admissible ESEM, but the intended structure remains mixed; do not interpret admissibility as favorable structural evidence."
+    "Technically admissible ESEM, but structural-proxy diagnostics raise concerns; inspect loading diagnostics and global fit references separately; do not interpret admissibility as favorable structural evidence."
   } else if (identical(structural_quality, "admissible_unidimensional_proxy")) {
     paste(
       "Technically admissible one-factor semantic-proxy model.",
@@ -765,8 +788,15 @@ semantica_esem_state <- function(requested = TRUE, attempted = requested,
   } else {
     "Structural quality is not assessed because the ESEM result is not technically admissible."
   }
+  if (!is.null(fit_refs) && any(is.na(fit_refs$met) | !fit_refs$met))
+    quality_message <- paste(quality_message,
+      "Some global fit references are unmet or unavailable; structural guard acceptance does not imply that these references were met.")
   list(
+    fit_reference_diagnostics = fit_refs,
+    fit_reference_status = if (is.null(fit_refs) || !nrow(fit_refs)) "not_assessed" else
+      if (anyNA(fit_refs$met)) "incomplete" else if (all(fit_refs$met)) "met" else "not_met",
     technical_state = technical,
+    variance_state = if (!admissible || is.null(admissibility$details$variance_boundary)) "unavailable" else if (isTRUE(admissibility$details$variance_boundary)) "boundary" else "interior",
     structural_quality = structural_quality,
     stage = stage,
     reason = if (length(reasons)) paste(reasons, collapse = "; ") else NULL,
