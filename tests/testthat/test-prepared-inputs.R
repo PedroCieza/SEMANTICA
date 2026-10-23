@@ -2,6 +2,29 @@ prepared_fixture <- function(scenario="C01") {
   stopifnot(identical(scenario,"C01"))
   readRDS(test_path("fixtures","benchmark-prepared-C01.rds"))
 }
+
+test_that("preparation source identity ignores metadata but detects code changes", {
+  source_id <- SEMANTICA:::.semantica_preparation_source_id
+  original <- source_id()
+  wrap <- semantica_wrap
+  expression <- body(wrap)
+  metadata <- new.env(parent = emptyenv())
+  attr(expression, "srcref") <- list(metadata)
+  body(wrap) <- expression
+  local_mocked_bindings(semantica_wrap = wrap, .package = "SEMANTICA")
+  expect_identical(source_id(), original)
+  metadata$runtime_state <- "changed after execution"
+  expect_identical(source_id(), original)
+  body(wrap) <- quote(stop("changed implementation"))
+  local_mocked_bindings(semantica_wrap = wrap, .package = "SEMANTICA")
+  expect_false(identical(source_id(), original))
+  body(wrap) <- substitute({ VALUE }, list(VALUE = 1.2345678901234567))
+  local_mocked_bindings(semantica_wrap = wrap, .package = "SEMANTICA")
+  precise <- source_id()
+  body(wrap) <- substitute({ VALUE }, list(VALUE = 1.2345678901234569))
+  local_mocked_bindings(semantica_wrap = wrap, .package = "SEMANTICA")
+  expect_false(identical(source_id(), precise))
+})
 test_that("prepared construction isolates metadata and rejects altered evidence", {
   x<-prepared_fixture();x$selection$items$gold_loading<-.99;x$selection$items$semantica_content_guard_pass<-TRUE
   p<-semantica_prepare_inputs(x$selection$items,x$selection$embeddings,x$task$factors,x$selection$references)

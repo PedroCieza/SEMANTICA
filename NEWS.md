@@ -2,6 +2,10 @@
 
 ## Current development updates
 
+- Fixes prepared-input source fingerprints that could change after executing
+  unchanged code in an installed package. Source-reference environments are
+  excluded; changes to executable preparation expressions still invalidate replay.
+  Previously prepared objects must be rebuilt from their recorded vectors.
 - Adds three opt-in ESEM utilities: `continuous_structure`,
   `continuous_reconstruction`, and `continuous_balanced`. Their explicit,
   factor-balanced loading/margin and matrix-reconstruction definitions are
