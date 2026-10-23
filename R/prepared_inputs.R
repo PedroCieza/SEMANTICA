@@ -2,8 +2,7 @@
 .semantica_preparation_source_id <- function() {
   # Source references contain environments that can change during execution.
   # Hash executable expressions, excluding that incidental runtime metadata.
-  code <- function(fun) deparse(body(fun), width.cutoff = 500L,
-    control = c("keepInteger", "keepNA", "quoteExpressions", "digits17"))
+  code <- function(fun) body(utils::removeSource(fun))
   .semantica_object_md5(list(schema = "semantica-prepared-1",
     alignment = code(.semantica_definition_alignment), wrap = code(semantica_wrap),
     preparation = code(.semantica_prepared_generation)))
