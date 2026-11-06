@@ -18,6 +18,7 @@ repair_test_function <- function(name, env) {
 repair_test_context <- function(mode = "balanced") {
   e <- new.env(parent = asNamespace("SEMANTICA"))
   e$item.vector <- c("selected_a", "selected_b", "other_b1", "other_b2", "legal_a", "uncredited")
+  e$duplicate_cluster_id <- stats::setNames(rep(NA_character_, length(e$item.vector)), e$item.vector)
   e$item.factor.lookup <- stats::setNames(rep("Arbitrary domain", 6), e$item.vector)
   e$item.facet.lookup <- stats::setNames(c("A", "B", "B", "B", "A", "Arbitrary domain"), e$item.vector)
   e$eligible.items <- list("Arbitrary domain" = e$item.vector)

@@ -24,7 +24,7 @@ test_that("task-level seeds are invariant to load-balanced worker scheduling", {
     serial_rng_before
   )
   plan <- semantica_resource_plan(
-    n.cores = 3L,
+    n.cores = min(3L, SEMANTICA:::.semantica_available_cores()),
     max.cores = 3L
   )
   skip_if(plan$effective_workers < 2L, "Fewer than two workers are available")
@@ -105,7 +105,7 @@ test_that("failed worker RNG initialization cleans up without registering a pool
     stopped <<- TRUE
     invisible(TRUE)
   }, .package = "SEMANTICA")
-  plan <- semantica_resource_plan(n.cores = 3L, max.cores = 3L)
+  plan <- semantica_resource_plan(n.cores = min(3L, SEMANTICA:::.semantica_available_cores()), max.cores = 3L)
   skip_if(plan$effective_workers < 2L, "Fewer than two workers are available")
   expect_error(SEMANTICA:::.semantica_make_cluster(plan), "initialize worker RNG algorithms")
   expect_true(stopped)

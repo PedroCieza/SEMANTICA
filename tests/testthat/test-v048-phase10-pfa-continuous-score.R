@@ -7,7 +7,7 @@ test_that("PFA threshold attainment is separated from continuous structural qual
   fa <- setNames(rep(c("A","B"), each = 3), ids)
   p <- compute_pfa_diagnostics(m, fa, c("A","B"), extraction = "principal", rotation = "promax")
   expect_true(p$available)
-  expect_identical(p$score_schema, "pfa-continuous-geometry-v2")
+  expect_identical(p$score_schema, "pfa-continuous-geometry-v3")
   expect_true(is.finite(p$criterion_attainment_score))
   expect_true(is.finite(p$continuous_salience_score))
   expect_true(is.finite(p$continuous_clarity_score))

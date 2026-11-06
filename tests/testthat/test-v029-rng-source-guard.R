@@ -20,11 +20,16 @@ test_that("direct RNG calls remain confined to reviewed stochastic code", {
     "pipeline_core.R::estimate_recommended_validation_n",
     "pipeline_core.R::sample_items_with_duplicate_guard",
     "pipeline_core.R::.semantica_sample_factor_items_feasible",
+    # Intentional random priorities only when repairing an infeasible proposal;
+    # the deterministic joint feasibility gate consumes no RNG.
+    "selection_constraints.R::.semantica_constraint_priority_order",
     # Intentional optimizer exploration: only the requested random shortlist
     # slot consumes the caller's optimizer RNG stream. Tested below.
     "pipeline_core.R::.semantica_esem_shortlist",
     "pipeline_core.R::ACO_with_ESEM",
-    "pipeline_core.R::eval_sem_fn",
+    # The lexical scanner attributes the subsequent legacy fit-seed draw to
+    # this latest nested helper. Candidate mode derives seeds without that draw.
+    "pipeline_core.R::shortlist",
     "pipeline_core.R::get_final_dfi_cluster"
   )
 

@@ -13,11 +13,14 @@ test_that("adjusted Rand detects shuffled partitions", {
   expect_lt(x$value, 1)
 })
 
-test_that("adjusted Rand reports degenerate or missing cases explicitly", {
+test_that("adjusted Rand handles collapsed and singleton partitions conventionally", {
   one <- SEMANTICA:::.semantica_adjusted_rand_index(c("A","A","A"), c("x","x","x"))
-  expect_true(is.na(one$value)); expect_match(one$reason, "degenerate")
+  expect_equal(one$value, 1)
+  expect_equal(SEMANTICA:::.semantica_adjusted_rand_index(c("A","A","B"), rep("x", 3))$value, 0)
+  expect_equal(SEMANTICA:::.semantica_adjusted_rand_index(1:3, 3:1)$value, 1)
   missing <- SEMANTICA:::.semantica_adjusted_rand_index(c("A", NA), c("x", "y"))
   expect_true(is.na(missing$value)); expect_match(missing$reason, "too few")
+  expect_match(SEMANTICA:::.semantica_adjusted_rand_index(c("A", "B", NA), 1:3)$reason, "incomplete")
 })
 
 test_that("PFA preserves factor-presence recovery while exposing partition agreement", {
