@@ -175,6 +175,9 @@ semantica_overview <- function(result, print_items = TRUE) {
     cat(sprintf("Relative review cue  : %s has the weakest selected semantic separation; review its wording in context.\n", weakest_name))
   }
   cat(sprintf("Participant data     : %s\n", if (participant) "supplied; inspect participant evidence separately" else "not supplied; current structural results are pre-data proxy evidence"))
+  if (!is.null(result$content_review)) cat("Content review       : ",
+    if (result$content_review$status == "selected_content_supported") "Selected wording has declared support.\n" else
+      "Selected wording includes ambiguous or unreviewed items.\n", sep = "")
   cat("Next steps           : review selected wording, inspect summary(result), plot(result), then preserve the run with semantica_save_bundle().\n")
 
   if (isTRUE(print_items) && is.data.frame(items) && nrow(items)) {
@@ -240,12 +243,12 @@ semantica_overview <- function(result, print_items = TRUE) {
   out <- list(
     scale = scale,
     items = compact$selected_scale,
-    diagnostics = list(
+    diagnostics = c(list(
       review_flags = compact$review_flags,
       fit_indices = raw$fit_indices %||% NULL,
       factor_review = compact$factor_review,
       evidence_status = compact$evidence_status
-    ),
+    ), if (!is.null(raw$content_review)) list(content_review = raw$content_review)),
     plots = .semantica_regular_plot_surface(raw),
     provenance = tryCatch(semantica_provenance(raw), error = function(e) list()),
     advanced = raw
@@ -390,7 +393,7 @@ semantica_overview <- function(result, print_items = TRUE) {
       "evidence_archives", "evidence_archive_states", "evaluation_telemetry"
     ),
     evidence = c(
-      "evidence_records", "participant_validation_performed",
+      "evidence_records", "content_review", "participant_validation_performed",
       "participant_validation_converged", "interpretation_notice"
     ),
     outputs = "plots",
@@ -444,6 +447,7 @@ semantica_overview <- function(result, print_items = TRUE) {
   flags <- names(diag)[vapply(diag, function(x) {
     is.list(x) && identical(x$status %||% NA_character_, "warning")
   }, logical(1L))]
+  if (identical(result$content_review$status, "content_review_required")) flags <- c(flags, "content_review_required")
 
   factors <- character(0L)
   if (is.data.frame(items) && "factor" %in% names(items)) {
@@ -1356,6 +1360,11 @@ semantica_item_review <- function(result, scope = c("selected", "pool")) {
   }
   base <- merge_diag(base, opt$item_structure_diagnostics %||% NULL, "esem_")
   base <- merge_diag(base, opt$pfa_diagnostics$item_diagnostics %||% NULL, "pfa_")
+  review <- result$content_review$records
+  if (is.data.frame(review)) {
+    fields <- setdiff(names(review), c("item_id", "item_text", "factor", "facet", "selected"))
+    base[paste0("review_", fields)] <- review[match(base$item_id, review$item_id), fields, drop = FALSE]
+  }
   if (length(selected_ids)) base <- base[order(match(base$item_id, selected_ids), na.last = TRUE), , drop = FALSE]
   rownames(base) <- NULL
   base

@@ -51,7 +51,11 @@ semantica_run_custom(
   verbose = TRUE,
   console_language = c("English", "Spanish"),
   prepared_inputs = NULL,
-  calibration_rng_state = NULL
+  calibration_rng_state = NULL,
+  pheromone_update = c("top_elite", "best_ant", "top_elite_distinct"),
+  content_review = NULL,
+  fit_cache_dir = NULL,
+  final_fit_pruning = FALSE
 )
 }
 \arguments{
@@ -164,8 +168,14 @@ see \code{\link[=ACO_with_ESEM]{ACO_with_ESEM()}}. Without response references o
 \code{"summary"}, \code{"full"}, \code{TRUE}, or \code{FALSE}.}
 
 \item{checkpoint_dir}{Optional directory for automatic stage checkpoints.
+Per-process ESEM start/finish JSONL records are also retained under
+\code{esem-progress}; a terminated writer may leave an incomplete final line.
 Interactive runs default to \code{"semantica_checkpoints"}; non-interactive runs
-default to \code{NULL}. Checkpoint I/O failures warn but do not abort analysis.}
+default to \code{NULL}. Checkpoint I/O failures warn but do not abort analysis.
+Unique selection checkpoints under \code{finalization} preserve selected wording,
+objective and available archive fit before secondary diagnostics. Explicit
+isolated/deferred reference-N execution requires successful persistence.
+Read sealed records with \code{\link[=semantica_read_checkpoint]{semantica_read_checkpoint()}}.}
 
 \item{checkpoint_on_exit}{Logical; when checkpointing is enabled, save either
 the sanitized full result or an incomplete-run marker on function exit.}
@@ -190,6 +200,19 @@ default) or \code{"Spanish"}. This does not change \code{generation$language}.}
 
 \item{calibration_rng_state}{Optional seven-integer L'Ecuyer-CMRG state for
 an independent calibration/warm-up stream. NULL preserves legacy RNG behavior.}
+
+\item{pheromone_update}{\code{"top_elite"} (default) or \code{"best_ant"} preserves
+the existing deposit rule. \code{"top_elite_distinct"} ranks unique finite-scored
+forms before choosing the top 20 percent for deposition; cloned ants cannot
+crowd out the other elite forms. Evaporation and pheromone bounds are unchanged.}
+
+\item{content_review}{Optional reviewed sheet from \code{\link[=semantica_content_review]{semantica_content_review()}}
+or a callback receiving current item metadata. Called once after generation;
+conflicts are excluded, and incomplete review remains explicitly unassessed.}
+
+\item{fit_cache_dir}{Optional directory for source/input/RNG-specific fit reuse.}
+
+\item{final_fit_pruning}{Opt-in exact scalar bounds for final fitting; see \code{\link[=ACO_with_ESEM]{ACO_with_ESEM()}}.}
 }
 \value{
 A compact \code{semantica_run_result}; \verb{$advanced} retains the complete

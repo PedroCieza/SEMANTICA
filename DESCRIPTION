@@ -1,6 +1,6 @@
 Package: SEMANTICA
 Title: Semantic Item Generation and ACO-ESEM Scale Construction
-Version: 0.2
+Version: 0.2.1
 Authors@R:
     c(
         person(
@@ -70,8 +70,10 @@ Imports:
     tools,
     utils
 Suggests:
+    callr,
     knitr,
     rmarkdown,
+    pkgload,
     torch,
     testthat (>= 3.0.0),
     withr

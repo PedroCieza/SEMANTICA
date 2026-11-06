@@ -135,7 +135,7 @@ ACO_with_ESEM(
   structural_archive_stable_window = 2L,
   min_successful_pfa_checkpoints = 2L,
   min_successful_esem_checkpoints = 2L,
-  pheromone_update = c("top_elite", "best_ant"),
+  pheromone_update = c("top_elite", "best_ant", "top_elite_distinct"),
   fixed_evaporation = NULL,
   debug_mode = FALSE,
   keep_solution_history = TRUE,
@@ -158,6 +158,22 @@ ACO_with_ESEM(
   dfi_bootstrap_candidates = 3L,
   esem_bounds = "none",
   esem_exploration_slots = 0L,
+  esem_shortlist_policy = c("ant", "distinct"),
+  esem_rng_policy = c("legacy", "candidate"),
+  objective_polish = FALSE,
+  objective_polish_max_evals = 20L,
+  objective_polish_max_seconds = 60,
+  evaluation_log_dir = NULL,
+  finalization_dir = NULL,
+  semantic_n_execution = c("inline", "isolated", "deferred"),
+  semantic_n_max_seconds = Inf,
+  semantic_reference_policy = c("candidate", "admitted_pool_lower_guard"),
+  semantic_gap_reference = NULL,
+  semantic_cohesion_guard = NULL,
+  .scoring_audit = NULL,
+  content_review = NULL,
+  fit_cache_dir = NULL,
+  final_fit_pruning = FALSE,
   ...
 )
 }
@@ -564,7 +580,8 @@ successful structural checkpoints required before archive-based early
 stopping is eligible. These counts refer to evidence-bearing checkpoints,
 not raw iterations.}
 
-\item{pheromone_update}{Pheromone update mode (\code{"top_elite"}, \code{"best_ant"}).}
+\item{pheromone_update}{Pheromone update mode (\code{"top_elite"}, \code{"best_ant"},
+or opt-in \code{"top_elite_distinct"}); see \code{\link[=semantica_run_custom]{semantica_run_custom()}}.}
 
 \item{fixed_evaporation}{Fixed evaporation rate (NULL = adaptive).}
 
@@ -650,6 +667,60 @@ and calibration restrictions. Requires \code{final_dddfi = FALSE}.}
 \item{esem_exploration_slots}{Reserve 0 (default) or 1 existing shortlist slots
 for a seeded random finite candidate outside the top cheap-score shortlist.
 Does not increase the shortlist size or search-fit ceiling.}
+
+\item{esem_shortlist_policy, esem_rng_policy}{See \code{shortlist_policy} and
+\code{rng_policy} in \code{\link[=semantica_esem_config]{semantica_esem_config()}}. Defaults preserve legacy behavior.}
+
+\item{objective_polish, objective_polish_max_evals, objective_polish_max_seconds}{Optional bounded objective-based final local search; see
+\code{\link[=semantica_quality_config]{semantica_quality_config()}}. Its evaluations are separate from search jobs.}
+
+\item{evaluation_log_dir}{Optional directory for per-process JSONL ESEM job
+start/finish records. Records contain candidate keys and solver diagnostics,
+not item text or fitted objects. A killed writer can leave an incomplete
+last line. Logging never changes candidate ranking or numerical acceptance.}
+
+\item{finalization_dir}{Optional parent directory for unique immutable selected
+cores and diagnostic records. Selection is saved before secondary diagnostics;
+unavailable models are explicitly flagged. Inline serial anchors can be
+resumed with recorded RNG; inline parallel diagnostics cannot be replayed
+from coordinator RNG. Use isolated/deferred mode for resumable parallel searches.}
+
+\item{semantic_n_execution}{Reference-N execution: \code{"inline"} preserves the
+existing backend; \code{"isolated"} uses a separate serial process; \code{"deferred"}
+saves the request for \code{\link[=semantica_resume_diagnostics]{semantica_resume_diagnostics()}}.}
+
+\item{semantic_n_max_seconds}{Positive wall allowance or \code{Inf} (default).
+A finite allowance implies isolated execution, including process startup.
+Isolated/deferred execution requires \code{finalization_dir}; isolated execution
+needs optional \code{callr} (\code{pkgload} too for a source checkout).}
+
+\item{semantic_reference_policy}{\code{"candidate"} retains existing scoring.
+The opt-in research policy \code{"admitted_pool_lower_guard"} freezes robust
+gap scales from the admitted pool and uses a lower-only cohesion guard.
+It requires multidimensional \code{"relative_conservative"} scoring and records
+its reference in model, objective and checkpoint metadata. Independent
+calibration remains necessary.}
+
+\item{semantic_gap_reference}{Optional \code{"candidate"} or \code{"admitted_pool"}
+override, independent of the cohesion guard. NULL inherits the policy alias.}
+
+\item{semantic_cohesion_guard}{Optional \code{"two_sided"} or \code{"lower_only"} override.
+NULL inherits the policy alias. Neither independent setting certifies calibration.}
+
+\item{.scoring_audit}{Internal fixed-form request; use \code{\link[=semantica_audit_solutions]{semantica_audit_solutions()}}.}
+
+\item{content_review}{Optional sheet from \code{\link[=semantica_content_review]{semantica_content_review()}} or a
+callback receiving current item metadata and returning that sheet. Conflicts
+are excluded without relaxation. A feasible supported-content form is injected
+into the first search iteration and protected in final evaluation (at most one
+additional finalist). Missing/ambiguous review is reported separately.}
+
+\item{fit_cache_dir}{Optional directory for sealed, input/source/RNG-specific
+PFA and final ESEM fits. Scores are recomputed under the current policy.}
+
+\item{final_fit_pruning}{FALSE by default. In continuous scalar report-only
+contexts without repair/reranking, skip final fits whose exact upper bound
+cannot beat an evaluated incumbent. Content witnesses remain protected.}
 
 \item{...}{Additional arguments (unused).}
 }

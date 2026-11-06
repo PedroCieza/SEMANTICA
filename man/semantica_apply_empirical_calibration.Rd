@@ -4,15 +4,24 @@
 \alias{semantica_apply_empirical_calibration}
 \title{Apply an empirical calibration to a semantic matrix}
 \usage{
-semantica_apply_empirical_calibration(semantic_matrix, calibration)
+semantica_apply_empirical_calibration(
+  semantic_matrix,
+  calibration,
+  matrix_action = c("report", "stop", "shrink")
+)
 }
 \arguments{
 \item{semantic_matrix}{Square semantic matrix.}
 
 \item{calibration}{Fitted \code{semantica_empirical_calibration}.}
+
+\item{matrix_action}{\code{"report"} retains predicted values and reports matrix
+admissibility; \code{"stop"} refuses an indefinite prediction; \code{"shrink"} explicitly
+shrinks toward identity to numerical positive definiteness, recording the change.}
 }
 \value{
-Symmetric calibrated matrix with unit diagonal.
+Symmetric calibrated matrix with unit diagonal and provenance/matrix
+diagnostics. Predictions are not observed participant validation.
 }
 \description{
 Applies a previously fitted empirical calibration

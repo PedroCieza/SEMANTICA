@@ -21,7 +21,9 @@ semantica_esem_config(
   esem_eval_top_k = NULL,
   cadence_mode = c("adaptive", "fixed"),
   bounds = c("none", "pos.var"),
-  exploration_slots = 0L
+  exploration_slots = 0L,
+  shortlist_policy = c("ant", "distinct"),
+  rng_policy = c("legacy", "candidate")
 )
 }
 \arguments{
@@ -32,7 +34,10 @@ SEMANTICA default. Other values must be supported by the installed
 \code{lavaan} version. SEMANTICA's solver fallback may try \code{"oblimin"} when a
 geomin fit is inadmissible (and vice versa).}
 
-\item{rotation_args}{Rotation arguments passed to \code{lavaan}.}
+\item{rotation_args}{Rotation arguments passed to \code{lavaan}.
+With \code{rotation = "target"} or \code{"pst"}, omitted targets are built from
+the intended item-factor map (cross-loadings targeted at zero; primary
+loadings free). These are rotation targets, not fixed CFA coefficients.}
 
 \item{score_mode}{ESEM proxy score aggregation: \code{"current"} preserves the
 established fit/quality score; \code{"structure_weighted"} additionally
@@ -76,6 +81,17 @@ these bounds. Embeddings, PFA, Semantic Index and guard thresholds are unchanged
 
 \item{exploration_slots}{Reserve 0 or 1 shortlist positions for a seeded
 random candidate outside the top cheap-score shortlist; fit limits stay fixed.}
+
+\item{shortlist_policy}{\code{"ant"} preserves allocation by ranked ant slots.
+\code{"distinct"} allocates up to \code{esem_eval_top_k} distinct forms, then maps each
+result to every finite-scored ant of that form. The broker still fits once
+per uncached form and honors the search-fit ceiling; cached forms occupy slots.}
+
+\item{rng_policy}{\code{"legacy"} preserves proposal-stream seed assignment.
+\code{"candidate"} derives search-fit seeds from the run seed and selected item
+IDs, and isolates shortlist exploration from proposal RNG. Warm starts and
+solver/environment differences can still affect fits. An unseeded run draws
+and records a master seed for this policy.}
 }
 \value{
 A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.

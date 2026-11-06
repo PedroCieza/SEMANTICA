@@ -24,7 +24,8 @@ semantica_run(
   temperature = 0.4,
   structured_output = c("auto", "numbered", "json"),
   progress = c("normal", "detailed", "quiet"),
-  console_language = c("English", "Spanish")
+  console_language = c("English", "Spanish"),
+  content_review = NULL
 )
 }
 \arguments{
@@ -49,6 +50,7 @@ semantica_run(
 \item{structured_output}{\code{"auto"}, \code{"numbered"}, or \code{"json"}.}
 \item{progress}{\code{"normal"} for concise user progress, \code{"detailed"} for component telemetry, or \code{"quiet"}.}
 \item{console_language}{Language for console feedback: \code{"English"} (the default) or \code{"Spanish"}. This does not change the language of generated questionnaire items; use \code{language} for that setting.}
+\item{content_review}{Optional review callback receiving current item metadata, or a sheet from \code{semantica_content_review()}. Reviewed conflicts are excluded; ambiguity and missing review remain visible. Content review is distinct from participant validation.}
 }
 \description{
 Main entry point for scale development. It uses the same analysis pipeline as

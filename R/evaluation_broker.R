@@ -149,13 +149,18 @@
   admissible_requests <- as.logical(admissible_requests)
   requests <- length(batch_plan$request_indices %||% integer(0L))
   unique_candidates <- length(batch_plan$keys %||% character(0L))
+  mapping <- batch_plan$request_to_evaluation
+  unique_ok <- if (is.null(mapping)) rep(NA, unique_candidates) else vapply(seq_len(unique_candidates),
+    function(i) any(admissible_requests[mapping == i], na.rm = TRUE), logical(1L))
   list(
     requests = as.integer(requests),
     unique_candidates = as.integer(unique_candidates),
     cache_hits = as.integer(sum(batch_plan$cached %||% logical(0L))),
     coalesced_requests = as.integer(max(0L, requests - unique_candidates)),
     new_fits = as.integer(sum(batch_plan$jobs_started %||% logical(0L))),
-    admissible_requests = as.integer(sum(admissible_requests, na.rm = TRUE))
+    admissible_requests = as.integer(sum(admissible_requests, na.rm = TRUE)),
+    admissible_forms = if (anyNA(unique_ok)) NA_integer_ else sum(unique_ok),
+    cached_failed_forms = if (anyNA(unique_ok)) NA_integer_ else sum((batch_plan$cached %||% logical()) & !unique_ok)
   )
 }
 
@@ -169,20 +174,20 @@
   if (!isTRUE(cache_hit)) broker$warning_events <- rbind(broker$warning_events,
     .semantica_solver_warning_events(fit_result$solver_records, stage, candidate_key %||% NA_character_))
   admissibility <- fit_result$admissibility %||% list()
-  reason <- error
-  if (is.null(reason) || length(reason) == 0L || is.na(reason) || !nzchar(reason)) {
-    reasons <- admissibility$reasons %||% fit_result$rejection_reasons %||% character()
-    reason <- if (length(reasons)) paste(unique(as.character(reasons)), collapse = "; ") else NA_character_
-  }
-  method <- fit_result$accepted_method %||% admissibility$accepted_method %||%
-    fit_result$fit_method %||% fit_result$method %||% NA_character_
+  reasons <- unique(as.character(c(admissibility$reasons %||% fit_result$rejection_reasons, error)))
+  reasons <- reasons[!is.na(reasons) & nzchar(reasons)]
+  reason <- if (length(reasons)) paste(reasons, collapse = "; ") else NA_character_
+  solver <- .semantica_solver_metadata(fit_result)
+  if (length(fallback_used) != 1L || is.na(fallback_used)) fallback_used <- solver$fallback_used
   event <- data.frame(
     stage = as.character(stage),
     candidate_key = as.character(candidate_key %||% NA_character_),
     cache_hit = isTRUE(cache_hit),
     coalesced_requests = as.integer(coalesced_requests %||% 0L),
     elapsed_seconds = as.numeric(elapsed_seconds %||% NA_real_),
-    solver_method = as.character(method %||% NA_character_),
+    solver_method = as.character(solver$method),
+    solver_attempts_recorded = solver$attempts_recorded,
+    accepted_attempt = solver$accepted_attempt,
     converged = isTRUE(fit_result$converged),
     admissible = isTRUE(fit_result$converged) && isTRUE(fit_result$admissible),
     reason = as.character(reason %||% NA_character_),
@@ -294,6 +299,7 @@
   events <- if (length(broker$esem_events)) do.call(rbind, broker$esem_events) else data.frame(
     stage = character(), candidate_key = character(), cache_hit = logical(),
     coalesced_requests = integer(), elapsed_seconds = numeric(), solver_method = character(),
+    solver_attempts_recorded = integer(), accepted_attempt = integer(),
     converged = logical(), admissible = logical(), reason = character(), fallback_used = logical(),
     stringsAsFactors = FALSE
   )

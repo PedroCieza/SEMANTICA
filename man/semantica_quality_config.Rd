@@ -45,7 +45,13 @@ semantica_quality_config(
   polarity_screen = TRUE,
   content_alignment_mode = c("diagnostic", "guard", "off"),
   polarity_action = c("diagnostic", "guard", "off"),
-  within_target_method = c("nonredundant_median", "legacy_q40")
+  within_target_method = c("nonredundant_median", "legacy_q40"),
+  objective_polish = FALSE,
+  objective_polish_max_evals = 20L,
+  objective_polish_max_seconds = 60,
+  semantic_reference_policy = c("candidate", "admitted_pool_lower_guard"),
+  semantic_gap_reference = NULL,
+  semantic_cohesion_guard = NULL
 )
 }
 \arguments{
@@ -167,6 +173,36 @@ selection guarding.}
 within-factor similarity below the configured redundancy threshold in the
 current pool/model; \code{"legacy_q40"} reproduces the older 0.25--0.55-clamped
 40th-percentile heuristic for compatibility studies.}
+
+\item{objective_polish}{Enable optional first-improvement, same-factor local
+search using the existing full final objective, independently of reference
+violations and structural repair. Works with \code{report_only}. Preserves eligible
+items, factor counts, hard facet/duplicate constraints, and the final evaluator's
+numerical and guard checks; Pareto mode preserves the archive decision rule.
+A requested final hard guard requires a verified passing assessment; otherwise
+polishing retains the original form and reports \code{hard_guard_not_verified}.
+It can improve the configured utility without improving every reported metric.}
+
+\item{objective_polish_max_evals}{Positive finite integer limiting candidate
+evaluations, including full-archive cache hits (default 20). Polishing is
+separate from the search-fit ceiling and its ESEM fits are reported separately.}
+
+\item{objective_polish_max_seconds}{Positive finite elapsed-time limit
+(default 60), checked before each proposal/evaluation. In-flight fits finish.
+Heuristics order proposals; early limits do not establish a local optimum.}
+
+\item{semantic_reference_policy}{\code{"candidate"} retains existing scoring.
+\code{"admitted_pool_lower_guard"} is an opt-in research policy for
+multidimensional relative scoring: freeze robust gap scales from the
+admitted pool and penalize only insufficient cohesion. Independent
+calibration remains necessary; admission and search settings are retained.}
+
+\item{semantic_gap_reference}{Optional independent override: \code{"candidate"} or
+\code{"admitted_pool"}. NULL inherits the compatibility policy's reference scope.}
+
+\item{semantic_cohesion_guard}{Optional independent override: \code{"two_sided"} or
+\code{"lower_only"}. NULL inherits the compatibility policy's guard. Independent
+settings require multidimensional relative scoring and remain experimental.}
 }
 \value{
 A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.

@@ -10,7 +10,8 @@ if (!exists("%||%", mode = "function")) {
     "archive_evaluations", "archive_item_ids", "archive_factor_assignment",
     "search_parallel_recoveries", "search_parallel_fallbacks", "final_parallel_fallbacks",
     "failure_stage", "evaluation_telemetry", "esem_error_log", "termination_reason",
-    "total_iterations", "max_total_iter", "max_esem_fits")
+    "total_iterations", "max_total_iter", "max_esem_fits", "http_status",
+    "backend", "protocol", "batch", "cause", "effective_constraint_level")
   details <- list(condition_class = class(error), message = conditionMessage(error))
   for (field in fields) if (!is.null(error[[field]])) details[[field]] <- error[[field]]
   details
@@ -142,7 +143,9 @@ if (!exists("%||%", mode = "function")) {
       "i.per.f", "ants", "max.iter", "search_patience", "evaporation",
       "esem_every", "run_esem_during_search", "max_total_iter",
       "max_esem_fits", "esem_weight", "esem_failure_policy",
-      "esem_sample_size", "esem_bounds", "esem_exploration_slots", "elite_k", "esem_eval_top_k", "fast_esem",
+      "esem_sample_size", "esem_bounds", "esem_exploration_slots", "esem_shortlist_policy", "esem_rng_policy",
+      "objective_polish", "objective_polish_max_evals", "objective_polish_max_seconds",
+      "elite_k", "esem_eval_top_k", "fast_esem",
       "fast_esem_iter_max", "full_esem_iter_max", "rotation",
       "rotation_args", "data_type", "target_loadings", "target_factor_cors",
       "loading_pattern", "redundancy_threshold", "dup_threshold",
@@ -195,7 +198,7 @@ if (!exists("%||%", mode = "function")) {
       "residual_inflation", "dfi_warmup_iters", "dfi_bootstrap_candidates", "reference_rmsea_close",
       "reference_rmsea_poor", "reference_power", "reference_alpha",
       "reference_max_n", "semantic_n_sensitivity", "semantic_n_grid",
-      "semantic_n_multipliers", "semantic_n_iter_max",
+      "semantic_n_multipliers", "semantic_n_iter_max", "semantic_n_execution", "semantic_n_max_seconds",
       "semantic_esem_score_mode"
     )
   )
@@ -698,6 +701,9 @@ semantica_compute_config <- function(
 #'   `lavaan` version. SEMANTICA's solver fallback may try `"oblimin"` when a
 #'   geomin fit is inadmissible (and vice versa).
 #' @param rotation_args Rotation arguments passed to `lavaan`.
+#'   With `rotation = "target"` or `"pst"`, omitted targets are built from
+#'   the intended item-factor map (cross-loadings targeted at zero; primary
+#'   loadings free). These are rotation targets, not fixed CFA coefficients.
 #' @param bounds Native semantic-proxy variance bounds: `"none"` (unchanged
 #'   default) or `"pos.var"` (nonnegative variances with NLMINB, including
 #'   numerical fallback). Zero-boundary fits are flagged; an unconstrained
@@ -741,6 +747,15 @@ semantica_compute_config <- function(
 #' @seealso \url{https://search.r-project.org/CRAN/refmans/lavaan/html/efa.html}
 #' @param exploration_slots Reserve 0 or 1 shortlist positions for a seeded
 #'   random candidate outside the top cheap-score shortlist; fit limits stay fixed.
+#' @param shortlist_policy `"ant"` preserves allocation by ranked ant slots.
+#'   `"distinct"` allocates up to `esem_eval_top_k` distinct forms, then maps each
+#'   result to every finite-scored ant of that form. The broker still fits once
+#'   per uncached form and honors the search-fit ceiling; cached forms occupy slots.
+#' @param rng_policy `"legacy"` preserves proposal-stream seed assignment.
+#'   `"candidate"` derives search-fit seeds from the run seed and selected item
+#'   IDs, and isolates shortlist exploration from proposal RNG. Warm starts and
+#'   solver/environment differences can still affect fits. An unseeded run draws
+#'   and records a master seed for this policy.
 #' @export
 semantica_esem_config <- function(
   proxy_reference_n = "auto",
@@ -756,7 +771,10 @@ semantica_esem_config <- function(
   fast_esem_iter_max = NULL,
   full_esem_iter_max = NULL,
   esem_eval_top_k = NULL,
-  cadence_mode = c("adaptive", "fixed"), bounds = c("none", "pos.var"), exploration_slots = 0L) {
+  cadence_mode = c("adaptive", "fixed"), bounds = c("none", "pos.var"), exploration_slots = 0L,
+  shortlist_policy = c("ant", "distinct"), rng_policy = c("legacy", "candidate")) {
+  shortlist_policy <- match.arg(shortlist_policy)
+  rng_policy <- match.arg(rng_policy)
   if (length(exploration_slots) != 1L || is.na(exploration_slots) || !exploration_slots %in% c(0, 1)) stop("exploration_slots must be 0 or 1.")
   bounds <- match.arg(bounds)
   score_mode <- match.arg(score_mode)
@@ -781,6 +799,7 @@ semantica_esem_config <- function(
     )
   }
   .semantica_config_object(list(
+    shortlist_policy = shortlist_policy, rng_policy = rng_policy,
     exploration_slots = as.integer(exploration_slots), bounds = bounds, proxy_reference_n = proxy_reference_n,
     rotation = rotation,
     rotation_args = rotation_args,
@@ -819,6 +838,16 @@ semantica_esem_config <- function(
 #'   `"relative_conservative"` (default) combines threshold-free stochastic
 #'   superiority with a robust within-between median-gap component.
 #'   `"legacy_target_burden"` retains the 0.4.x score for reproducibility.
+#' @param semantic_reference_policy `"candidate"` retains existing scoring.
+#'   `"admitted_pool_lower_guard"` is an opt-in research policy for
+#'   multidimensional relative scoring: freeze robust gap scales from the
+#'   admitted pool and penalize only insufficient cohesion. Independent
+#'   calibration remains necessary; admission and search settings are retained.
+#' @param semantic_gap_reference Optional independent override: `"candidate"` or
+#'   `"admitted_pool"`. NULL inherits the compatibility policy's reference scope.
+#' @param semantic_cohesion_guard Optional independent override: `"two_sided"` or
+#'   `"lower_only"`. NULL inherits the compatibility policy's guard. Independent
+#'   settings require multidimensional relative scoring and remain experimental.
 #' @param facet_coverage_weight Soft weight for facet coverage among candidates
 #'   that satisfy any active facet constraint.
 #' @param facet_constraint_mode Content-blueprint constraint for declared facets.
@@ -858,6 +887,20 @@ semantica_esem_config <- function(
 #' @param final_structure_repair Enable a bounded same-factor repair pass after
 #'   archive reranking. Failing hard guards use feasibility before utility;
 #'   otherwise accepted swaps must improve the declared objective.
+#' @param objective_polish Enable optional first-improvement, same-factor local
+#'   search using the existing full final objective, independently of reference
+#'   violations and structural repair. Works with `report_only`. Preserves eligible
+#'   items, factor counts, hard facet/duplicate constraints, and the final evaluator's
+#'   numerical and guard checks; Pareto mode preserves the archive decision rule.
+#'   A requested final hard guard requires a verified passing assessment; otherwise
+#'   polishing retains the original form and reports `hard_guard_not_verified`.
+#'   It can improve the configured utility without improving every reported metric.
+#' @param objective_polish_max_evals Positive finite integer limiting candidate
+#'   evaluations, including full-archive cache hits (default 20). Polishing is
+#'   separate from the search-fit ceiling and its ESEM fits are reported separately.
+#' @param objective_polish_max_seconds Positive finite elapsed-time limit
+#'   (default 60), checked before each proposal/evaluation. In-flight fits finish.
+#'   Heuristics order proposals; early limits do not establish a local optimum.
 #' @param final_structure_repair_max_swaps,final_structure_repair_candidates_per_factor,final_structure_repair_min_delta
 #'   Limits for the optional final repair pass. Candidate limits apply after
 #'   declared facet constraints; exact-fit shortlists interleave affected factors.
@@ -936,8 +979,18 @@ semantica_quality_config <- function(
   polarity_screen = TRUE,
   content_alignment_mode = c("diagnostic", "guard", "off"),
   polarity_action = c("diagnostic", "guard", "off"),
-  within_target_method = c("nonredundant_median", "legacy_q40")
+  within_target_method = c("nonredundant_median", "legacy_q40"),
+  objective_polish = FALSE, objective_polish_max_evals = 20L,
+  objective_polish_max_seconds = 60,
+  semantic_reference_policy = c("candidate", "admitted_pool_lower_guard"),
+  semantic_gap_reference = NULL, semantic_cohesion_guard = NULL
 ) {
+  semantic_reference_policy <- match.arg(semantic_reference_policy)
+  .semantica_resolve_semantic_policy(semantic_reference_policy,
+    semantic_gap_reference, semantic_cohesion_guard)
+  objective_polish <- .semantica_assert_flag(objective_polish, "objective_polish")
+  objective_polish_max_evals <- .semantica_assert_positive_integer(objective_polish_max_evals, "objective_polish_max_evals")
+  objective_polish_max_seconds <- .semantica_assert_positive_scalar(objective_polish_max_seconds, "objective_polish_max_seconds")
   profile <- match.arg(profile)
   threshold_mode <- match.arg(threshold_mode)
   htmt_objective_role <- match.arg(htmt_objective_role)
@@ -1072,6 +1125,9 @@ semantica_quality_config <- function(
   out$htmt_objective_role <- htmt_objective_role
   out$within_similarity_target <- within_similarity_target
   out$semantic_objective_mode <- semantic_objective_mode
+  out$semantic_reference_policy <- semantic_reference_policy
+  out$semantic_gap_reference <- semantic_gap_reference
+  out$semantic_cohesion_guard <- semantic_cohesion_guard
   out$threshold_mode <- threshold_mode
   out$adaptive_redundancy_quantile <- adaptive_redundancy_quantile
   out$adaptive_duplicate_quantile <- adaptive_duplicate_quantile
@@ -1099,6 +1155,9 @@ semantica_quality_config <- function(
   out$final_structure_repair_prefilter_top_k <- final_structure_repair_prefilter_top_k
   out$final_structure_repair_auto_skip_infeasible <- final_structure_repair_auto_skip_infeasible
   out$final_selection_mode <- final_selection_mode
+  out$objective_polish <- objective_polish
+  out$objective_polish_max_evals <- objective_polish_max_evals
+  out$objective_polish_max_seconds <- objective_polish_max_seconds
   cfg <- .semantica_config_object(
     out, "semantica_quality_config",
     schema_fields = names(formals(semantica_quality_config))
@@ -1301,6 +1360,14 @@ semantica_fit_calibration_config <- function(
 #'   the separate ESEM fit cutoffs.
 #' @param semantic_n_grid,semantic_n_multipliers,semantic_n_iter_max
 #'   Reference-N sensitivity controls.
+#' @param semantic_n_execution `"inline"` (default) preserves the existing
+#'   backend, `"isolated"` uses an independent serial process, and `"deferred"`
+#'   saves diagnostics for [semantica_resume_diagnostics()].
+#' @param semantic_n_max_seconds Positive reference-N wall allowance or `Inf`.
+#'   Finite allowances imply isolated execution and include startup. Isolated or
+#'   deferred execution requires a writable `checkpoint_dir`. Only reference-N
+#'   diagnostics are bounded; archive fitting and other diagnostics keep their
+#'   declared settings. Optional `callr` is needed for isolation/continuation.
 #' @param validation_planning Estimate response-data planning N.
 #' @param validation_n_reps,validation_n_grid,validation_n_max,validation_n_convergence,validation_n_max_heywood,validation_n_min_recovery,validation_n_max_loading_error,validation_n_min_dominance,validation_n_max_cross_error,validation_n_max_factor_cor_error
 #'   Validation-N planning controls.
@@ -1334,8 +1401,12 @@ semantica_diagnostics_config <- function(
   validation_n_min_dominance = NULL,
   validation_n_max_cross_error = NULL,
   validation_n_max_factor_cor_error = NULL,
-  validation_planning_on_inadmissible = c("skip", "run")
+  validation_planning_on_inadmissible = c("skip", "run"),
+  semantic_n_execution = c("inline", "isolated", "deferred"), semantic_n_max_seconds = Inf
 ) {
+  semantic_n_execution <- match.arg(semantic_n_execution)
+  if (!is.numeric(semantic_n_max_seconds) || length(semantic_n_max_seconds) != 1L ||
+      is.na(semantic_n_max_seconds) || semantic_n_max_seconds <= 0) stop("semantic_n_max_seconds must be positive or Inf.")
   final_fit <- match.arg(final_fit)
   final_dddfi_mad_target <- match.arg(final_dddfi_mad_target)
   validation_planning_on_inadmissible <- match.arg(validation_planning_on_inadmissible)
@@ -1360,6 +1431,7 @@ semantica_diagnostics_config <- function(
     semantic_n_grid = semantic_n_grid,
     semantic_n_multipliers = semantic_n_multipliers,
     semantic_n_iter_max = semantic_n_iter_max,
+    semantic_n_execution = semantic_n_execution, semantic_n_max_seconds = semantic_n_max_seconds,
     validation_planning = validation_planning,
     validation_n_reps = validation_n_reps,
     validation_n_grid = validation_n_grid,
@@ -1602,6 +1674,10 @@ semantica_plot_config <- function(
 #' @param fast_esem_iter_max,full_esem_iter_max Positive iteration ceilings for
 #'   search-time and full archive/final ESEM fits, respectively.
 #' @param esem Expert ESEM config from [semantica_esem_config()].
+#' @param pheromone_update `"top_elite"` (default) or `"best_ant"` preserves
+#'   the existing deposit rule. `"top_elite_distinct"` ranks unique finite-scored
+#'   forms before choosing the top 20 percent for deposition; cloned ants cannot
+#'   crowd out the other elite forms. Evaporation and pheromone bounds are unchanged.
 #' @param resources CPU-use config from [semantica_resource_config()].
 #' @param compute Embedding/cosine config from [semantica_compute_config()].
 #' @param quality Semantic/psychometric guardrail config from
@@ -1616,6 +1692,11 @@ semantica_plot_config <- function(
 #'   response-data ESEM; this participant-based result is reported separately
 #'   from and should take precedence over semantic-proxy ESEM interpretation.
 #' @param prepared_inputs Optional immutable object from [semantica_prepare_inputs()].
+#' @param content_review Optional reviewed sheet from [semantica_content_review()]
+#'   or a callback receiving current item metadata. Called once after generation;
+#'   conflicts are excluded, and incomplete review remains explicitly unassessed.
+#' @param fit_cache_dir Optional directory for source/input/RNG-specific fit reuse.
+#' @param final_fit_pruning Opt-in exact scalar bounds for final fitting; see [ACO_with_ESEM()].
 #' @param calibration_rng_state Optional seven-integer L'Ecuyer-CMRG state for
 #'   an independent calibration/warm-up stream. NULL preserves legacy RNG behavior.
 #' @param response_analysis Optional separately declared response-analysis specification;
@@ -1625,8 +1706,14 @@ semantica_plot_config <- function(
 #' @param plots Plot config from [semantica_plot_config()], or `"none"`,
 #'   `"summary"`, `"full"`, `TRUE`, or `FALSE`.
 #' @param checkpoint_dir Optional directory for automatic stage checkpoints.
+#'   Per-process ESEM start/finish JSONL records are also retained under
+#'   `esem-progress`; a terminated writer may leave an incomplete final line.
 #'   Interactive runs default to `"semantica_checkpoints"`; non-interactive runs
 #'   default to `NULL`. Checkpoint I/O failures warn but do not abort analysis.
+#'   Unique selection checkpoints under `finalization` preserve selected wording,
+#'   objective and available archive fit before secondary diagnostics. Explicit
+#'   isolated/deferred reference-N execution requires successful persistence.
+#'   Read sealed records with [semantica_read_checkpoint()].
 #' @param checkpoint_on_exit Logical; when checkpointing is enabled, save either
 #'   the sanitized full result or an incomplete-run marker on function exit.
 #' @param seed Optional master seed. It controls SEMANTICA's stochastic analysis
@@ -1705,8 +1792,11 @@ semantica_run_custom <- function(
   verbose = TRUE,
   console_language = c("English", "Spanish"),
   prepared_inputs = NULL,
-  calibration_rng_state = NULL
+  calibration_rng_state = NULL,
+  pheromone_update = c("top_elite", "best_ant", "top_elite_distinct"),
+  content_review = NULL, fit_cache_dir = NULL, final_fit_pruning = FALSE
 ) {
+  pheromone_update <- match.arg(pheromone_update)
   console_language <- .semantica_console_language(console_language)
   top_max_iter <- !missing(max.iter)
   quality_omitted <- missing(quality)
@@ -1760,6 +1850,11 @@ semantica_run_custom <- function(
     diagnostics, semantica_diagnostics_config(), "diagnostics"
   )
   esem <- .semantica_merge_config(esem, semantica_esem_config(), "esem")
+  final_fit_pruning <- .semantica_assert_flag(final_fit_pruning, "final_fit_pruning")
+  if (final_fit_pruning && !.semantica_continuous_score_mode(esem$score_mode))
+    stop("final_fit_pruning requires a continuous ESEM score mode; configure semantica_esem_config(score_mode=...) first.", call. = FALSE)
+  if (!is.null(content_review) && !is.data.frame(content_review) && !is.function(content_review))
+    stop("content_review must be a review sheet or callback; see semantica_content_review().", call. = FALSE)
   if (quality_omitted && .semantica_continuous_score_mode(esem$score_mode)) {
     quality <- semantica_quality_config(psychometric_guard_action = "report_only", final_selection_mode = "scalar")
   }
@@ -1867,6 +1962,11 @@ semantica_run_custom <- function(
     uncalibrated_esem_policy = uncalibrated_esem_policy,
     esem_sample_size = esem$proxy_reference_n,
     esem_exploration_slots = esem$exploration_slots,
+    esem_shortlist_policy = esem$shortlist_policy,
+    esem_rng_policy = esem$rng_policy,
+    objective_polish = quality$objective_polish,
+    objective_polish_max_evals = quality$objective_polish_max_evals,
+    objective_polish_max_seconds = quality$objective_polish_max_seconds,
     elite_k = elite_k,
     esem_eval_top_k = esem_eval_top_k,
     fast_esem = fast_esem,
@@ -1910,6 +2010,9 @@ semantica_run_custom <- function(
     within_similarity_target = quality$within_similarity_target,
     within_similarity_band = quality$within_similarity_band,
     semantic_objective_mode = quality$semantic_objective_mode,
+    semantic_reference_policy = quality$semantic_reference_policy %||% "candidate",
+    semantic_gap_reference = quality$semantic_gap_reference,
+    semantic_cohesion_guard = quality$semantic_cohesion_guard,
     facet_coverage_weight = quality$facet_coverage_weight,
     facet_constraint_mode = quality$facet_constraint_mode %||% "soft",
     facet_min_per_facet = quality$facet_min_per_facet %||% 1L,
@@ -1962,6 +2065,7 @@ semantica_run_custom <- function(
     semantic_n_grid = diagnostics$semantic_n_grid,
     semantic_n_multipliers = diagnostics$semantic_n_multipliers,
     semantic_n_iter_max = diagnostics$semantic_n_iter_max,
+    semantic_n_execution = diagnostics$semantic_n_execution, semantic_n_max_seconds = diagnostics$semantic_n_max_seconds,
     semantic_esem_score_mode = esem$score_mode,
     validation_n_diagnostic = diagnostics$validation_planning,
     validation_n_reps = diagnostics$validation_n_reps,
@@ -1987,7 +2091,7 @@ semantica_run_custom <- function(
     structural_archive_stable_window = structural_archive_stable_window,
     min_successful_pfa_checkpoints = min_successful_pfa_checkpoints,
     min_successful_esem_checkpoints = min_successful_esem_checkpoints,
-    pheromone_update = "top_elite",
+    pheromone_update = pheromone_update,
     fixed_evaporation = NULL,
     debug_mode = FALSE,
     keep_solution_history = TRUE,
@@ -2001,6 +2105,8 @@ semantica_run_custom <- function(
     restart_seeds = restart_seeds,
     generation_seed = seed,
     prepared_inputs = prepared_inputs,
+    content_review = content_review, fit_cache_dir = fit_cache_dir,
+    final_fit_pruning = final_fit_pruning,
     calibration_rng_state = calibration_rng_state,
     checkpoint_dir = checkpoint_dir,
     checkpoint_on_exit = checkpoint_on_exit,
@@ -2091,6 +2197,7 @@ semantica_run_custom <- function(
       max_total_iter = max_total_iter,
       evaporation = evaporation,
       max_esem_fits = max_esem_fits,
+      pheromone_update = pheromone_update,
       elite_k = elite_k,
       archive_stable_window = archive_stable_window,
       structural_archive_stable_window = structural_archive_stable_window,
@@ -2250,7 +2357,7 @@ semantica_run_custom <- function(
   sigmoid_steepness = 10, heuristic_beta = 0.50, archive_stable_window = 8L,
   structural_archive_stable_window = 2L,
   min_successful_pfa_checkpoints = 2L, min_successful_esem_checkpoints = 2L,
-  pheromone_update = c("top_elite", "best_ant"), fixed_evaporation = NULL,
+  pheromone_update = c("top_elite", "best_ant", "top_elite_distinct"), fixed_evaporation = NULL,
   debug_mode = FALSE, keep_solution_history = TRUE,
   history_mode = c("summary", "full", "none"), use_parallel = TRUE,
   n.cores = 2L, reserve.cores = 1L, max.cores = NULL,
@@ -2284,7 +2391,20 @@ semantica_run_custom <- function(
   htmt_objective_role = c("diagnostic", "penalty"),
   elite_multicriteria_rerank = NULL,
   console_language = c("English", "Spanish"), esem_bounds = "none",
-  candidate_validator = NULL, esem_exploration_slots = 0L) {
+  candidate_validator = NULL, esem_exploration_slots = 0L,
+  esem_shortlist_policy = c("ant", "distinct"), esem_rng_policy = c("legacy", "candidate"),
+  objective_polish = FALSE, objective_polish_max_evals = 20L,
+  objective_polish_max_seconds = 60,
+  semantic_n_execution = c("inline", "isolated", "deferred"), semantic_n_max_seconds = Inf,
+  semantic_reference_policy = c("candidate", "admitted_pool_lower_guard"),
+  semantic_gap_reference = NULL, semantic_cohesion_guard = NULL,
+  content_review = NULL, fit_cache_dir = NULL, final_fit_pruning = FALSE) {
+  semantic_reference_policy <- match.arg(semantic_reference_policy)
+  esem_shortlist_policy <- match.arg(esem_shortlist_policy)
+  esem_rng_policy <- match.arg(esem_rng_policy)
+  objective_polish <- .semantica_assert_flag(objective_polish, "objective_polish")
+  objective_polish_max_evals <- .semantica_assert_positive_integer(objective_polish_max_evals, "objective_polish_max_evals")
+  objective_polish_max_seconds <- .semantica_assert_positive_scalar(objective_polish_max_seconds, "objective_polish_max_seconds")
   esem_bounds <- .semantica_validate_esem_bounds(esem_bounds, match.arg(dfi_mode), final_dddfi)
   console_language <- .semantica_console_language(console_language)
   max_iter_explicit <- !missing(max.iter)
@@ -2301,6 +2421,9 @@ semantica_run_custom <- function(
       checkpoint_enabled <- FALSE
     }
   }
+  semantic_n_options <- .semantica_finalization_options(match.arg(semantic_n_execution), semantic_n_max_seconds,
+    if (checkpoint_enabled) checkpoint_dir else NULL)
+  semantic_n_execution <- semantic_n_options$execution
   checkpoint_state <- new.env(parent = emptyenv())
   checkpoint_state$last_stage <- NULL
   checkpoint_state$final_result <- NULL
@@ -2563,6 +2686,8 @@ semantica_run_custom <- function(
     stop(error)
   })
 
+  content_review <- .semantica_resolve_content_review(content_review, gen_res$df)
+  if (!is.null(content_review)) write_checkpoint("02_content_review.rds", content_review)
   pool_topup_state <- gen_res$pool_topup %||%
     gen_res$generation_provenance$pool_topup %||% list()
   effective_preaco_relaxation <- .semantica_normalize_relaxation_policy(
@@ -2651,7 +2776,7 @@ semantica_run_custom <- function(
   preaco_checkpoint_gate <- tryCatch(
     .semantica_preaco_pool_gate(
       cosine_sim_matrix = gen_res$cosine_sim_matrix,
-      df = gen_res$df,
+      df = if (is.null(content_review)) gen_res$df else gen_res$df[content_review$status != "conflict", , drop = FALSE],
       i.per.f = i.per.f,
       min_slack = pool_topup_min_slack,
       cohesion_retention = cohesion_retention,
@@ -2664,8 +2789,14 @@ semantica_run_custom <- function(
       polarity_action = polarity_action,
       relaxation_level = effective_preaco_relaxation
     ),
-    error = function(e) list(feasible = FALSE, error = conditionMessage(e))
+    error = identity
   )
+  gate_condition <- if (inherits(preaco_checkpoint_gate, "error")) preaco_checkpoint_gate else NULL
+  if (is.null(gate_condition) && (!is.list(preaco_checkpoint_gate) ||
+      !is.logical(preaco_checkpoint_gate$feasible) || length(preaco_checkpoint_gate$feasible) != 1L ||
+      is.na(preaco_checkpoint_gate$feasible))) gate_condition <- simpleError("Invalid feasibility result.")
+  if (!is.null(gate_condition)) preaco_checkpoint_gate <- list(feasible = NA,
+    status = "calculation_error", error = .semantica_failure_details(gate_condition))
   write_checkpoint("03_preaco_diagnostics.rds", list(
     feasibility_gate = preaco_checkpoint_gate,
     pool_topup_diagnostics = pool_topup_state,
@@ -2674,6 +2805,17 @@ semantica_run_custom <- function(
     construct_coverage_pool = construct_coverage_pool,
     polarity_diagnostics_pool = polarity_diagnostics_pool
   ))
+
+  if (!is.null(gate_condition)) {
+    # A failed diagnostic calculation is not evidence of an infeasible pool.
+    classes <- unique(c("semantica_error_preaco_calculation", "semantica_error_integrity",
+      setdiff(class(gate_condition), c("semantica_error_preaco_infeasible", "error", "condition"))))
+    error <- .semantica_condition("Pre-ACO feasibility calculation failed; inspect the diagnostic checkpoint.",
+      subclass = classes, fields = list(failure_stage = "preaco", feasibility = preaco_checkpoint_gate,
+        cause = list(class = class(gate_condition), message = conditionMessage(gate_condition))))
+    checkpoint_state$failure_details <- .semantica_failure_details(error)
+    stop(error)
+  }
 
   if (!isTRUE(preaco_checkpoint_gate$feasible)) {
     gate_error <- preaco_checkpoint_gate$error %||% NULL
@@ -2695,7 +2837,7 @@ semantica_run_custom <- function(
       paste0(names(effective_preaco_relaxation), "=", unname(effective_preaco_relaxation)),
       collapse = ", "
     )
-    stop(
+    error <- .semantica_condition(
       paste0(
         "Candidate-pool recovery was exhausted before ACO under effective factor policies [",
         policy_text, "]. ", detail,
@@ -2705,8 +2847,12 @@ semantica_run_custom <- function(
         "automatic item ineligibility. Top-up status: ",
         pool_topup_state$reason %||% "unavailable", "."
       ),
-      call. = FALSE
+      subclass = "semantica_error_preaco_infeasible",
+      fields = list(feasibility = preaco_checkpoint_gate, failure_stage = "preaco",
+        effective_constraint_level = effective_preaco_relaxation)
     )
+    checkpoint_state$failure_details <- .semantica_failure_details(error)
+    stop(error)
   }
 
   # =================================================================
@@ -2714,6 +2860,9 @@ semantica_run_custom <- function(
   # =================================================================
   if (verbose) cat(.semantica_console_text(console_language, "custom_step_optimization"))
   aco_args <- list(
+    evaluation_log_dir = if (checkpoint_enabled) file.path(checkpoint_dir, "esem-progress") else NULL,
+    finalization_dir = if (checkpoint_enabled) file.path(checkpoint_dir, "finalization") else NULL,
+    semantic_n_execution = semantic_n_execution, semantic_n_max_seconds = semantic_n_max_seconds,
     ants = ants, max.iter = max.iter,
     search_patience = search_patience, evaporation = evaporation, esem_every = esem_every,
     esem_cadence_mode = esem_cadence_mode,
@@ -2722,6 +2871,11 @@ semantica_run_custom <- function(
     esem_failure_policy = esem_failure_policy,
     esem_sample_size = esem_sample_size, elite_k = elite_k, rotation = rotation,
     esem_exploration_slots = esem_exploration_slots,
+    esem_shortlist_policy = esem_shortlist_policy,
+    esem_rng_policy = esem_rng_policy,
+    objective_polish = objective_polish,
+    objective_polish_max_evals = objective_polish_max_evals,
+    objective_polish_max_seconds = objective_polish_max_seconds,
     esem_eval_top_k = esem_eval_top_k, fast_esem = fast_esem,
     fast_esem_iter_max = fast_esem_iter_max, full_esem_iter_max = full_esem_iter_max,
     rotation_args = rotation_args, esem_bounds = esem_bounds, data_type = data_type, target_loadings = target_loadings,
@@ -2757,6 +2911,11 @@ semantica_run_custom <- function(
     within_similarity_band = within_similarity_band,
     semantic_objective_mode = semantic_objective_mode,
     expected_factor_relations = blueprint_eff$expected_relations %||% NULL,
+    semantic_reference_policy = semantic_reference_policy,
+    semantic_gap_reference = semantic_gap_reference,
+    semantic_cohesion_guard = semantic_cohesion_guard,
+    content_review = content_review, fit_cache_dir = fit_cache_dir,
+    final_fit_pruning = final_fit_pruning,
     nomological_weight = nomological_weight,
     content_alignment_mode = content_alignment_mode,
     polarity_action = polarity_action,
@@ -2939,12 +3098,15 @@ semantica_run_custom <- function(
     best_items = aco_res$best_items,
     factor_assignment = aco_res$factor_assignment,
     quality_status = aco_res$quality_status,
+    policy_qualification = aco_res$policy_qualification,
+    content_review = aco_res$content_review,
     proxy_quality = aco_res$proxy_quality,
     evidence_profile = aco_res$evidence_profile,
     content_coverage = aco_res$content_coverage,
     selection_objectives = aco_res$selection_objectives,
     preaco_feasibility_gate = aco_res$preaco_feasibility_gate,
     pareto_archive = aco_res$pareto_archive,
+    objective_polish = aco_res$objective_polish,
     final_structure_repair = aco_res$final_structure_repair,
     summary = aco_res$summary
   ))
@@ -3464,6 +3626,8 @@ semantica_run_custom <- function(
     evidence_profile = aco_res$evidence_profile,
     proxy_quality = aco_res$proxy_quality,
     quality_status = aco_res$quality_status %||% aco_res$proxy_quality$status %||% "unknown",
+    policy_qualification = aco_res$policy_qualification,
+    content_review = aco_res$content_review,
     validation_status = aco_res$validation_status,
     eligible_for_participant_validation = aco_res$eligible_for_participant_validation,
     structural_guard = aco_res$structural_guard,
@@ -3554,6 +3718,7 @@ semantica_run_custom <- function(
     pfa_boundary_loading_count = aco_res$pfa_boundary_loading_count,
     pfa_boundary_loading_penalty = aco_res$pfa_boundary_loading_penalty,
     pfa_unit_diagnostics = pfa_unit_result,
+    objective_polish = aco_res$objective_polish,
     final_structure_repair = aco_res$final_structure_repair,
     reference_sample_size = aco_res$reference_sample_size,
     semantic_reference_n = aco_res$semantic_reference_n,

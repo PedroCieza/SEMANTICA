@@ -38,11 +38,11 @@ NULL
     mode %in% c("continuous_structure", "continuous_reconstruction", "continuous_balanced")
 }
 
-.semantica_utility_fit_seed <- function(seed, items) {
+.semantica_utility_fit_seed <- function(seed, items, stage = "continuous_archive") {
   path <- tempfile(); on.exit(unlink(path), add = TRUE)
   # Serialization v3 includes the process native encoding. V2 plus explicit
   # UTF-8 and radix ordering gives master and workers the same seed bytes.
-  saveRDS(list(stage = "continuous_archive", seed = as.integer(seed),
+  saveRDS(list(stage = stage, seed = as.integer(seed),
     items = sort(enc2utf8(items), method = "radix")), path, ascii = TRUE, compress = FALSE, version = 2L)
   1L + strtoi(substr(unname(tools::md5sum(path)), 1L, 7L), 16L)
 }
@@ -80,6 +80,14 @@ NULL
     structure_values <- c(structure_values, out$components["separation"])
   }
   out$components["structure"] <- harmonic(structure_values)
+  # Report compensation between intended factors without changing macro utility.
+  out$per_factor <- do.call(rbind, lapply(factors, function(f) {
+    ids_f <- assignment == f
+    data.frame(factor = f, n_items = sum(ids_f),
+      strength = mean(pmin(1, primary[ids_f])),
+      separation = if (length(factors) > 1L)
+        mean(pmin(1, pmax(0, primary[ids_f] - apply(cross[ids_f, , drop = FALSE], 1L, max)))) else NA_real_)
+  }))
   if (mode != "continuous_structure") {
     valid_cor <- function(x) is.matrix(x) && is.numeric(x) &&
       nrow(x) == ncol(x) && !is.null(rownames(x)) &&

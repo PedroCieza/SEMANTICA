@@ -59,7 +59,7 @@
       custom_cohesion_guard = "; within-factor cohesion remained %s",
       custom_separation_unavailable = "Relative separation could not be computed; inspect the available cohesion diagnostics.",
       custom_separation_insufficient = "Could not compute (insufficient items)",
-      custom_facet_pfa_available = "\n[SEMANTICA] Facet/unit PFA: score=%.4f | recovery=%.4f | clarity=%.4f\n",
+      custom_facet_pfa_available = "\n[SEMANTICA] Facet/unit PFA: score=%.4f | factor-presence=%.4f | clarity=%.4f\n",
       custom_facet_pfa_unavailable = "\n[SEMANTICA] Facet/unit PFA %s: %s\n",
       custom_unit_skipped = "skipped",
       custom_unit_unavailable = "unavailable",
@@ -703,6 +703,9 @@ semantica_aco_config <- function(
 #' @param console_language Language for console feedback: `"English"` (the
 #'   default) or `"Spanish"`. This does not change the language of generated
 #'   questionnaire items; use `language` for that setting.
+#' @param content_review Optional current-item review callback or sheet from
+#'   [semantica_content_review()]. Conflicting items are excluded; incomplete
+#'   review remains visible and does not establish participant validity.
 #'
 #' @details
 #' The three ACO modes alter search effort/evidence cadence without weakening
@@ -798,7 +801,7 @@ semantica_run <- function(
     temperature = 0.4,
     structured_output = c("auto", "numbered", "json"),
     progress = c("normal", "detailed", "quiet"),
-    console_language = c("English", "Spanish")) {
+    console_language = c("English", "Spanish"), content_review = NULL) {
 
   if (!is.character(scale_name) || length(scale_name) != 1L || is.na(scale_name) || !nzchar(trimws(scale_name))) {
     stop("'scale_name' must be one non-empty character string.", call. = FALSE)
@@ -968,6 +971,7 @@ semantica_run <- function(
     pfa = pfa_cfg,
     fit_calibration = fit_cfg,
     quality = quality_cfg,
+    content_review = content_review,
     seed = seed_cfg$seed,
     restart_seeds = restart_cfg$seeds,
     verbose = pipeline_verbose,

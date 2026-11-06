@@ -28,7 +28,9 @@ semantica_diagnostics_config(
   validation_n_min_dominance = NULL,
   validation_n_max_cross_error = NULL,
   validation_n_max_factor_cor_error = NULL,
-  validation_planning_on_inadmissible = c("skip", "run")
+  validation_planning_on_inadmissible = c("skip", "run"),
+  semantic_n_execution = c("inline", "isolated", "deferred"),
+  semantic_n_max_seconds = Inf
 )
 }
 \arguments{
@@ -53,6 +55,16 @@ the separate ESEM fit cutoffs.}
 planning is requested but the selected semantic-proxy ESEM is inadmissible.
 \code{"skip"} (default) avoids a misleading Monte Carlo sample-size exercise;
 \code{"run"} forces the legacy PFA-informed planning calculation.}
+
+\item{semantic_n_execution}{\code{"inline"} (default) preserves the existing
+backend, \code{"isolated"} uses an independent serial process, and \code{"deferred"}
+saves diagnostics for \code{\link[=semantica_resume_diagnostics]{semantica_resume_diagnostics()}}.}
+
+\item{semantic_n_max_seconds}{Positive reference-N wall allowance or \code{Inf}.
+Finite allowances imply isolated execution and include startup. Isolated or
+deferred execution requires a writable \code{checkpoint_dir}. Only reference-N
+diagnostics are bounded; archive fitting and other diagnostics keep their
+declared settings. Optional \code{callr} is needed for isolation/continuation.}
 }
 \value{
 A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.

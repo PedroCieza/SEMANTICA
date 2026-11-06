@@ -1017,6 +1017,7 @@ semantica_fit_empirical_calibration <- function(
     method = method,
     model = model,
     training_pairs = pairs,
+    training_range = range(pairs$semantic),
     diagnostics = list(
       n_pairs = nrow(pairs),
       spearman = suppressWarnings(stats::cor(pairs$semantic, pairs$empirical, method = "spearman")),
@@ -1066,24 +1067,51 @@ predict.semantica_empirical_calibration <- function(object, newdata, ...) {
 #'
 #' @param semantic_matrix Square semantic matrix.
 #' @param calibration Fitted `semantica_empirical_calibration`.
-#' @return Symmetric calibrated matrix with unit diagonal.
+#' @param matrix_action `"report"` retains predicted values and reports matrix
+#'   admissibility; `"stop"` refuses an indefinite prediction; `"shrink"` explicitly
+#'   shrinks toward identity to numerical positive definiteness, recording the change.
+#' @return Symmetric calibrated matrix with unit diagonal and provenance/matrix
+#'   diagnostics. Predictions are not observed participant validation.
 #' @export
-semantica_apply_empirical_calibration <- function(semantic_matrix, calibration) {
+semantica_apply_empirical_calibration <- function(semantic_matrix, calibration,
+    matrix_action = c("report", "stop", "shrink")) {
   if (!inherits(calibration, "semantica_empirical_calibration")) stop("Invalid calibration object.")
+  matrix_action <- match.arg(matrix_action)
   m <- as.matrix(semantic_matrix)
+  if (!is.numeric(m) || nrow(m) < 2L || nrow(m) != ncol(m) || any(!is.finite(m)) ||
+      !isSymmetric(m, tol = sqrt(.Machine$double.eps)) || any(abs(m) > 1 + sqrt(.Machine$double.eps)))
+    stop("Calibration requires a finite symmetric square similarity matrix in [-1,1].", call. = FALSE)
   idx <- lower.tri(m)
   vals <- stats::predict(calibration, m[idx])
+  if (any(!is.finite(vals))) stop("Calibration returned unavailable predictions.", call. = FALSE)
   out <- diag(1, nrow(m))
   out[idx] <- vals
   out[upper.tri(out)] <- t(out)[upper.tri(out)]
   dimnames(out) <- dimnames(m)
+  minimum <- min(eigen(out, symmetric = TRUE, only.values = TRUE)$values)
+  tolerance <- sqrt(.Machine$double.eps)
+  if (minimum < -tolerance && matrix_action == "stop")
+    stop("Predicted correlation matrix is indefinite; inspect calibration or explicitly request matrix_action='shrink'.", call. = FALSE)
+  shrinkage <- if (matrix_action == "shrink" && minimum < tolerance)
+    (tolerance - minimum)/(1 - minimum) else 0
+  change <- shrinkage * sqrt(sum((out - diag(nrow(out)))^2))
+  if (shrinkage > 0) out <- (1 - shrinkage) * out + shrinkage * diag(nrow(out))
+  if (minimum < -tolerance && matrix_action == "report")
+    warning("Predicted correlation matrix is indefinite; values were retained. Inspect attr(x, 'semantica_calibration')$matrix before fitting.", call. = FALSE)
+  training_range <- calibration$training_range %||% if (length(calibration$training_pairs$semantic))
+    range(calibration$training_pairs$semantic, finite = TRUE) else c(NA_real_, NA_real_)
   attr(out, "semantica_calibration") <- list(
     method = calibration$method,
     validation_status = calibration$validation_status,
     training_diagnostics = calibration$diagnostics,
     source_families = calibration$source_families %||% c("embedding_semantic", "response_data"),
-    participant_based = TRUE,
-    validation_status = calibration$validation_status
+    participant_based = FALSE, trained_on_participants = TRUE, observed_in_current_sample = FALSE,
+    prediction_scope = "response_trained_prediction_not_current_sample_validation",
+    outside_training_range = sum(m[idx] < training_range[1L] | m[idx] > training_range[2L]),
+    matrix = list(action = matrix_action, min_eigen_before = minimum,
+      min_eigen_after = if (shrinkage > 0) (1 - shrinkage) * minimum + shrinkage else minimum,
+      identity_shrinkage = shrinkage, frobenius_change = change,
+      interpretation = "Numerical admissibility does not establish correct response relationships.")
   )
   out
 }
@@ -1320,6 +1348,11 @@ semantica_evidence_status <- function(result, labels = c("raw", "human", "both")
     dependency_note = dependency_note,
     stringsAsFactors = FALSE
   )
+  if (!is.null(result$content_review)) out <- rbind(out, data.frame(
+    evidence = "declared_item_content_review", status = result$content_review$status,
+    source_family = "declared_content_review", participant_based = FALSE,
+    dependency_note = "Declared reviewer/model evidence; inspect its sources and rubric. Does not establish participant validity.",
+    stringsAsFactors = FALSE))
   if (identical(labels, "human")) {
     out$status <- .semantica_evidence_human_label(out$status)
   } else if (identical(labels, "both")) {

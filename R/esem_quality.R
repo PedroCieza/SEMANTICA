@@ -68,6 +68,7 @@
     score = sum(score_matrix[cbind(seq_len(n_factors), assignment)]),
     method = "deterministic_greedy_pair_exchange",
     globally_optimal = FALSE,
+    unique = NA,
     passes = passes,
     note = paste(
       "The factor count exceeded the exact-assignment limit; a deterministic",
@@ -93,7 +94,7 @@
   if (n_factors == 0L) {
     return(list(
       assignment = integer(0L), score = 0,
-      method = "exact_dynamic_programming", globally_optimal = TRUE,
+      method = "exact_dynamic_programming", globally_optimal = TRUE, unique = TRUE,
       note = NULL
     ))
   }
@@ -117,20 +118,23 @@
 
   score_memo <- new.env(parent = emptyenv(), hash = TRUE)
   assignment_memo <- new.env(parent = emptyenv(), hash = TRUE)
+  unique_memo <- new.env(parent = emptyenv(), hash = TRUE)
   solve_from <- function(row, used_mask) {
     if (row > n_factors) {
-      return(list(score = 0, assignment = integer(0L)))
+      return(list(score = 0, assignment = integer(0L), unique = TRUE))
     }
     key <- paste0(row, ":", used_mask)
     if (exists(key, envir = score_memo, inherits = FALSE)) {
       return(list(
         score = get(key, envir = score_memo, inherits = FALSE),
-        assignment = get(key, envir = assignment_memo, inherits = FALSE)
+        assignment = get(key, envir = assignment_memo, inherits = FALSE),
+        unique = get(key, envir = unique_memo, inherits = FALSE)
       ))
     }
 
     best_score <- -Inf
     best_assignment <- NULL
+    unique <- TRUE
     for (axis in seq_len(n_factors)) {
       flag <- bitwShiftL(1L, axis - 1L)
       if (bitwAnd(used_mask, flag) != 0L) next
@@ -141,6 +145,7 @@
       better <- candidate_score > best_score + tolerance * scale
       tied <- is.finite(best_score) &&
         abs(candidate_score - best_score) <= tolerance * scale
+      if (better) unique <- remainder$unique else if (tied) unique <- FALSE
       if (better || (tied && .semantica_lexicographically_less(
         candidate_assignment, best_assignment
       ))) {
@@ -150,7 +155,8 @@
     }
     assign(key, best_score, envir = score_memo)
     assign(key, best_assignment, envir = assignment_memo)
-    list(score = best_score, assignment = best_assignment)
+    assign(key, unique, envir = unique_memo)
+    list(score = best_score, assignment = best_assignment, unique = unique)
   }
 
   solved <- solve_from(1L, 0L)
@@ -159,6 +165,7 @@
     score = as.numeric(solved$score),
     method = "exact_dynamic_programming",
     globally_optimal = TRUE,
+    unique = solved$unique,
     note = NULL
   )
 }
@@ -324,6 +331,7 @@ align_esem_to_intended_structure <- function(
     total_match_score = assignment_result$score,
     assignment_method = assignment_result$method,
     globally_optimal_assignment = assignment_result$globally_optimal,
+    unique_assignment = assignment_result$unique,
     assignment_note = assignment_result$note,
     psi_axis_alignment = psi_axis_alignment,
     diagnostics = list(
@@ -331,6 +339,7 @@ align_esem_to_intended_structure <- function(
       total_match_score = assignment_result$score,
       assignment_method = assignment_result$method,
       globally_optimal_assignment = assignment_result$globally_optimal,
+      unique_assignment = assignment_result$unique,
       assignment_note = assignment_result$note,
       psi_axis_alignment = psi_axis_alignment,
       max_exact_factors = max_exact_factors,

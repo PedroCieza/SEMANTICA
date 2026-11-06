@@ -15,6 +15,43 @@
   x / nr
 }
 
+#' Check declared semantic contrasts using recorded embeddings
+#'
+#' Tests whether an anchor is closer to one supplied example than another.
+#' Expectations must be substantively reviewed: opposite-pole items can remain
+#' relevant, and cosine order does not establish response covariance or validity.
+#' No providers or model fits are invoked. Missing vectors remain unavailable.
+#' @param embeddings Finite numeric matrix with unique, nonempty row IDs.
+#' @param contrasts Data frame with character anchor, closer and farther IDs.
+#'   Other columns, such as capability, rubric and rationale, are retained.
+#' @return The contrast table with both similarities, signed margin and status:
+#'   expected_order, reversed_order, numerical_tie or unavailable. The tolerance
+#'   addresses floating-point resolution, not a substantive success threshold.
+#' @export
+semantica_check_semantic_contrasts <- function(embeddings, contrasts) {
+  if (!is.matrix(embeddings) || !is.numeric(embeddings) || !nrow(embeddings) ||
+      !ncol(embeddings) || any(!is.finite(embeddings)) || is.null(rownames(embeddings)) ||
+      anyNA(rownames(embeddings)) || any(!nzchar(rownames(embeddings))) || anyDuplicated(rownames(embeddings)))
+    stop("Supply finite numeric embeddings with unique row IDs.", call. = FALSE)
+  fields <- c("anchor", "closer", "farther")
+  if (!is.data.frame(contrasts) || anyDuplicated(names(contrasts)) ||
+      !all(fields %in% names(contrasts)) || any(!vapply(contrasts[fields], is.character, logical(1L))) ||
+      anyNA(contrasts[fields]) || any(!nzchar(unlist(contrasts[fields]))))
+    stop("Contrasts require nonempty character anchor, closer and farther IDs.", call. = FALSE)
+  vectors <- .sem_norm_rows(embeddings)
+  rows <- lapply(contrasts[fields], match, table = rownames(vectors))
+  anchor <- vectors[rows$anchor, , drop = FALSE]
+  contrasts$closer_similarity <- rowSums(anchor * vectors[rows$closer, , drop = FALSE])
+  contrasts$farther_similarity <- rowSums(anchor * vectors[rows$farther, , drop = FALSE])
+  contrasts$margin <- contrasts$closer_similarity - contrasts$farther_similarity
+  tolerance <- ncol(vectors) * .Machine$double.eps
+  contrasts$status <- ifelse(is.na(contrasts$margin), "unavailable",
+    ifelse(abs(contrasts$margin) <= tolerance, "numerical_tie",
+      ifelse(contrasts$margin > 0, "expected_order", "reversed_order")))
+  attr(contrasts, "evidence_scope") <- "Declared semantic expectations; not participant validation."
+  contrasts
+}
+
 #' Contrast items with intended and neighboring construct prototypes
 #'
 #' This experimental diagnostic asks whether an item's embedding is closer to

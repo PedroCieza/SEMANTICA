@@ -1412,10 +1412,10 @@ print.semantica_session <- function(x, ...) {
 
   if (proto == "anthropic") {
     body <- .semantica_anthropic_chat_body(session, messages, max_tokens, temperature, system_prompt)
-    resp <- .build_request(session, session$chat_url, body) |> httr2::req_error(is_error = function(r) FALSE) |> httr2::req_perform()
+    resp <- .semantica_perform_request(session, session$chat_url, body, "generation")
     .semantica_update_rate_limit_state(session, resp)
-    parsed <- httr2::resp_body_json(resp, simplifyVector = FALSE)
-    if (httr2::resp_status(resp) >= 400L) stop("Anthropic error: ", parsed$error$message %||% httr2::resp_status(resp))
+    .semantica_check_http(resp, session, "generation", "Anthropic error")
+    parsed <- .semantica_response_json(resp, session, "generation")
     txt <- parsed$content[[1L]]$text
     if (is.null(txt) || length(txt) == 0L) stop("Empty Anthropic response.")
     return(as.character(txt))
@@ -1443,12 +1443,12 @@ print.semantica_session <- function(x, ...) {
   estimated_tokens <- .semantica_estimate_chat_request_tokens(session, msgs, completion_budget)
   .semantica_rate_limit_guard(session, estimated_tokens = estimated_tokens, verbose = isTRUE(session$verbose))
 
-  resp <- .build_request(session, session$chat_url, body) |> httr2::req_error(is_error = function(r) FALSE) |> httr2::req_perform()
+  resp <- .semantica_perform_request(session, session$chat_url, body, "generation")
   .semantica_update_rate_limit_state(session, resp)
-  parsed <- httr2::resp_body_json(resp, simplifyVector = FALSE)
+  .semantica_check_http(resp, session, "generation", "LLM API error")
+  parsed <- .semantica_response_json(resp, session, "generation")
   usage <- parsed$usage %||% list()
   .semantica_update_usage_state(session, usage, request_chars = request_chars)
-  if (httr2::resp_status(resp) >= 400L) stop("LLM API error: ", parsed$error$message %||% parsed$error %||% httr2::resp_status(resp))
 
   if (identical(proto, "ollama")) {
     txt <- parsed$message$content
@@ -1493,6 +1493,10 @@ print.semantica_session <- function(x, ...) {
 
 #' @keywords internal
 .semantica_bind_embedding_rows <- function(rows) {
+  widths <- lengths(rows)
+  if (!length(rows) || !length(widths) || any(widths == 0L) || length(unique(widths)) != 1L ||
+      !all(vapply(rows, function(x) is.numeric(x) && all(is.finite(x)), logical(1L))))
+    .semantica_embedding_response_error("Embedding rows must be finite numeric vectors of equal positive length.")
   mat <- do.call(rbind, rows)
   rownames(mat) <- NULL
   mat
@@ -1508,12 +1512,11 @@ print.semantica_session <- function(x, ...) {
 
   if (proto == "ollama") {
     body <- list(model = session$embed_model, input = as.list(texts))
-    resp <- .build_request(session, session$embed_url, body) |>
-      httr2::req_error(is_error = function(r) FALSE) |>
-      httr2::req_perform()
+    resp <- .semantica_perform_request(session, session$embed_url, body, "embedding")
     status <- httr2::resp_status(resp)
-    parsed <- tryCatch(httr2::resp_body_json(resp, simplifyVector = FALSE), error = function(e) NULL)
-    if (status < 400L && !is.null(parsed$embeddings)) {
+    if (status < 400L) {
+      parsed <- .semantica_response_json(resp, session, "embedding")
+      if (is.null(parsed$embeddings)) .semantica_embedding_response_error("Ollama embedding response has no embeddings.")
       return(.semantica_bind_embedding_rows(lapply(
         parsed$embeddings,
         function(x) as.numeric(unlist(x, use.names = FALSE))
@@ -1524,30 +1527,38 @@ print.semantica_session <- function(x, ...) {
       legacy_url <- sub("/api/embed$", "/api/embeddings", session$embed_url)
       rows <- lapply(texts, function(txt) {
         legacy_body <- list(model = session$embed_model, prompt = txt)
-        legacy_resp <- .build_request(session, legacy_url, legacy_body) |>
-          httr2::req_error(is_error = function(r) FALSE) |>
-          httr2::req_perform()
-        if (httr2::resp_status(legacy_resp) >= 400L) stop("Ollama legacy embed error: ", httr2::resp_status(legacy_resp))
-        as.numeric(unlist(httr2::resp_body_json(legacy_resp, simplifyVector = FALSE)$embedding, use.names = FALSE))
+        legacy_resp <- .semantica_perform_request(session, legacy_url, legacy_body, "embedding")
+        .semantica_check_http(legacy_resp, session, "embedding", "Ollama legacy embed error")
+        as.numeric(unlist(.semantica_response_json(legacy_resp, session, "embedding")$embedding, use.names = FALSE))
       })
       return(.semantica_bind_embedding_rows(rows))
     }
-    stop("Ollama embed error: ", status)
+    .semantica_check_http(resp, session, "embedding", "Ollama embed error")
   }
 
   body <- list(model = session$embed_model, input = as.list(texts))
-  resp <- .build_request(session, session$embed_url, body) |> httr2::req_error(is_error = function(r) FALSE) |> httr2::req_perform()
-  if (httr2::resp_status(resp) >= 400L) stop("Embedding API error: ", httr2::resp_status(resp))
-  parsed <- httr2::resp_body_json(resp, simplifyVector = FALSE)
-  if (is.null(parsed$data) || length(parsed$data) == 0L) stop("Embedding API returned no data.")
+  resp <- .semantica_perform_request(session, session$embed_url, body, "embedding")
+  .semantica_check_http(resp, session, "embedding", "Embedding API error")
+  parsed <- .semantica_response_json(resp, session, "embedding")
+  if (is.null(parsed$data) || !is.list(parsed$data) || length(parsed$data) == 0L ||
+      !all(vapply(parsed$data, is.list, logical(1L))))
+    .semantica_embedding_response_error("Embedding API returned no data.")
   # OpenAI-compatible embedding responses include `index`; sorting protects the
   # item-text alignment if a backend returns rows out of order.
-  if (all(vapply(parsed$data, function(d) !is.null(d$index), logical(1L)))) {
-    ord <- order(vapply(parsed$data, function(d) as.integer(d$index), integer(1L)))
+  indexed <- vapply(parsed$data, function(d) !is.null(d$index), logical(1L))
+  if (any(indexed)) {
+    if (!all(indexed) || !all(vapply(parsed$data, function(d)
+        is.numeric(d$index) && length(d$index) == 1L && is.finite(d$index) &&
+          d$index == floor(d$index), logical(1L))))
+      .semantica_embedding_response_error("Embedding response indexes must identify every row exactly once.")
+    index <- vapply(parsed$data, function(d) as.numeric(d$index), numeric(1L))
+    if (!setequal(index, seq_along(parsed$data) - 1L) || anyDuplicated(index))
+      .semantica_embedding_response_error("Embedding response indexes must identify every row exactly once.")
+    ord <- order(index)
     parsed$data <- parsed$data[ord]
   }
   .semantica_bind_embedding_rows(lapply(parsed$data, function(d) {
-    if (is.null(d$embedding)) stop("Embedding API row missing `embedding` field.")
+    if (is.null(d$embedding)) .semantica_embedding_response_error("Embedding API row missing `embedding` field.")
     as.numeric(unlist(d$embedding, use.names = FALSE))
   }))
 }
@@ -2925,6 +2936,9 @@ semantica_generate_items <- function(session, scale_name, scale_description, fac
           NULL
         },
         error = function(e) {
+          if (inherits(e, "semantica_error_config") || inherits(e, "semantica_error_integrity"))
+            .semantica_rethrow(e, "Generation cannot continue", "generation", session,
+              generation_failure = list(dimension = unit$dimension, facet = unit$facet, attempt = attempt))
           last_condition <<- e
           last_error <<- conditionMessage(e)
           if (verbose) message(sprintf("    Attempt %d failed for %s/%s: %s", attempt, unit$dimension, unit$facet, last_error))
@@ -3366,7 +3380,8 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
                               cache_namespace = cache_namespace) else rep(NA_character_, length(idx))
     cached_rows <- if (cache) lapply(keys, .semantica_embedding_cache_get, cache_dir = cache_dir) else vector("list", length(idx))
     hit <- vapply(cached_rows, function(x) {
-      valid <- is.numeric(x) && length(x) > 0L && all(is.finite(x))
+      valid <- is.numeric(x) && length(x) > 0L && all(is.finite(x)) &&
+        sqrt(sum(x^2)) > .Machine$double.eps
       if (valid && is.finite(expected_dim)) valid <- length(x) == expected_dim
       valid
     }, logical(1L))
@@ -3377,13 +3392,16 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
     if (any(!hit)) {
       fresh <- tryCatch(
         .call_embed(esess, batch_texts[!hit]),
-        error = function(e) stop(sprintf("Embedding batch %d failed: %s", bi, e$message))
+        error = function(e) .semantica_rethrow(e, sprintf("Embedding batch %d failed", bi),
+          "embedding", esess, batch = bi)
       )
       fresh_device <- attr(fresh, "semantica_embedding_device", exact = TRUE)
       if (is.null(dim(fresh))) fresh <- matrix(fresh, nrow = 1L)
       fresh <- as.matrix(fresh)
       storage.mode(fresh) <- "double"
-      if (nrow(fresh) != sum(!hit)) stop(sprintf("Embedding batch %d returned the wrong number of fresh rows.", bi))
+      if (nrow(fresh) != sum(!hit)) .semantica_embedding_response_error(sprintf("Embedding batch %d returned the wrong number of fresh rows.", bi))
+      if (any(!is.finite(fresh)) || any(sqrt(rowSums(fresh^2)) <= .Machine$double.eps))
+        .semantica_embedding_response_error("Embedding backend returned at least one zero or invalid vector.")
       fresh_names <- colnames(fresh)
       fresh_i <- 1L
       for (k in which(!hit)) {
@@ -3397,7 +3415,7 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
       }
     }
     dims <- vapply(cached_rows, length, integer(1L))
-    if (length(unique(dims)) != 1L) stop(sprintf("Embedding batch %d mixed incompatible cached dimensions.", bi))
+    if (length(unique(dims)) != 1L) .semantica_embedding_response_error(sprintf("Embedding batch %d mixed incompatible cached dimensions.", bi))
     component_names <- NULL
     named_row <- which(vapply(cached_rows, function(x) !is.null(names(x)), logical(1L)))[1L]
     if (length(named_row) == 1L && !is.na(named_row)) component_names <- names(cached_rows[[named_row]])
@@ -3422,7 +3440,7 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
     batch_matrix <- as.matrix(batch_matrix)
     storage.mode(batch_matrix) <- "double"
     if (nrow(batch_matrix) != length(idx)) {
-      stop(sprintf("Embedding batch %d returned %d row(s) for %d text(s).",
+      .semantica_embedding_response_error(sprintf("Embedding batch %d returned %d row(s) for %d text(s).",
                    bi, nrow(batch_matrix), length(idx)))
     }
     if (is.null(emb_matrix)) {
@@ -3431,19 +3449,19 @@ semantica_embed <- function(items_tbl, session, embed_session = NULL, text_col =
         dimnames = list(NULL, colnames(batch_matrix))
       )
     } else if (ncol(batch_matrix) != ncol(emb_matrix)) {
-      stop(sprintf("Embedding batch %d returned %d dimensions; expected %d.",
+      .semantica_embedding_response_error(sprintf("Embedding batch %d returned %d dimensions; expected %d.",
                    bi, ncol(batch_matrix), ncol(emb_matrix)))
     }
     emb_matrix[idx, ] <- batch_matrix
   }
 
   if (nrow(emb_matrix) != n) {
-    stop(sprintf("Embedding backend returned %d row(s) for %d text(s).", nrow(emb_matrix), n))
+    .semantica_embedding_response_error(sprintf("Embedding backend returned %d row(s) for %d text(s).", nrow(emb_matrix), n))
   }
-  if (any(!is.finite(emb_matrix))) stop("Embedding backend returned non-finite values.")
+  if (any(!is.finite(emb_matrix))) .semantica_embedding_response_error("Embedding backend returned non-finite values.")
   raw_norms <- sqrt(rowSums(emb_matrix^2))
   if (any(!is.finite(raw_norms) | raw_norms <= .Machine$double.eps)) {
-    stop("Embedding backend returned at least one zero or invalid vector.")
+    .semantica_embedding_response_error("Embedding backend returned at least one zero or invalid vector.")
   }
   dim_warning <- character(0L)
   if (is.finite(expected_dim) && ncol(emb_matrix) != expected_dim) {
@@ -4621,12 +4639,14 @@ semantica_pipeline <- function(
           cache = embedding_cache, cache_dir = embedding_cache_dir,
           cache_namespace = embedding_cache_namespace, batch_size = embed_batch_size,
           exclusions = content_exclusions
-        ), error = function(e) list(
-          available = FALSE,
-          note = conditionMessage(e),
-          table = NULL,
-          error_class = class(e)
-        )
+        ), error = function(e) {
+          if (identical(pool_topup_content_alignment_mode, "guard") &&
+              (inherits(e, "semantica_error_provider") || inherits(e, "semantica_error_config") ||
+               inherits(e, "semantica_error_integrity")))
+            .semantica_rethrow(e, "Required definition alignment failed", "content_alignment", embed_session %||% session)
+          list(available = FALSE, note = conditionMessage(e), table = NULL,
+            error_class = class(e), failure_details = .semantica_failure_details(e))
+        }
       )
       if (identical(pool_topup_content_alignment_mode, "guard") &&
           !isTRUE(content_alignment_result_current$available)) {
@@ -4895,7 +4915,8 @@ semantica_pipeline <- function(
               generation_provenance$topup_generation_ledger <<- ledger
               if (!is.null(generation_checkpoint)) generation_checkpoint(items_tbl, generation_provenance)
             }
-            if (inherits(e, "semantica_error_candidate_validation")) stop(e)
+            if (inherits(e, "semantica_error_candidate_validation") ||
+                inherits(e, "semantica_error_config") || inherits(e, "semantica_error_integrity")) stop(e)
             topup_actions[[length(topup_actions) + 1L]] <<- data.frame(
               round = round_idx, factor = f, requested_n = request_n,
               generated_n = 0L, added_n = 0L, rejected_duplicates = 0L,
