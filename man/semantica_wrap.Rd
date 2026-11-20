@@ -23,7 +23,8 @@ semantica_wrap(
 )
 }
 \arguments{
-\item{embed_result}{Output of \code{semantica_embed()}.}
+\item{embed_result}{Embedding result from \code{\link{semantica_embed}},
+\code{\link{semantica_import_embeddings}}, or \code{\link{semantica_anchor_profiles}}.}
 
 \item{items_tbl}{Override tibble.}
 

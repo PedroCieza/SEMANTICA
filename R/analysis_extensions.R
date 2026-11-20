@@ -13,10 +13,10 @@
   make.unique(x)
 }
 
-.semantica_object_md5 <- function(x) {
+.semantica_object_md5 <- function(x, version = 3L) {
   tf <- tempfile("semantica-hash-")
   on.exit(unlink(tf), add = TRUE)
-  saveRDS(x, tf, version = 3L, compress = FALSE)
+  saveRDS(x, tf, version = version, compress = FALSE)
   unname(tools::md5sum(tf)[[1L]])
 }
 

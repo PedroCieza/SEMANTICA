@@ -4003,7 +4003,8 @@ semantica_import_embeddings <- function(
 
 #' Prepare cosine_sim_matrix and df for SEMANTICA optimizers
 #'
-#' @param embed_result         Output of `semantica_embed()`.
+#' @param embed_result         Embedding result from [semantica_embed()],
+#'   [semantica_import_embeddings()], or [semantica_anchor_profiles()].
 #' @param items_tbl            Override tibble.
 #' @param id_col               Item identifier column.
 #' @param factor_col           Factor assignment column.
