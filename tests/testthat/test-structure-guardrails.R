@@ -74,13 +74,17 @@ test_that("PFA boundary-loading ceiling penalizes improper proxy geometry", {
 })
 
 test_that("PFA diagnostics report and score boundary-loading penalties", {
-  m <- matrix(0.10, nrow = 6L, ncol = 6L)
-  diag(m) <- 1
-  rownames(m) <- colnames(m) <- c("A1", "A2", "A3", "B1", "B2", "B3")
-  m[1:3, 1:3] <- 0.70
-  m[4:6, 4:6] <- 0.70
-  diag(m) <- 1
   fa <- c(A1 = "A", A2 = "A", A3 = "A", B1 = "B", B2 = "B", B3 = "B")
+  loadings <- matrix(.05, 6L, 2L, dimnames = list(names(fa), c("PFA1", "PFA2")))
+  loadings[1:3, 1L] <- c(.85, .75, .65)
+  loadings[4:6, 2L] <- c(.80, .70, .60)
+  m <- tcrossprod(loadings)
+  diag(m) <- 1
+
+  # Hold the loading geometry fixed to test scoring independently of rotation.
+  local_mocked_bindings(extract_pfa_loadings = function(...) {
+    list(loadings = loadings, phi = diag(2L), extraction = "principal", rotation = "promax")
+  }, .package = "SEMANTICA")
 
   unbounded <- SEMANTICA:::compute_pfa_diagnostics(
     m, fa, c("A", "B"),
@@ -97,8 +101,11 @@ test_that("PFA diagnostics report and score boundary-loading penalties", {
 
   expect_true(isTRUE(unbounded$available))
   expect_true(isTRUE(bounded$available))
-  expect_gt(bounded$boundary_loading_count, 0)
+  expect_equal(bounded$boundary_loading_count, nrow(loadings))
   expect_lt(bounded$boundary_loading_penalty, 1)
+  expect_gt(unbounded$score, 0)
+  expect_equal(bounded$unpenalized_score, unbounded$score)
+  expect_equal(bounded$score, unbounded$score * bounded$boundary_loading_penalty)
   expect_lt(bounded$score, unbounded$score)
 })
 
