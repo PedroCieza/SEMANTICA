@@ -10,8 +10,8 @@ semantica_pfa_config(
   failure_policy = c("semantic_fallback", "penalize", "stop"),
   during_search = NULL,
   every = 1L,
-  extraction = c("principal", "ml"),
-  final_extraction = c("ml", "principal"),
+  extraction = c("principal", "ml", "minres"),
+  final_extraction = c("ml", "principal", "minres"),
   rotation = c("promax", "target_oblique", "oblimin", "varimax", "none"),
   min_loading = NULL,
   min_margin = NULL,
@@ -32,7 +32,7 @@ semantica_pfa_config(
 \item{every}{Search interval for PFA objective scoring.}
 
 \item{extraction, final_extraction}{PFA extraction methods; each accepts
-\code{"principal"} or \code{"ml"}.}
+\code{"principal"}, \code{"ml"}, or \code{"minres"} (requires the psych package).}
 
 \item{rotation}{PFA rotation: \code{"promax"}, \code{"target_oblique"}, \code{"oblimin"},
 \code{"varimax"}, or \code{"none"}.}

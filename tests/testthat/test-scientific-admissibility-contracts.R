@@ -340,12 +340,12 @@ test_that("hard facet sampler constructs presence and balanced proposals", {
   set.seed(42)
   balanced <- .semantica_sample_factor_items_feasible(
     ids, 6L, item_facet_lookup = facets, declared_facets = declared,
-    mode = "balanced", min_per_facet = 1L, max_imbalance = 1L
+    mode = "balanced", min_per_facet = 1L, max_imbalance = 0L
   )
   counts <- table(factor(facets[balanced$items], levels = declared))
   expect_length(balanced$items, 6L)
   expect_true(all(counts >= 1L))
-  expect_lte(max(counts) - min(counts), 1L)
+  expect_equal(unname(counts), rep(2L, 3L), ignore_attr = TRUE)
 })
 
 test_that("hard facet sampler fails closed when duplicate guard blocks a required facet", {

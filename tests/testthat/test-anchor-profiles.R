@@ -12,6 +12,12 @@ test_that("anchor profiles reach the optimizer input wrapper with geometry and p
   raw <- make_anchor_case()
   ids <- raw$items_tbl$item_id[1:6]
   anchors <- c("a3", "a1", "a2")
+  baseline <- semantica_import_embeddings(raw$embeddings[ids, , drop = FALSE],
+    raw$items_tbl[1:6, ], model = "test-encoder", model_version = "r1")
+  baseline_wrapped <- semantica_wrap(baseline, compute_cosine_sensitivity = FALSE, verbose = FALSE)
+  expect_equal(baseline_wrapped$cosine_sim_matrix,
+    stats::cov2cor(tcrossprod(baseline$embeddings)), tolerance = 1e-12)
+  expect_null(baseline_wrapped$embedding_diagnostics$representation_provenance$anchor_profile)
   transformed <- semantica_anchor_profiles(raw, anchors)
   expect_s3_class(transformed, "semantica_embedding_result")
   expect_identical(rownames(transformed$embeddings), ids)

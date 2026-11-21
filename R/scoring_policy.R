@@ -1,17 +1,21 @@
 # Resolve compatibility aliases without coupling reference scaling and cohesion.
 .semantica_resolve_semantic_policy <- function(policy = "candidate",
     gap_reference = NULL, cohesion_guard = NULL) {
-  policy <- match.arg(policy, c("candidate", "admitted_pool_lower_guard"))
+  policy <- match.arg(policy, c("candidate", "admitted_pool_lower_guard", "admitted_pool_fixed_comparison"))
   gap_reference <- if (is.null(gap_reference)) {
-    if (policy == "candidate") "candidate" else "admitted_pool"
-  } else match.arg(gap_reference, c("candidate", "admitted_pool"))
+    switch(policy, candidate = "candidate", admitted_pool_lower_guard = "admitted_pool",
+      admitted_pool_fixed_comparison = "admitted_pool_fixed_comparison")
+  } else match.arg(gap_reference, c("candidate", "admitted_pool", "admitted_pool_fixed_comparison"))
   cohesion_guard <- if (is.null(cohesion_guard)) {
     if (policy == "candidate") "two_sided" else "lower_only"
   } else match.arg(cohesion_guard, c("two_sided", "lower_only"))
   id <- if (gap_reference == "candidate") {
     if (cohesion_guard == "two_sided") "candidate" else "candidate_lower_guard"
-  } else if (cohesion_guard == "lower_only") "admitted_pool_lower_guard" else "admitted_pool_two_sided"
-  list(schema = "semantica-semantic-policy-v2", requested_alias = policy,
+  } else if (gap_reference == "admitted_pool") {
+    if (cohesion_guard == "lower_only") "admitted_pool_lower_guard" else "admitted_pool_two_sided"
+  } else if (cohesion_guard == "lower_only") "admitted_pool_fixed_comparison" else "admitted_pool_fixed_comparison_two_sided"
+  list(schema = if (gap_reference == "admitted_pool_fixed_comparison") "semantica-semantic-policy-v3" else
+      "semantica-semantic-policy-v2", requested_alias = policy,
     gap_reference = gap_reference, cohesion_guard = cohesion_guard, id = id,
     calibration_status = "not_externally_calibrated",
     evidence_scope = "representation_geometry_only")

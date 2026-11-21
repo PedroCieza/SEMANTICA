@@ -1,4 +1,10 @@
 # Actual native final evaluator, shared by ACO and bounded fixed-form audits.
+.semantica_final_upper_bound <- function(proposal, weight) {
+  if (length(proposal) != 1L || !is.finite(proposal) || length(weight) != 1L ||
+      !is.finite(weight) || weight < 0 || weight > 1) return(NA_real_)
+  (1 - weight) * proposal + weight
+}
+
 .semantica_archive_context <- function(envir, overrides = list()) {
   keys <- c("active_cutoffs", "candidate_master_seed", "continuous_scoring", 
     "cosine_sim_matrix", "dup_threshold", "duplicate_cluster_id", 
@@ -19,7 +25,7 @@
     "rotation_args", "seed", "semantic_cohesion_guard", "semantic_esem_score_mode", 
     "semantic_objective_mode", "semantic_reference", "sigmoid_center",
     "sigmoid_steepness", "within_similarity_band", "within_similarity_target_eff",
-    "content_review", "content_witness", "fit_cache", "final_fit_pruning"
+    "content_review", "content_requirement", "content_witness", "fit_cache", "final_fit_pruning"
     )
   values <- mget(setdiff(keys, names(overrides)), envir = envir, inherits = TRUE)
   values[names(overrides)] <- overrides
@@ -90,6 +96,8 @@
   within_similarity_target_eff <- context$within_similarity_target_eff
   fit_cache <- context$fit_cache
   final_fit_pruning <- isTRUE(context$final_fit_pruning)
+  final_upper_bound <- .semantica_final_upper_bound
+  reference_context <- context$model_info$reference_context
   evaluator <- function(entry) {
     v <- entry$vec; sel_items <- item.vector[v == 1L]; fa <- item.factor.lookup[sel_items]
     facet_constraint <- .semantica_facet_constraint_diagnostics(
@@ -125,7 +133,7 @@
       semantic_reference = semantic_reference,
       semantic_cohesion_guard = semantic_cohesion_guard
     )
-    dup_pen <- compute_duplicate_penalty(sel_items, fa, factors, cos_sub, dup_threshold)
+    dup_pen <- compute_duplicate_penalty(sel_items, fa, factors, cos_sub, dup_threshold, duplicate_cluster_id)
     facet_mult <- compute_facet_coverage_multiplier(sel_items, fa, item.facet.lookup, facets.by.factor, i.per.f, facet_coverage_weight)
     facet_coverage_final <- attr(facet_mult, "coverage", exact = TRUE) %||% 1
     content_coverage_final <- .semantica_content_coverage_profile(
@@ -133,6 +141,14 @@
       facet_coverage = facet_coverage_final, duplicate_penalty = dup_pen
     )
     sem_score_final <- sem_r$sem_score * dup_pen * facet_mult
+    if (!is.null(reference_context)) {
+      reference <- .semantica_reference_evaluate(reference_context, sel_items)
+      return(list(score = if (is.null(reference)) -Inf else sem_score_final,
+        proposal_score = sem_score_final, sem_score = sem_score_final, reference = reference,
+        score_role = "geometry_descriptive_reference_vector_governs_selection",
+        duplicate_penalty = dup_pen, facet_coverage = facet_coverage_final,
+        content_coverage = content_coverage_final))
+    }
     pfa_score_final <- NA_real_
     pfa_r <- NULL
     search_score_final <- sem_score_final
@@ -153,10 +169,11 @@
       pfa_active = pfa_objective_final, pfa_weight = pfa_weight,
       pfa_failure_policy = pfa_failure_policy, pfa_unavailable = "reject", stage = "final")
     search_score_final <- proposal_composition$proposal
-    if (!requested_esem_search || esem_weight <= 0) {
+    if (isTRUE(entry$proposal_only) || !requested_esem_search || esem_weight <= 0) {
       return(list(
         score = search_score_final,
         proposal_score = search_score_final,
+        proposal_guidance = sem_r$signed_guidance,
         sem_score = sem_score_final,
         pfa_score = pfa_score_final,
         pfa_result = pfa_r,
@@ -166,10 +183,11 @@
         score_composition = proposal_composition
       ))
     }
-    if (final_fit_pruning && !isTRUE(entry$protected) && is.finite(search_score_final) && is.finite(entry$incumbent %||% -Inf) &&
-        (1 - esem_weight) * search_score_final + esem_weight < entry$incumbent - 1e-10)
+    upper_bound <- final_upper_bound(search_score_final, esem_weight)
+    if (final_fit_pruning && !isTRUE(entry$protected) && is.finite(upper_bound) &&
+        is.finite(entry$incumbent %||% -Inf) && upper_bound < entry$incumbent - 1e-10)
       return(list(score = -Inf, proposal_score = search_score_final,
-        bound_dominated = TRUE, upper_bound = (1 - esem_weight) * search_score_final + esem_weight,
+        bound_dominated = TRUE, upper_bound = upper_bound,
         rejection_reason = "cannot_win_current_scalar_rule"))
     esem_cor <- transform_cosine_for_esem(cos_sub, fa, factors)
     if (is.null(esem_cor)) {
@@ -392,6 +410,9 @@
       semantic = as.numeric(final$sem_score %||% entry$sem_score %||% NA_real_),
       pfa = as.numeric(final$pfa_score %||% entry$pfa_score %||% NA_real_),
       esem = as.numeric(final$esem_result$score %||% NA_real_),
+      proposal_guidance_available = .semantica_guidance_available(entry$proposal_guidance),
+      proposal_guidance_min = if (.semantica_guidance_available(entry$proposal_guidance))
+        min(entry$proposal_guidance) else NA_real_,
       esem_job_reserved = fit_reserved,
       esem_cache_hit = isTRUE(final$archive_esem_cache_hit),
       esem_fit_started = if (status == "final_execution_error") NA else isTRUE(final$archive_esem_fit_started),
@@ -410,10 +431,13 @@
     pool_fingerprint = .semantica_object_md5(context$cosine_sim_matrix),
     source_scope = "native_scoring_without_ACO_or_population_truth",
     content_review = .semantica_content_review_result(context$content_review,
-      context$eligible.items, witness = context$content_witness),
+      context$eligible.items, witness = context$content_witness, requirement = context$content_requirement),
     admission = list(eligible_items = context$eligible.items,
       duplicate_cluster_id = context$duplicate_cluster_id, selected_counts = context$i.per.f,
       facet_constraint_mode = context$facet_constraint_mode),
+    proposal_diagnostics = .semantica_proposal_summary(
+      vapply(records, function(x) x$proposal_score, numeric(1L)),
+      lapply(evaluations, function(x) x$proposal$proposal_guidance)),
     qualification = "not_externally_calibrated", new_search_jobs = 0L,
     esem_jobs_reserved = reserved, maximum_new_esem_jobs = request$max_new_esem_fits)
   if (!is.null(request$output_dir)) {
@@ -421,6 +445,9 @@
     utils::write.csv(answer$results, file.path(request$output_dir, "scores.csv"), row.names = FALSE)
     writeLines(c("# Native fixed-form scoring audit", "",
       paste("Forms:", nrow(answer$results)), paste("Reserved final ESEM jobs:", reserved),
+      paste("Proposal comparison:", answer$proposal_diagnostics$status),
+      paste("Finite zero proposals:", answer$proposal_diagnostics$zero,
+        "; best-score ties:", answer$proposal_diagnostics$best_ties),
       "ACO search jobs: 0. No providers or population truth used.",
       "This reports native scores and execution states, not psychometric calibration or validity.",
       "Grade known-answer forms separately; unavailable or rejected evaluations are retained."),

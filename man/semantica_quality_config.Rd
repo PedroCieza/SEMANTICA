@@ -49,12 +49,36 @@ semantica_quality_config(
   objective_polish = FALSE,
   objective_polish_max_evals = 20L,
   objective_polish_max_seconds = 60,
-  semantic_reference_policy = c("candidate", "admitted_pool_lower_guard"),
+  semantic_reference_policy = c("candidate", "admitted_pool_lower_guard",
+    "admitted_pool_fixed_comparison"),
   semantic_gap_reference = NULL,
-  semantic_cohesion_guard = NULL
+  semantic_cohesion_guard = NULL,
+  proposal_rescue = FALSE,
+  proposal_rescue_max_evals = 20L,
+  proposal_rescue_max_seconds = 60,
+  proposal_rescue_allow_fit = FALSE,
+  reference_evidence = NULL,
+  redundancy = NULL,
+  initial_items = NULL,
+  retain_initial = FALSE
 )
 }
 \arguments{
+\item{redundancy}{Optional \code{\link{semantica_redundancy_policy}}. NULL preserves
+historical duplicate handling. An explicit policy enforces direct pair conflicts
+through generation recovery, ACO selection and final legality checks.}
+\item{initial_items}{Optional item IDs or a \code{\link{semantica_source_nomination}}
+replacing one first-iteration proposal under ordinary scoring.}
+
+\item{retain_initial}{Replace the last final archive slot with the scored
+initial form if absent. Uses ordinary final assessment.}
+
+\item{reference_evidence}{Optional object or list from \code{\link[=semantica_reference_evidence]{semantica_reference_evidence()}}.
+Primary development reference criteria govern retention and final eligibility;
+sensitivity panels remain descriptive. Unresolved comparisons retain a shortlist.
+Reference mode disables proxy search fits, scalar fit pruning and loading-based
+repair. Requested polish/rescue uses a bounded reference walk, using the rescue
+budget if both are requested. Point comparisons do not establish confidence or validation.}
 \item{profile}{One of \code{"standard"}, \code{"lenient"}, or \code{"strict"}.}
 
 \item{redundancy_threshold, dup_threshold, htmt_threshold}{Optional threshold
@@ -185,7 +209,9 @@ It can improve the configured utility without improving every reported metric.}
 
 \item{objective_polish_max_evals}{Positive finite integer limiting candidate
 evaluations, including full-archive cache hits (default 20). Polishing is
-separate from the search-fit ceiling and its ESEM fits are reported separately.}
+separate from the search-fit ceiling and its ESEM fits are reported separately.
+With native \code{final_fit_pruning}, the limit counts distinct proposal screens,
+including candidates excluded by a safe bound before fitting.}
 
 \item{objective_polish_max_seconds}{Positive finite elapsed-time limit
 (default 60), checked before each proposal/evaluation. In-flight fits finish.
@@ -195,14 +221,40 @@ Heuristics order proposals; early limits do not establish a local optimum.}
 \code{"admitted_pool_lower_guard"} is an opt-in research policy for
 multidimensional relative scoring: freeze robust gap scales from the
 admitted pool and penalize only insufficient cohesion. Independent
-calibration remains necessary; admission and search settings are retained.}
+calibration remains necessary; admission and search settings are retained.
+\code{"admitted_pool_fixed_comparison"} additionally freezes global and per-domain
+between-domain comparison distributions for both ranks and median gaps.
+Changing other domains' selected items then cannot change a domain's base
+separation score. Candidate overlap remains diagnostic; this is not
+participant validation and cannot correct a misleading representation.}
 
-\item{semantic_gap_reference}{Optional independent override: \code{"candidate"} or
-\code{"admitted_pool"}. NULL inherits the compatibility policy's reference scope.}
+\item{semantic_gap_reference}{Optional independent override: \code{"candidate"},
+\code{"admitted_pool"} (fixed scales), or \code{"admitted_pool_fixed_comparison"}
+(fixed scales and comparisons). NULL inherits the policy's reference scope.}
 
 \item{semantic_cohesion_guard}{Optional independent override: \code{"two_sided"} or
 \code{"lower_only"}. NULL inherits the compatibility policy's guard. Independent
 settings require multidimensional relative scoring and remain experimental.}
+
+\item{proposal_rescue}{Optional bounded proposal pass after baseline selection.
+Gives scalar-only improvement the full budget first. Only after that walk
+completes its neighborhood may remaining budget explore exact ties using
+signed worst-domain information. The scalar-only result is preserved.
+Scalar final selection retains the baseline unless the
+native final score improves. Unsupported scoring regimes are reported as
+skipped; PFA objectives/guards requiring fits are not screened by this pass.
+Requires \code{final_selection_mode = "scalar"} without diagnostic reranking.}
+
+\item{proposal_rescue_max_evals, proposal_rescue_max_seconds}{Positive finite
+limits on candidate proposal screens and screening time (defaults 20 and 60).
+The phases share these limits and reuse screened candidates; repeated cached
+comparisons also consume the screen allowance. Screens perform no PFA/ESEM
+fits. The incumbent screen is not a candidate.}
+
+\item{proposal_rescue_allow_fit}{FALSE uses only available cached final fits.
+TRUE permits at most one additional raw final ESEM job for the terminal
+proposal, separate from search-fit limits. In-flight final fits finish.
+Signed guidance is representation information, not participant validation.}
 }
 \value{
 A configuration list for \code{\link[=semantica_run_custom]{semantica_run_custom()}}.

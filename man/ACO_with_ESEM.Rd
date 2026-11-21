@@ -87,8 +87,8 @@ ACO_with_ESEM(
   pfa_failure_policy = c("semantic_fallback", "penalize", "stop"),
   run_pfa_during_search = TRUE,
   pfa_every = 1L,
-  pfa_extraction = c("principal", "ml"),
-  pfa_final_extraction = c("ml", "principal"),
+  pfa_extraction = c("principal", "ml", "minres"),
+  pfa_final_extraction = c("ml", "principal", "minres"),
   pfa_rotation = c("promax", "target_oblique", "oblimin", "varimax", "none"),
   pfa_min_loading = psychometric_guard_min_loading,
   pfa_min_margin = NULL,
@@ -167,17 +167,30 @@ ACO_with_ESEM(
   finalization_dir = NULL,
   semantic_n_execution = c("inline", "isolated", "deferred"),
   semantic_n_max_seconds = Inf,
-  semantic_reference_policy = c("candidate", "admitted_pool_lower_guard"),
+  semantic_reference_policy = c("candidate", "admitted_pool_lower_guard",
+    "admitted_pool_fixed_comparison"),
   semantic_gap_reference = NULL,
   semantic_cohesion_guard = NULL,
   .scoring_audit = NULL,
   content_review = NULL,
   fit_cache_dir = NULL,
   final_fit_pruning = FALSE,
+  content_requirement = c("none", "declared_supported"),
+  proposal_rescue = FALSE,
+  proposal_rescue_max_evals = 20L,
+  proposal_rescue_max_seconds = 60,
+  proposal_rescue_allow_fit = FALSE,
+  reference_evidence = NULL,
+  redundancy = NULL,
+  initial_items = NULL,
+  retain_initial = FALSE,
   ...
 )
 }
 \arguments{
+\item{redundancy}{Optional \code{\link{semantica_redundancy_policy}}. NULL preserves
+historical duplicate handling. Pair evidence is retained in
+\code{duplicate_clusters$pair_evidence}.}
 \item{cosine_sim_matrix}{Square symmetric matrix of cosine similarities.}
 
 \item{df}{Dataframe with item metadata (\code{item}/\code{type} or \code{factor} columns).}
@@ -447,7 +460,8 @@ for example, \code{pfa_every = 10L} runs PFA-guided proposal scoring every tenth
 ACO iteration.}
 
 \item{pfa_extraction}{Extraction used for ACO PFA scoring (\code{"principal"} is
-fast and sample-free; \code{"ml"} uses covariance-matrix ML via \code{factanal}).}
+fast and sample-free, \code{"ml"} uses covariance-matrix ML, and
+\code{"minres"} uses minimum residual extraction via the psych package).}
 
 \item{pfa_final_extraction}{Extraction used for final reported PFA diagnostics.}
 
@@ -672,7 +686,11 @@ Does not increase the shortlist size or search-fit ceiling.}
 \code{rng_policy} in \code{\link[=semantica_esem_config]{semantica_esem_config()}}. Defaults preserve legacy behavior.}
 
 \item{objective_polish, objective_polish_max_evals, objective_polish_max_seconds}{Optional bounded objective-based final local search; see
-\code{\link[=semantica_quality_config]{semantica_quality_config()}}. Its evaluations are separate from search jobs.}
+\code{\link[=semantica_quality_config]{semantica_quality_config()}}. Its evaluations are separate from search jobs.
+With \code{final_fit_pruning}, the candidate budget counts distinct native
+proposal screens, including bound exclusions. Competitive replacements
+are evaluated in upper-bound order. Completion diagnostics distinguish a
+checked one-replacement neighborhood from a budget-limited search.}
 
 \item{evaluation_log_dir}{Optional directory for per-process JSONL ESEM job
 start/finish records. Records contain candidate keys and solver diagnostics,
@@ -699,15 +717,36 @@ The opt-in research policy \code{"admitted_pool_lower_guard"} freezes robust
 gap scales from the admitted pool and uses a lower-only cohesion guard.
 It requires multidimensional \code{"relative_conservative"} scoring and records
 its reference in model, objective and checkpoint metadata. Independent
-calibration remains necessary.}
+calibration remains necessary.
+\code{"admitted_pool_fixed_comparison"} additionally freezes global and per-domain
+between-domain comparison distributions for ranks and median gaps. A domain's
+base separation then depends on its own selection and the fixed reference.
+Candidate-relative overlap remains diagnostic. Neither policy corrects
+misleading representations or establishes participant validation.}
 
-\item{semantic_gap_reference}{Optional \code{"candidate"} or \code{"admitted_pool"}
-override, independent of the cohesion guard. NULL inherits the policy alias.}
+\item{semantic_gap_reference}{Optional \code{"candidate"}, \code{"admitted_pool"}
+(fixed scales), or \code{"admitted_pool_fixed_comparison"} (fixed scales and
+comparisons) override, independent of the cohesion guard. NULL inherits the alias.}
 
 \item{semantic_cohesion_guard}{Optional \code{"two_sided"} or \code{"lower_only"} override.
 NULL inherits the policy alias. Neither independent setting certifies calibration.}
 
 \item{.scoring_audit}{Internal fixed-form request; use \code{\link[=semantica_audit_solutions]{semantica_audit_solutions()}}.}
+
+\item{initial_items}{Optional item IDs or a \code{\link{semantica_source_nomination}}
+replacing one first-iteration proposal under ordinary scoring.}
+
+\item{retain_initial}{Replace the last final archive slot with the scored
+initial form if absent. Uses ordinary final assessment.}
+
+\item{reference_evidence}{Optional object or list from \code{\link[=semantica_reference_evidence]{semantica_reference_evidence()}}.
+Primary reference vectors govern archive retention, pheromone deposits and final eligibility;
+sensitivity panels are descriptive. Comparisons use development point estimates,
+with no calibrated confidence or final-validation claim. This mode disables proxy
+search fits, scalar fit pruning and loading-based repair. Requested polish/rescue
+uses a reference walk without factor fits; the rescue budget takes precedence if
+both are requested. Final proxy models are companion diagnostics. Inspect
+\code{reference_selection}; \code{best_items} is provisional when unresolved.}
 
 \item{content_review}{Optional sheet from \code{\link[=semantica_content_review]{semantica_content_review()}} or a
 callback receiving current item metadata and returning that sheet. Conflicts
@@ -720,7 +759,19 @@ PFA and final ESEM fits. Scores are recomputed under the current policy.}
 
 \item{final_fit_pruning}{FALSE by default. In continuous scalar report-only
 contexts without repair/reranking, skip final fits whose exact upper bound
-cannot beat an evaluated incumbent. Content witnesses remain protected.}
+cannot beat an evaluated incumbent. Content witnesses remain protected.
+Also supports bounded \code{objective_polish} under the same scalar rule.}
+
+\item{content_requirement}{\code{"none"} keeps existing review admission;
+\code{"declared_supported"} restricts eligibility to supplied supported judgments.
+Missing support or infeasible domain/facet/global duplicate constraints
+produce an explicit unmet-requirement error; uncertain items are not restored.
+Content support does not establish response-based validity.}
+
+\item{proposal_rescue, proposal_rescue_max_evals, proposal_rescue_max_seconds, proposal_rescue_allow_fit}{Optional bounded proposal pass after baseline selection; see
+\code{\link[=semantica_quality_config]{semantica_quality_config()}}. Scalar quality and the original candidate remain
+protected. Scalar improvement has priority; signed ties are explored only
+after a complete scalar neighborhood and with the remaining budget.}
 
 \item{...}{Additional arguments (unused).}
 }

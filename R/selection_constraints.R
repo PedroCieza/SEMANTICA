@@ -10,6 +10,11 @@
     eligible_items, i_per_f, duplicate_cluster_id = NULL,
     item_facet_lookup = NULL, facets_by_factor = NULL, mode = "soft",
     min_per_facet = 1L, max_imbalance = 1L, probs = NULL, priority = NULL) {
+  if (inherits(duplicate_cluster_id, "semantica_pair_constraints"))
+    return(.semantica_joint_pair_selection(eligible_items, i_per_f, duplicate_cluster_id,
+      item_facet_lookup = item_facet_lookup, facets_by_factor = facets_by_factor,
+      mode = mode, min_per_facet = min_per_facet, max_imbalance = max_imbalance,
+      probs = probs, priority = priority))
   items <- unlist(eligible_items[names(i_per_f)], use.names = FALSE)
   cid <- if (is.null(duplicate_cluster_id)) rep(NA_character_, length(items)) else duplicate_cluster_id[items]
   grouped <- !is.na(cid) & nzchar(cid)

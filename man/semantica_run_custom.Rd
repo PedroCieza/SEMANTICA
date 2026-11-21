@@ -55,7 +55,8 @@ semantica_run_custom(
   pheromone_update = c("top_elite", "best_ant", "top_elite_distinct"),
   content_review = NULL,
   fit_cache_dir = NULL,
-  final_fit_pruning = FALSE
+  final_fit_pruning = FALSE,
+  content_requirement = c("none", "declared_supported")
 )
 }
 \arguments{
@@ -213,6 +214,11 @@ conflicts are excluded, and incomplete review remains explicitly unassessed.}
 \item{fit_cache_dir}{Optional directory for source/input/RNG-specific fit reuse.}
 
 \item{final_fit_pruning}{Opt-in exact scalar bounds for final fitting; see \code{\link[=ACO_with_ESEM]{ACO_with_ESEM()}}.}
+
+\item{content_requirement}{\code{"none"} preserves existing review admission.
+\code{"declared_supported"} requires supplied supported judgments for every eligible
+item, preserving facet and duplicate constraints. Infeasibility is reported
+without restoring uncertain items. Declared support is not response validation.}
 }
 \value{
 A compact \code{semantica_run_result}; \verb{$advanced} retains the complete

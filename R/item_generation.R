@@ -2314,7 +2314,7 @@ print.semantica_session <- function(x, ...) {
     redundancy_threshold = 0.85,
     dup_threshold = 0.90,
     relaxation_level = "strict",
-    alignment_refresh_done = character(0L)) {
+    alignment_refresh_done = character(0L), redundancy = NULL) {
   content_alignment_mode <- match.arg(content_alignment_mode)
   polarity_action <- match.arg(polarity_action)
   semantic_objective_mode <- match.arg(semantic_objective_mode)
@@ -2350,9 +2350,12 @@ print.semantica_session <- function(x, ...) {
       dup_threshold = dup_threshold,
       content_alignment_mode = content_alignment_mode,
       polarity_action = polarity_action,
-      relaxation_level = relaxation_level
+      relaxation_level = relaxation_level, redundancy = redundancy
     ),
-    error = function(e) structure(NULL, error = conditionMessage(e))
+    error = function(e) {
+      if (!is.null(redundancy)) stop(e)
+      structure(NULL, error = conditionMessage(e))
+    }
   )
   if (is.null(gate) || !is.data.frame(gate$table)) {
     basic$constraint_level <- unname(relaxation_level[basic$factor])
@@ -2407,7 +2410,7 @@ print.semantica_session <- function(x, ...) {
 }
 
 #' @keywords internal
-.semantica_pool_topup_distinct <- function(existing_items, topup_items, threshold = 0.92) {
+.semantica_pool_topup_distinct <- function(existing_items, topup_items, threshold = 0.92, exact_only = FALSE) {
   threshold <- .semantica_pool_topup_probability(threshold, "pool_topup_duplicate_threshold")
   top <- as.data.frame(topup_items, stringsAsFactors = FALSE)
   if (!nrow(top)) return(tibble::as_tibble(top))
@@ -2420,13 +2423,15 @@ print.semantica_session <- function(x, ...) {
   existing_text <- as.character(existing[[pick_text(existing)]])
   top_text_col <- pick_text(top)
   seen_text <- existing_text[!is.na(existing_text) & nzchar(trimws(existing_text))]
-  seen_norm <- .semantica_normalize_item_text(seen_text)
+  normalize <- if (exact_only) function(x) trimws(gsub("[[:space:]]+", " ", enc2utf8(x))) else
+    .semantica_normalize_item_text
+  seen_norm <- normalize(seen_text)
   keep <- rep(FALSE, nrow(top))
   for (i in seq_len(nrow(top))) {
     txt <- as.character(top[[top_text_col]][i])
-    norm <- .semantica_normalize_item_text(txt)
+    norm <- normalize(txt)
     dup <- norm %in% seen_norm
-    if (!dup && length(seen_text)) {
+    if (!dup && !exact_only && length(seen_text)) {
       dup <- any(vapply(seen_text, function(prev) {
         .semantica_lexical_jaccard(txt, prev) >= threshold
       }, logical(1L)))
@@ -4398,6 +4403,8 @@ semantica_wrap <- function(embed_result, items_tbl = NULL, id_col = "item_id", f
 #' @param pool_topup_redundancy_threshold,pool_topup_dup_threshold Redundancy
 #'   thresholds mirrored from ACO. `pool_topup_dup_threshold` feeds the
 #'   factor-local weighted-topological-overlap redundancy graph.
+#' @param pool_topup_redundancy Optional [semantica_redundancy_policy()] forwarded
+#'   to pool feasibility checks. NULL retains the historical duplicate policy.
 #' @param pool_topup_polarity_language Language hint for conservative polarity
 #'   diagnostics when top-up feasibility uses a polarity guard.
 #' @param pool_topup_content_alignment_mode,pool_topup_polarity_action Internal
@@ -4506,12 +4513,14 @@ semantica_pipeline <- function(
                                  "diagnostic", "guard", "off"
                                ),
                                pool_topup_polarity_language = "auto",
+                               pool_topup_redundancy = NULL,
                                ...,
                                backend_spec = NULL, embed_backend_spec = NULL,
                                generation_seed = NULL,
                                allow_provider_key_forwarding = FALSE,
                                allow_insecure_auth = FALSE, generation_checkpoint = NULL) {
   pipeline_started <- proc.time()[["elapsed"]]
+  pool_topup_redundancy <- .semantica_redundancy_policy(pool_topup_redundancy)
   cosine_adjustment <- match.arg(cosine_adjustment)
   pool_topup <- isTRUE(pool_topup)
   pool_topup_min_slack <- .semantica_pool_topup_nonnegative_int(
@@ -4853,9 +4862,11 @@ semantica_pipeline <- function(
           redundancy_threshold = pool_topup_redundancy_threshold,
           dup_threshold = pool_topup_dup_threshold,
           relaxation_level = constraint_policy,
-          alignment_refresh_done = names(alignment_refresh_done)[alignment_refresh_done]
+          alignment_refresh_done = names(alignment_refresh_done)[alignment_refresh_done],
+          redundancy = pool_topup_redundancy
         ),
         error = function(e) {
+          if (!is.null(pool_topup_redundancy)) stop(e)
           pool_topup_diagnostics$reason <<- "diagnostics_unavailable"
           pool_topup_diagnostics$note <<- conditionMessage(e)
           data.frame()
@@ -4944,7 +4955,8 @@ semantica_pipeline <- function(
 
         topup_tbl <- .semantica_pool_topup_reindex(items_tbl, raw_topup)
         topup_tbl <- .semantica_pool_topup_distinct(
-          items_tbl, topup_tbl, threshold = pool_topup_duplicate_threshold
+          items_tbl, topup_tbl, threshold = pool_topup_duplicate_threshold,
+          exact_only = !is.null(pool_topup_redundancy)
         )
         rejected <- attr(topup_tbl, "rejected_duplicates") %||% 0L
         pool_topup_diagnostics$rejected_duplicates <-
@@ -4999,7 +5011,8 @@ semantica_pipeline <- function(
         redundancy_threshold = pool_topup_redundancy_threshold,
         dup_threshold = pool_topup_dup_threshold,
         relaxation_level = constraint_policy,
-        alignment_refresh_done = names(alignment_refresh_done)[alignment_refresh_done]
+        alignment_refresh_done = names(alignment_refresh_done)[alignment_refresh_done],
+        redundancy = pool_topup_redundancy
       )
       previous_deficit_factors <- as.character(
         final_diag_round$factor[final_diag_round$recommended_additional > 0L]
@@ -5031,7 +5044,8 @@ semantica_pipeline <- function(
         redundancy_threshold = pool_topup_redundancy_threshold,
         dup_threshold = pool_topup_dup_threshold,
         relaxation_level = constraint_policy,
-        alignment_refresh_done = names(alignment_refresh_done)[alignment_refresh_done]
+        alignment_refresh_done = names(alignment_refresh_done)[alignment_refresh_done],
+        redundancy = pool_topup_redundancy
       )
     } else data.frame(),
     error = function(e) data.frame()

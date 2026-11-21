@@ -70,6 +70,7 @@ semantica_pipeline(
   pool_topup_content_alignment_mode = c("diagnostic", "guard", "off"),
   pool_topup_polarity_action = c("diagnostic", "guard", "off"),
   pool_topup_polarity_language = "auto",
+  pool_topup_redundancy = NULL,
   ...,
   backend_spec = NULL,
   embed_backend_spec = NULL,
@@ -80,6 +81,8 @@ semantica_pipeline(
 )
 }
 \arguments{
+\item{pool_topup_redundancy}{Optional \code{\link{semantica_redundancy_policy}}
+forwarded to pool feasibility checks. NULL retains historical duplicate handling.}
 \item{backend}{Generation backend.}
 
 \item{embed_backend}{Embedding backend. \code{NULL} = same as backend.}

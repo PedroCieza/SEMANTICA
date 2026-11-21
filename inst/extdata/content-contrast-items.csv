@@ -1,0 +1,8 @@
+item_id,item_text,factor,facet
+task_anchor,I finish tasks even when they are boring,Conscientiousness,Persistence
+task_behavior,I keep working until a tedious task is finished,Conscientiousness,Persistence
+task_topic,I enjoy discussing how people organize their tasks,Conscientiousness,Persistence
+task_reverse,I leave tedious tasks unfinished,Conscientiousness,Persistence
+contact_anchor,I start conversations with people I have just met,Extraversion,Sociability
+contact_behavior,I introduce myself and talk with new people,Extraversion,Sociability
+contact_topic,I like reading discussions about sociability,Extraversion,Sociability

@@ -1,5 +1,52 @@
 # SEMANTICA
 
+Optional development selection can use external reference responses:
+
+```r
+reference <- semantica_reference_evidence(
+  references = reference_item_ids, # named list, one entry per domain
+  data = pilot_data,              # includes candidate and reference columns
+  source = "Reference instrument and relevant validation source",
+  method = "Describe the reference measurement method",
+  justification = "Explain construct relevance and potential method dependencies"
+)
+quality <- semantica_quality_config(reference_evidence = reference)
+# Pass quality to semantica_run_custom(); reserve validation_data for confirmation.
+```
+
+Freeze reference membership, reverse coding and primary/sensitivity roles before
+selection. Primary reference comparisons govern the candidate archive and final
+eligibility; semantic scores remain descriptive. Multiple primary panels can leave
+an unresolved shortlist. Inspect `result$reference_selection`: `recommended_items`
+is NULL when unresolved, and the usual selected items are then provisional.
+These are developmental point comparisons with no calibrated-confidence claim.
+Different reference IDs or methods do not establish independence. This option
+requires relevant response information and does not calibrate sample-free use.
+Use a saved/prepared candidate pool covered by the development responses and one
+optimizer seed. Scalar restart/multi-seed aggregation is explicitly unavailable
+in reference mode; it cannot safely combine unresolved reference frontiers.
+
+Selected-model checkpointing preserves wording, objective and an available full
+archive fit before secondary diagnostics. To bound reference-N sensitivity work,
+use `semantica_diagnostics_config(semantic_n_execution = "isolated",
+semantic_n_max_seconds = 30)` and supply `checkpoint_dir` to the pipeline.
+`"deferred"` saves that work for later; `"inline"` remains the default.
+`semantica_resume_diagnostics()` continues from sealed anchor results and recorded
+RNG without repeating selection. Its directory is returned in
+`result$advanced$optimization$finalization_checkpoint$directory`.
+Isolation/continuation uses optional `callr`; source checkouts also use `pkgload`.
+Inline parallel diagnostics retain their existing backend and cannot be replayed
+from coordinator RNG; choose isolated/deferred execution for resumable diagnostics
+while keeping the main search parallel. This allowance covers reference-N work,
+not archive fits or other diagnostics. Original attempts remain intact.
+
+Search diagnostics separate final model admissibility from successful structural
+checkpoints. Native results include `search_evidence`,
+`esem_checkpoint_coverage`, and `pheromone_pressure`. When stage checkpointing
+is enabled, `esem-progress/events-<pid>.jsonl` also retains ESEM job starts and
+solver results, including starts without finishes after a timeout. These
+diagnostics do not change utilities, stopping rules or feature defaults.
+
 [![R-CMD-check](https://github.com/PedroCieza/SEMANTICA/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/PedroCieza/SEMANTICA/actions/workflows/R-CMD-check.yaml)
 [![release validation](https://github.com/PedroCieza/SEMANTICA/actions/workflows/release-validation.yaml/badge.svg)](https://github.com/PedroCieza/SEMANTICA/actions/workflows/release-validation.yaml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
@@ -11,6 +58,68 @@ SEMANTICA is an R package for **semantic-assisted psychometric scale development
 **Current build: 0.2.** Start a scale-development workflow with `semantica_run()`. Use `semantica_run_custom()` when you need additional configuration or participant-response validation.
 
 > **Evidence boundary.** Sample-free semantic, PFA, ESEM, HTMT-like, and DFI outputs are pre-data proxy diagnostics derived from item representations. They do not establish reliability, construct validity, measurement invariance, DIF, criterion validity, or the factor structure that will occur in participant responses. When participant data are supplied, participant-based results are reported separately and should take precedence for response-data claims.
+
+For inexpensive scoring diagnostics, `semantica_audit_solutions()` evaluates
+supplied item-ID forms with native admission, proposal scoring and final ESEM
+evaluation, with an explicit fit allowance and no ant search or provider calls.
+It reports utilities and execution states; population truth or participant
+evidence must be evaluated separately. The existing scoring-policy aliases keep
+their behavior. Advanced experimental settings can independently choose
+`semantic_gap_reference = "admitted_pool"` and
+`semantic_cohesion_guard = "lower_only"` in `semantica_quality_config()`.
+The opt-in `semantic_reference_policy = "admitted_pool_fixed_comparison"`
+also freezes between-domain comparison distributions from the admitted pool,
+for both rank and median-gap scoring. A domain's base separation score then
+depends on its own selected items and the fixed reference. This removes one
+source of cross-domain coupling; misleading representations still require
+independent response evidence. Candidate-relative diagnostics remain available.
+These options do not certify empirical calibration; results record this in
+`policy_qualification`. See `?semantica_audit_solutions` for the fixed-form
+audit interface.
+
+Content judgments can now be supplied separately from embedding scores. Use
+`semantica_content_review(items, reviewer = "panel", rubric = "behavior-v1",
+source = "human")` to create a sheet. Record `supported`, `conflict`, `ambiguous`
+or `unreviewed` in `status`, with a rationale for reviewed rows. Optional behavior,
+context and scoring-key fields document the intended meaning.
+
+For newly generated items, pass a callback so review occurs once on the actual
+pool, before optimization:
+
+```r
+review_current <- function(items) {
+  sheet <- semantica_content_review(
+    items, reviewer = "panel", rubric = "behavior-v1", source = "human"
+  )
+  utils::edit(sheet) # Interactive review; return the edited sheet.
+}
+# semantica_run(..., content_review = review_current)
+```
+
+A saved sheet can instead be passed to `semantica_run_custom()` with the same
+prepared item pool, or directly to `ACO_with_ESEM()`. Records bind to exact IDs,
+wording, factors and facets; stale records are refused. Reviewed conflicts remain
+excluded even when capacity is insufficient. Ambiguous/unreviewed items remain
+visible in `result$content_review` and `semantica_item_review(result)`.
+A feasible supported-content comparison form is introduced in the first search
+iteration and protected in final evaluation, using at most one additional finalist.
+Declared content support is separate from participant validation.
+
+`semantica_check_semantic_contrasts(recorded_embeddings, contrasts)` checks
+reviewed anchor/closer/farther expectations without providers or model fits.
+Illustrative behavior-versus-topic cases are installed as
+`extdata/content-contrast-items.csv` and `extdata/content-contrasts.csv`; these
+examples are not a validated psychometric benchmark. Opposite-pole items can be
+relevant and must retain their verified scoring direction.
+
+Advanced calls can set `fit_cache_dir` to reuse source/input/RNG-specific PFA and
+final ESEM fits while recomputing each policy's score. `final_fit_pruning = TRUE`
+optionally avoids final fits that cannot win a supported continuous scalar rule;
+content comparison forms are protected. Existing defaults remain unchanged.
+Empirical calibration predictions report current-sample evidence separately from
+training provenance and expose matrix admissibility. Use `matrix_action = "stop"`
+or `"shrink"` in `semantica_apply_empirical_calibration()` when appropriate;
+explicit numerical repair is recorded and does not establish substantive validity.
 
 ## Install
 
@@ -437,6 +546,17 @@ quality scale. Read the
 [continuous ACO guide](https://PedroCieza.github.io/SEMANTICA/articles/continuous-aco.html)
 or `vignette("continuous-aco", package = "SEMANTICA")` for formulas, limitations,
 optional variance bounds, and generation/audit controls.
+
+For experimental search refinement, `semantica_quality_config(objective_polish = TRUE)`
+adds bounded same-factor local search using the full configured objective, including
+under `report_only`. Its separate limits default to 20 evaluations and 60 seconds;
+inspect `$advanced$optimization$objective_polish` for moves, gains and actual costs.
+`semantica_esem_config(shortlist_policy = "distinct", rng_policy = "candidate")`
+allocates ESEM slots by distinct form with candidate-specific fit seeds.
+`semantica_run_custom(pheromone_update = "top_elite_distinct", ...)` also lets
+distinct forms occupy pheromone elite slots. Each option is off by default.
+The guide explains target/PST rotation and how to compare these policies without
+confusing a larger utility with participant-based structural validity.
 
 ## Participant-response validation after a pilot
 

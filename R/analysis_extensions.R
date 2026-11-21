@@ -888,23 +888,19 @@ semantica_exact_semantic_reference <- function(
     list(score = sem$sem_score * dup * facet, semantic = sem, duplicate_penalty = dup,
          facet_multiplier = facet)
   }
-  recurse <- function(depth, chosen) {
-    if (depth > length(factors)) {
-      evaluated <<- evaluated + 1
-      sc <- score_form(chosen)
-      val <- sc$score
-      if (is.finite(val) && val > best_score) {
-        best_score <<- val
-        best_forms <<- list(list(items = chosen, components = sc))
-      } else if (is.finite(val) && identical(val, best_score)) {
-        best_forms[[length(best_forms) + 1L]] <<- list(items = chosen, components = sc)
-      }
-      return(invisible(NULL))
+  record <- function(chosen) {
+    evaluated <<- evaluated + 1
+    sc <- score_form(chosen)
+    val <- sc$score
+    if (is.finite(val) && val > best_score) {
+      best_score <<- val
+      best_forms <<- list(list(items = chosen, components = sc))
+    } else if (is.finite(val) && identical(val, best_score)) {
+      best_forms[[length(best_forms) + 1L]] <<- list(items = chosen, components = sc)
     }
-    for (pick in combinations[[depth]]) recurse(depth + 1L, c(chosen, pick))
     invisible(NULL)
   }
-  recurse(1L, character())
+  .semantica_visit_factor_forms(combinations, record)
   if (!length(best_forms) || !is.finite(best_score)) {
     stop("Exact semantic reference did not produce a finite candidate utility.", call. = FALSE)
   }
@@ -1352,6 +1348,13 @@ semantica_evidence_status <- function(result, labels = c("raw", "human", "both")
     evidence = "declared_item_content_review", status = result$content_review$status,
     source_family = "declared_content_review", participant_based = FALSE,
     dependency_note = "Declared reviewer/model evidence; inspect its sources and rubric. Does not establish participant validity.",
+    stringsAsFactors = FALSE))
+  reference <- result$reference_selection %||% result$optimization$reference_selection
+  if (!is.null(reference)) out <- rbind(out, data.frame(
+    evidence = "development_reference_selection", status = reference$status,
+    source_family = paste(unique(vapply(reference$provenance, `[[`, character(1), "source_family")), collapse = "+"),
+    participant_based = any(vapply(reference$provenance, function(p) p$source_family == "response_data", logical(1))),
+    dependency_note = "Selection-conditioned reference point estimates; source/method roles are declared, not verified; not independent confirmation.",
     stringsAsFactors = FALSE))
   if (identical(labels, "human")) {
     out$status <- .semantica_evidence_human_label(out$status)

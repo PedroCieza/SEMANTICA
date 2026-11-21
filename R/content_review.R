@@ -101,15 +101,37 @@ semantica_content_review <- function(items, reviewer = "", rubric = "", source =
     items = fit$items, method = "deterministic_feasible_supported_content")
 }
 
-.semantica_content_review_result <- function(review, eligible, selected = character(), witness = NULL) {
+.semantica_content_admission <- function(items, review, counts, requirement = "none") {
+  requirement <- match.arg(requirement, c("none", "declared_supported"))
+  if (is.null(review) && requirement == "none") return(items)
+  keep <- if (is.null(review)) character() else review$item_id[
+    if (requirement == "declared_supported") review$status == "supported" else review$status != "conflict"]
+  admitted <- lapply(items, intersect, y = keep)
+  if (any(lengths(admitted) < counts)) stop(structure(list(
+    message = if (requirement == "declared_supported")
+      "Declared content support leaves too few items in a required domain. Supply supported reviews/candidates; uncertain items were not restored." else
+      "Content review leaves too few items in a required domain. Review conflicts or supply additional candidates; conflicts were not restored.",
+    call = NULL, available = lengths(admitted), required = counts,
+    shortfall = pmax(0L, counts - lengths(admitted)), content_review = review,
+    content_requirement = requirement), class = c(
+      if (requirement == "declared_supported") "semantica_error_content_requirement_infeasible",
+      "semantica_error_content_review_infeasible", "error", "condition")))
+  admitted
+}
+
+.semantica_content_review_result <- function(review, eligible, selected = character(), witness = NULL,
+                                            requirement = "none") {
   if (is.null(review)) return(NULL)
   review$admitted <- review$item_id %in% unlist(eligible, use.names = FALSE)
   review$selected <- review$item_id %in% selected
   review$admission_reason <- ifelse(review$status == "conflict", "reviewed_content_conflict",
-    ifelse(review$admitted, "admitted", "native_constraint_or_prefilter"))
+    ifelse(review$admitted, "admitted", ifelse(requirement == "declared_supported" & review$status != "supported",
+      "declared_content_support_required", "native_constraint_or_prefilter")))
   chosen <- review$status[review$selected]
   list(status = if (!length(chosen)) "selection_not_evaluated" else
       if (all(chosen == "supported")) "selected_content_supported" else "content_review_required",
+    requirement = requirement, requirement_met = if (length(chosen) && requirement == "declared_supported")
+      all(chosen == "supported") else NA,
     records = review, fingerprint = .semantica_object_md5(review[, !names(review) %in%
       c("admitted", "selected", "admission_reason")]), witness = witness,
     interpretation = "Declared content judgments; not participant validation or a calibrated success probability.")

@@ -158,6 +158,67 @@ and optional participant-response evidence answer separate questions.
 
 # Other recent controls
 
+Optional search improvements can be tested independently:
+
+```{r eval=FALSE}
+esem <- semantica_esem_config(
+  score_mode = "continuous_balanced", rotation = "pst",
+  shortlist_policy = "distinct", rng_policy = "candidate"
+)
+quality <- semantica_quality_config(
+  psychometric_guard_action = "report_only", final_selection_mode = "scalar",
+  objective_polish = TRUE, objective_polish_max_evals = 20L,
+  objective_polish_max_seconds = 60
+)
+# Supply these to semantica_run_custom(..., esem = esem, quality = quality,
+#   pheromone_update = "top_elite_distinct"). Change one policy at a time first.
+# Inspect result$advanced$optimization$objective_polish and
+# result$advanced$optimization$esem_result$continuous_utility$per_factor.
+```
+
+Polishing performs bounded first-improvement swaps within each intended factor.
+The existing cheap item heuristics order moves; factors take turns. Every accepted
+move must improve the full configured utility beyond floating-point roundoff.
+Hard content constraints still apply. Full ESEM numerical admissibility is
+checked whenever ESEM participates in the final objective. A Pareto run
+additionally requires preference under its existing archive rule. Any requested
+final hard guard requires a verified passing assessment; otherwise polishing
+retains the original form and reports `hard_guard_not_verified`.
+Reference-based repair remains separate and disabled under `report_only`.
+The polishing evaluation cap includes archive cache hits; its uncached full fits
+are separate from `max_esem_fits`. Time is checked before launching work and an
+in-flight fit can exceed the elapsed limit. A budget can end before the neighborhood
+is exhausted; the result need not be a local or global optimum. Gains concern the
+configured representation, rotation and utility. Participant validity requires
+separate evidence.
+
+Polishing gives full archive/candidate fits stable item-specific starts. In
+legacy score modes those starts can change archive reranking before the local
+pass. Inspect the recorded before/after scores to assess polishing itself.
+
+Distinct shortlisting counts forms before allocating ESEM slots and maps scores
+back to all eligible duplicate ants. Distinct pheromone elites instead remove
+duplicate forms before selecting the top 20 percent for deposition. These are
+independent experimental choices; neither guarantees better selected structure.
+Candidate-keyed search seeds isolate fitting/exploration from proposal RNG;
+seeds do not guarantee identical fits under different warm starts or environments.
+
+Target/PST rotation targets intended cross-loadings near zero and leaves primary
+loadings free. It changes the loading orientation, and hence a loading-based
+utility, without creating new covariance information or fixing cross-loadings as
+in CFA. The existing Geomin default is retained. Freeze a new output directory
+when changing package code or any of these policies.
+
+These implementation choices follow the bounded local-search combination in
+[Stützle and Hoos (2000)](https://www.cs.ubc.ca/~hoos/Publ/fgcs00.pdf),
+feasible fixed-size subset variation illustrated by
+[pymoo](https://pymoo.org/case_studies/subset_selection.html), and the rotation
+distinction in [Asparouhov and Muthén (2009)](https://www.statmodel.com/download/SEM-Asparouhov2009.pdf)
+and [lavaan's ESEM documentation](https://lavaan.ugent.be/tutorial/efa.html).
+The exact allocation controls are SEMANTICA options to test, not performance
+claims established by those sources. Resource defaults reuse the existing final
+repair's 20-evaluation/60-second scale; they are not scientific quality thresholds.
+
 - `semantica_generation_config(prompt_history = "omit")` excludes previous
   generated sentence text from prompts while retaining local history checks.
   `history_dedup = "lexical"` also uses the existing character-bigram Jaccard

@@ -24,6 +24,8 @@ anchors and encoder revision across pools for a fixed representation.
 The result retains the original encoder identity. Anchor profiles share
 the same encoder evidence as raw embeddings. Candidates with numerically
 flat profiles produce an error.
+Apply the transformation explicitly to opt in. Cleaner grouping alone
+does not establish response reliability or independent corroboration.
 }
 \value{
 A \code{semantica_embedding_result} for the candidate items. Its provenance

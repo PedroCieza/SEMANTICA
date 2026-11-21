@@ -156,6 +156,8 @@
     pfa_partition_agreement_ari = pfa$partition_agreement_ari %||% NA_real_,
     pfa_partition_agreement_role = pfa$partition_agreement_role %||% NA_character_,
     pfa_factor_presence_role = pfa$factor_presence_role %||% NA_character_,
+    pfa_corroboration_status = pfa$corroboration_status %||% if (!is.null(pfa$structure_disposition))
+      .semantica_corroboration_status(pfa$structure_disposition) else NULL,
     esem_state = esem_state,
     esem_htmt_max = htmt_from_fit %||% opt$htmt_max %||% NA_real_,
     esem_htmt_objective_role = object$esem_result$htmt_objective_role %||%
@@ -547,6 +549,9 @@ print.summary.semantica_full_pipeline_result <- function(x, ...) {
   if (!is_unidimensional && is.finite(sp$pfa_factor_presence_recovery %||% NA_real_)) {
     cat(sprintf("PFA factor-presence recovery    : %.3f (factor presence only)\n", sp$pfa_factor_presence_recovery))
   }
+  if (!is_unidimensional && !is.null(sp$pfa_corroboration_status)) {
+    cat(sprintf("PFA structural corroboration   : %s\n", sp$pfa_corroboration_status))
+  }
   d <- sp$discrepancy %||% NULL
   d_state <- if (is.null(d)) NULL else d$state %||% d$status %||% NULL
   if (!is_unidimensional && !is.null(d_state) && !identical(d_state, "grouping_recoverable__esem_favorable")) {
@@ -627,6 +632,8 @@ print.summary.semantica_full_pipeline_result <- function(x, ...) {
 
 #' @export
 print.semantica_full_pipeline_result <- function(x, ...) {
+  if (!is.null(x$reference_selection)) cat("Reference selection: ", x$reference_selection$status,
+    "; development point estimates. Selected items are provisional when unresolved.\n", sep = "")
   print(semantica_view(x, view = "auto"))
   invisible(x)
 }

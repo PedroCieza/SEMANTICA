@@ -87,4 +87,13 @@ test_that("shortlist exploration consumes RNG only for eligible requested explor
   before <- .Random.seed
   expect_identical(shortlist(scores, 2L, 1L, solutions), c(1L, 2L))
   expect_identical(.Random.seed, before)
+
+  # Opt-in candidate policy isolates exploration from proposal randomness.
+  solutions <- list(c(1, 0, 0), c(0, 1, 0), c(1, 0, 0), c(0, 0, 1), c(0, 0, 1))
+  before <- .Random.seed
+  selected <- SEMANTICA:::.semantica_with_task_seed(123L,
+    shortlist(scores, 2L, 1L, solutions, policy = "distinct"))
+  expect_identical(.Random.seed, before)
+  expect_identical(selected, SEMANTICA:::.semantica_with_task_seed(123L,
+    shortlist(scores, 2L, 1L, solutions, policy = "distinct")))
 })

@@ -6,6 +6,8 @@
 #' anchor-similarity profiles. All inputs come from one encoder result. The
 #' representation shares that encoder's provenance and can be compared with
 #' raw cosine under a fixed analysis budget.
+#' Apply it explicitly to opt in. Cleaner grouping in this representation
+#' does not establish response reliability or independent corroboration.
 #'
 #' @param embed_result A result of [semantica_embed()] or
 #'   [semantica_import_embeddings()] containing candidates and anchors encoded

@@ -255,9 +255,11 @@ test_that("continuous public prepared-input runs need no providers or search cal
   args <- x$arguments
   args$prepared_inputs <- p; args$checkpoint_dir <- NULL
   args$resources <- semantica_resource_config(cpu_cores = 1L)
-  args$esem <- semantica_esem_config(score_mode = "continuous_balanced", cadence_mode = "fixed")
+  args$esem <- semantica_esem_config(score_mode = "continuous_balanced", cadence_mode = "fixed",
+    shortlist_policy = "distinct", rng_policy = "candidate")
   args$quality <- semantica_quality_config(psychometric_guard_action = "report_only",
-    final_selection_mode = "scalar")
+    final_selection_mode = "scalar", objective_polish = TRUE, objective_polish_max_evals = 1L)
+  args$pheromone_update <- "top_elite_distinct"
   args$diagnostics <- semantica_diagnostics_config(final_fit = "off", semantic_stability = FALSE)
   args$max_total_iter <- 1L; args$ants <- 2L; args$max_esem_fits <- 2L
   local_mocked_bindings(.call_chat = function(...) stop("Provider prohibited"),
@@ -270,5 +272,9 @@ test_that("continuous public prepared-input runs need no providers or search cal
   expect_identical(raw$structural_guard$action, "report_only")
   expect_true(raw$optimization$esem_result$continuous_utility$available)
   expect_equal(raw$evaluation_telemetry$dfi_fits_started, 0L)
+  expect_true(raw$optimization$objective_polish$enabled)
+  expect_lte(raw$optimization$objective_polish$evaluated, 1L)
+  expect_identical(raw$optimization$reproducibility$optimizer$esem_shortlist_policy, "distinct")
+  expect_identical(raw$optimization$reproducibility$optimizer$pheromone_update, "top_elite_distinct")
   expect_true(is.na(summary(raw)$eligible_for_participant_validation))
 })

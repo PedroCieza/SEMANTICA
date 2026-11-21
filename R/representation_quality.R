@@ -631,7 +631,7 @@ semantica_embedding_spec <- function(
           } else {
             NA_real_
           }
-          out$semantica_facet_aligned[ii[k]] <- if (is.na(topf[k])) NA else identical(af, topf[k])
+          out$semantica_facet_aligned[ii[k]] <- if (is.na(topf[k])) NA else isTRUE(af == topf[k])
         }
       }
       jj <- ii[is.finite(out$semantica_facet_margin[ii])]

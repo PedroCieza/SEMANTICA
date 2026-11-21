@@ -1,7 +1,171 @@
+# SEMANTICA 0.2.1
+
+- Fixes facet-alignment flags when prototype winner labels carry item names.
+  Progress and final output label the semantic loss with its lower-is-better
+  orientation. The cheap redundancy diagnostic separates process completion,
+  companion-fit status and structured solver warnings.
+
+- Adds an experimental opt-in semantic pair policy, leaving existing defaults
+  unchanged. Exact wording copies and explicit reviewed conflicts use direct
+  edges rather than transitive duplicate groups. Frozen relative-rank and
+  leave-pair-out profile evidence supports audit and a separate calibration
+  path. Calibration fits a declared empirical false-merge limit on development
+  controls, evaluates held-out panels once, and requires explicit activation
+  for automatic conflicts. No response data, encoder training or universal
+  semantic cutoff is introduced. Bounded feasibility exhaustion reports unknown.
+
+- Adds optional development reference evidence with frozen source/method roles.
+  Primary convergence/discrimination vectors govern a bounded candidate archive,
+  equal-front pheromone updates and final eligibility. Sensitivity panels remain
+  descriptive; reference tradeoffs and archive limits return unresolved shortlists.
+  Semantic scores cannot restore excluded forms. Reference mode reuses bounded
+  refinement without factor fits and disables proxy scalar pruning/loading repair.
+  Comparisons are point estimates, not calibrated confidence or confirmation.
+  Existing selection behavior remains active when reference evidence is absent.
+
+- Adds opt-in `semantic_reference_policy = "admitted_pool_fixed_comparison"`.
+  Both rank and median-gap comparisons now use distributions frozen from the
+  admitted pool, globally and per domain, alongside fixed scales and a lower-only
+  cohesion guard. Another domain's replacements cannot change a domain's base
+  separation score. Candidate-relative diagnostics remain available, and new
+  reference/schema identities separate policy scores. Existing policies, defaults,
+  content admission, scalar-first rescue and final-search safeguards are retained.
+  This addresses comparison coupling; it does not establish empirical calibration
+  or correct misleading semantic input. The gap reference and cohesion guard can
+  still be selected independently.
+
+- Makes optional proposal rescue scalar-first: the ordinary scalar walk receives
+  the full screen/time budget, and signed ties use only the budget left after a
+  completed scalar neighborhood. Shared cached screens avoid recomputation;
+  phase diagnostics and rescue schema v2 distinguish this policy from the earlier
+  interleaved walk. Native scoring, baseline final selection, content requirements
+  and defaults are unchanged. This repairs the measured guidance regression, not
+  the separate misleading-representation calibration limitation.
+
+- Adds optional `proposal_rescue` after baseline selection. Its bounded screens
+  preserve scalar quality and resolve exact proposal ties using signed,
+  worst-domain separation. Baseline construction and the original candidate are
+  retained; final selection changes only for a higher native scalar utility.
+  No extra final fit is allowed by default; `proposal_rescue_allow_fit = TRUE`
+  permits one additional raw ESEM job. Proposal diagnostics report observed ties,
+  zero scores and unavailable guidance without claiming full-pool or participant
+  validation. Existing defaults and scalar scoring are unchanged.
+
+- Adds `content_requirement = "declared_supported"` as an explicit opt-in feasible
+  set, reusing wording-bound reviews and joint facet/duplicate constraints. Missing
+  support and infeasibility are reported without restoring uncertain items. The
+  default retains existing conflict exclusion and review-required qualification.
+
+- Retains feasible semantic initialization candidates in the evidence archive.
+  Optional final scalar fit bounds now support bounded one-item refinement,
+  prioritize competitive replacements, and reuse matching fitted models.
+  Refinement reports bound exclusions, unavailable evaluations, actual fit/cache
+  counts and local completion separately from budget stops. Scoring weights and
+  default refinement settings are unchanged; this is not external calibration.
+
+- Adds reusable, wording-bound content-review sheets and callbacks through the
+  simple/custom interfaces and native ACO. Declared conflicts are never restored
+  to fill quotas. Ambiguity remains visible; feasible supported-content witnesses
+  are injected into search and protected in final evaluation. Review records are
+  retained in checkpoints, evidence reports and item-review tables.
+- Adds recorded-vector semantic contrast checks with explicit reversed, tied and
+  unavailable results. Illustrative behavior-versus-topic items are supplied;
+  these are not participant-validation evidence.
+- Adds opt-in sealed raw-fit reuse with complete input, source, runtime and RNG
+  identity. Policy scores remain separately composed. Cached ESEM results can be
+  inspected with zero new-fit allowance. Optional exact final-fit bounds retain
+  protected content witnesses; incompatible scoring regimes are refused.
+- Separates response-trained predictions from current-sample participant evidence.
+  Empirical matrix calibration reports admissibility and supports explicit refusal
+  or identity shrinkage. Objective schema advances to v10. These changes do not
+  claim that representation-only misleading-semantics failures are solved.
+
+- Separates experimental semantic gap-reference scope from cohesion-guard
+  direction through `semantic_gap_reference` and `semantic_cohesion_guard`.
+  Compatibility aliases retain their numerical behavior. New settings and the
+  reference identity participate in objective/cache provenance (schema v9).
+- Adds `semantica_audit_solutions()` for bounded native proposal/final evaluation
+  of supplied forms, without ant search or providers. It reuses the actual
+  native final evaluator, preserves caller RNG, retains unavailable/rejected
+  outcomes, and supports continuous report-only contexts. Shared score
+  composition preserves declared PFA fallback and guard arithmetic.
+- Reports selection-policy qualification separately from participant validation;
+  unvalidated representation utilities remain explicitly uncalibrated. Saved
+  native-score fixtures cover weak, cross-loading, duplicate, common-direction,
+  misleading and all-weak controls. New regression tests preserve the observed
+  stress limitation rather than treating it as solved by the cohesion repair.
+
+- Adds the opt-in research policy `admitted_pool_lower_guard` to quality
+  configuration and direct ACO calls. It freezes semantic gap scales after
+  admission, uses a lower-only cohesion guard, and records the reference in
+  objective metadata and checkpoints. The default policy remains unchanged;
+  independent calibration is still required.
+- Adds policy-specific score-cache identity and an optional controller candidate
+  trace via `options(SEMANTICA.candidate_trace_dir = "directory")`.
+  Offline mechanism and integration checks preserve historical inputs.
+
+- Corrects collapsed-partition ARI scoring, shares PFA/ESEM axis assignment,
+  and treats loading/assignment ties as ambiguous PFA evidence under the declared
+  failure policy. Empty guard columns no longer substitute for observed evidence.
+- Enforces near-exact duplicate groups across domains and checks joint domain,
+  facet and duplicate feasibility before search. A bounded-flow completion avoids
+  greedy sampling dead ends; scoring, archive and repair paths retain hard constraints.
+  Objective/evidence/search schemas change, invalidating earlier score caches.
+- Adds an offline scoring smoke with exhaustive small-pool feasibility oracles
+  and bounded public-pipeline controls (`examples/semantica-scoring-smoke.R`).
+
+- Preserves typed provider/transport failures through embedding batch context,
+  with shared HTTP handling across chat and embedding backends. Exhausted
+  service/rate-limit errors remain distinct from configuration and response
+  integrity errors; invalid credentials stop generation without repeated requests.
+- Distinguishes calculated pre-ACO pool infeasibility from diagnostic calculation
+  errors, preserving structured evidence in incomplete-run checkpoints.
+- Rejects incompatible embedding rows/indexes and invalid vectors before cache
+  writes, while preserving successful numerical and row-order behavior.
+- The development study runner now shares one preview/execution specification,
+  checks runtime/deployment identity, explicitly uses isolated 30-second reference-N
+  diagnostics, and exports search weights, fallback coverage and concentration.
+  The main launcher requires confirmed model artifacts for collection. These
+  orchestration changes do not change the package's general diagnostic defaults.
+
 # SEMANTICA 0.2
 
 ## Current development updates
 
+- Preserves an immutable selected core before secondary diagnostics whenever
+  stage checkpointing is enabled. Reference-N diagnostics can run inline
+  (unchanged default), in an isolated process with an explicit wall allowance,
+  or be deferred. Adds sealed records, per-anchor progress/RNG persistence,
+  `semantica_read_checkpoint()` and `semantica_resume_diagnostics()` without
+  repeating selection or overwriting earlier attempts. Utilities and numerical
+  admissibility rules are unchanged; other diagnostics retain their settings.
+
+- Reports active search-track checkpoint coverage and unmet archive-stopping
+  minima independently of final ESEM admissibility. Records distinct-form
+  coverage, cached failures and ranked-elite clone pressure without changing
+  stopping rules, scoring, or allocation defaults.
+- Retains solver method, attempt, fallback and rejection details in evaluation
+  events. Stage checkpointing now also writes per-process ESEM progress JSONL
+  records, preserving candidate starts if a run is terminated during fitting.
+- Clarifies extraction-specific PFA factor-presence warnings, unavailable
+  determinacy, reference-N component agreement and fast/full fitting labels.
+- Resolves explicitly exported scoring functions inside PSOCK tasks so a source
+  checkout cannot silently use an older installed scorer that rejects continuous
+  utilities. Optional logging has no new dependency in untraced isolated workers.
+- Fixes forced full-ESEM retries returning stale cached scores before reaching
+  the solver. Ordinary cache reuse and retry accounting remain intact.
+- Adds opt-in bounded `objective_polish`, independent of reference-based repair,
+  using the declared full objective and existing content/admissibility constraints.
+  Reports attempted moves, accepted gains, cache reuse, actual fits and utility
+  components; continuous utilities also report each intended factor's components.
+- Adds optional distinct-form ESEM shortlisting, candidate-keyed search seeds,
+  and `pheromone_update = "top_elite_distinct"`. Existing allocation, rotation,
+  feedback, reconstruction definitions and feature defaults are preserved.
+- Validates native target/PST rotation against fitted-covariance invariance and
+  documents automatic intended-factor targets without changing rotation defaults.
+- Corrects the mixed ESEM/fallback warning so it does not claim that search-time
+  guidance recovered after a failure when successful checkpoints occurred earlier.
+  Search behavior, numerical guards, and recorded guidance statuses are unchanged.
 - Fixes prepared-input source fingerprints that could change after executing
   unchanged code in an installed package. Source-reference environments are
   excluded; changes to executable preparation expressions still invalidate replay.
