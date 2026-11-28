@@ -267,15 +267,6 @@
   invisible(broker)
 }
 
-.semantica_record_dfi_fits <- function(broker, n) {
-  n <- suppressWarnings(as.integer(n[1L]))
-  if (inherits(broker, "semantica_evaluation_broker") &&
-      length(n) == 1L && is.finite(n) && n > 0L) {
-    broker$dfi_fits_started <- broker$dfi_fits_started + n
-  }
-  invisible(broker)
-}
-
 .semantica_record_final_esem_fit <- function(broker, n = 1L) {
   n <- suppressWarnings(as.integer(n[1L]))
   if (inherits(broker, "semantica_evaluation_broker") &&

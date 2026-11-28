@@ -1315,12 +1315,6 @@ print.semantica_result_info <- function(x, ...) {
   invisible(x)
 }
 
-.semantica_prefix_columns <- function(x, prefix, keys = c("item", "item_id", "factor")) {
-  if (!is.data.frame(x)) return(NULL)
-  names(x) <- ifelse(names(x) %in% keys, names(x), paste0(prefix, names(x)))
-  x
-}
-
 #' Consolidate item-level diagnostics for review
 #'
 #' Rearranges already-computed item metadata, semantic alignment, ESEM and PFA

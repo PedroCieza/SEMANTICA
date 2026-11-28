@@ -611,10 +611,6 @@ semantica_resource_plan <- function(n.cores = 2L,
   plan
 }
 
-.semantica_resource_plan <- function(...) {
-  semantica_resource_plan(...)
-}
-
 #' Print a SEMANTICA CPU resource plan
 #'
 #' @param x A resource plan returned by [semantica_resource_plan()].

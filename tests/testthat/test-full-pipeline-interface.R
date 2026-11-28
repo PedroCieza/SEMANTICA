@@ -1,138 +1,45 @@
-test_that("full pipeline option groups resolve to legacy arguments", {
-  factors <- list(Clarity = list(description = "Clear thinking."))
-
-  args <- SEMANTICA:::.semantica_run_custom_resolve_args(
-    scale_name = "Cognitive Agility",
-    scale_description = "Clear and adaptive thinking.",
-    factors = factors,
-    backend = "openai",
-    candidate_items_per_factor = 15L,
-    candidate_items_per_factor_supplied = FALSE,
-    items_per_factor = NULL,
-    generation_options = list(
-      embed_backend = "openai",
-      candidate_items_per_factor = 12L,
-      temperature = 0.7,
-      rate_limit_policy = "auto",
-      api_max_retries = 8L,
-      api_max_wait_s = 180,
-      request_spacing_s = "auto"
-    ),
-    optimization_options = list(
-      ants = 12L,
-      max.iter = 4L,
-      use_parallel = FALSE
-    ),
-    dfi_options = list(dfi_mode = "heuristic_semantic"),
-    pfa_options = list(pfa_mode = "off"),
-    validation_options = list(validation_n_diagnostic = FALSE),
-    plot_options = list(generate = FALSE, include_interactive = FALSE),
-    verbose = FALSE,
-    legacy_args = list(i.per.f = c(Clarity = 3L), n.cores = 1L)
+test_that("the public pipeline forwards grouped options to execution", {
+  capture <- new.env(parent = emptyenv())
+  local_mocked_bindings(
+    .semantica_execute_pipeline = function(...) {
+      capture$args <- list(...)
+      list()
+    },
+    .semantica_wrap_run_result = identity,
+    .package = "SEMANTICA"
   )
-
-  expect_equal(args$n_per_factor, 12L)
-  expect_true(args$n_per_factor_override)
-  expect_equal(args$i.per.f, c(Clarity = 3L))
-  expect_equal(args$embed_backend, "openai")
-  expect_equal(args$temperature, 0.7)
-  expect_equal(args$rate_limit_policy, "auto")
-  expect_equal(args$api_max_retries, 8L)
-  expect_equal(args$api_max_wait_s, 180)
-  expect_equal(args$request_spacing_s, "auto")
-  expect_equal(args$ants, 12L)
-  expect_false(args$use_parallel)
-  expect_equal(args$dfi_mode, "heuristic_semantic")
-  expect_equal(args$pfa_mode, "off")
-  expect_false(args$validation_n_diagnostic)
-  expect_false(args$generate_plots)
-  expect_false(args$include_interactive_plot)
-  expect_equal(args$n.cores, 1L)
-})
-
-test_that("legacy full pipeline arguments remain accepted by name", {
-  factors <- list(Flexibility = list(description = "Adaptive thinking."))
-
-  args <- SEMANTICA:::.semantica_run_custom_resolve_args(
-    scale_name = "Cognitive Agility",
-    scale_description = "Clear and adaptive thinking.",
-    factors = factors,
-    backend = "openai",
-    candidate_items_per_factor = 15L,
-    candidate_items_per_factor_supplied = FALSE,
-    items_per_factor = NULL,
-    generation_options = list(),
-    optimization_options = list(),
-    dfi_options = list(),
-    pfa_options = list(),
-    validation_options = list(),
-    plot_options = list(),
-    verbose = FALSE,
-    legacy_args = list(
-      n_per_factor = 10L,
-      i.per.f = c(Flexibility = 4L),
-      ants = 20L,
-      max.iter = 5L,
-      dfi_mode = "heuristic_semantic",
-      generate_plots = FALSE
-    )
-  )
-
-  expect_equal(args$n_per_factor, 10L)
-  expect_true(args$n_per_factor_override)
-  expect_equal(args$i.per.f, c(Flexibility = 4L))
-  expect_equal(args$ants, 20L)
-  expect_equal(args$max.iter, 5L)
-  expect_equal(args$dfi_mode, "heuristic_semantic")
-  expect_false(args$generate_plots)
-})
-
-test_that("omitted candidate count preserves nested factor counts", {
   factors <- list(Clarity = list(description = "Clear thinking.", n_items = 8L))
-
-  args <- SEMANTICA:::.semantica_run_custom_resolve_args(
-    scale_name = "Cognitive Agility",
-    scale_description = "Clear and adaptive thinking.",
-    factors = factors,
-    backend = "openai",
-    candidate_items_per_factor = 15L,
-    candidate_items_per_factor_supplied = FALSE,
-    items_per_factor = NULL,
-    generation_options = list(),
-    optimization_options = list(),
-    dfi_options = list(),
-    pfa_options = list(),
-    validation_options = list(),
-    plot_options = list(),
-    verbose = FALSE,
-    legacy_args = list()
+  semantica_run_custom(
+    "Cognitive Agility", "Clear and adaptive thinking.", factors,
+    llm = semantica_llm_config(backend = "ollama", embed_backend = "openai"),
+    item_counts = semantica_item_count_config(pool = 12L, selected = c(Clarity = 3L),
+      override_pool_counts = FALSE),
+    generation = semantica_generation_config(temperature = .7),
+    ants = 12L, max.iter = 4L,
+    fit_calibration = semantica_fit_calibration_config(mode = "heuristic_semantic"),
+    pfa = semantica_pfa_config(mode = "off"),
+    plots = "none", verbose = FALSE, checkpoint_dir = NULL
   )
-
-  expect_equal(args$n_per_factor, 15L)
+  args <- capture$args
+  expect_identical(args$n_per_factor, 12L)
   expect_false(args$n_per_factor_override)
-  expect_null(args$i.per.f)
+  expect_identical(args$factors, factors)
+  expect_equal(args$i.per.f, c(Clarity = 3L))
+  expect_identical(args$embed_backend, "openai")
+  expect_equal(args$temperature, .7)
+  expect_identical(args$ants, 12L)
+  expect_identical(args$max.iter, 4L)
+  expect_identical(args$dfi_mode, "heuristic_semantic")
+  expect_identical(args$pfa_mode, "off")
+  expect_false(args$generate_plots)
 })
 
-test_that("non-generation option groups reject unknown names", {
+test_that("the public pipeline rejects unknown configuration fields before execution", {
   expect_error(
-    SEMANTICA:::.semantica_run_custom_resolve_args(
-      scale_name = "Cognitive Agility",
-      scale_description = "Clear and adaptive thinking.",
-      factors = list(Clarity = list(description = "Clear thinking.")),
-      backend = "openai",
-      candidate_items_per_factor = 15L,
-      candidate_items_per_factor_supplied = FALSE,
-      items_per_factor = NULL,
-      generation_options = list(),
-      optimization_options = list(unknown_search_knob = TRUE),
-      dfi_options = list(),
-      pfa_options = list(),
-      validation_options = list(),
-      plot_options = list(),
-      verbose = FALSE,
-      legacy_args = list()
-    ),
-    "Unknown option"
+    semantica_run_custom("Test", "Description", list(Clarity = "Clear thinking."),
+      quality = list(unknown_search_knob = TRUE), verbose = FALSE, checkpoint_dir = NULL),
+    "Unknown 'quality' configuration field.*unknown_search_knob",
+    class = "semantica_error_config"
   )
 })
 

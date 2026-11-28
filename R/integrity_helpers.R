@@ -1,5 +1,8 @@
 # Internal integrity helpers for explicit contracts and reproducibility metadata.
 
+# Preserve the package fallback for NULL and zero-length inputs.
+`%||%` <- function(a, b) if (!is.null(a) && length(a) > 0L) a else b
+
 .semantica_condition <- function(message, subclass = NULL, fields = list(),
                                  warning = FALSE, call = NULL) {
   base_class <- if (isTRUE(warning)) "semantica_warning" else "semantica_error"
@@ -22,18 +25,6 @@
     call = call
   )
   stop(cond)
-}
-
-.semantica_warn <- function(message, subclass = NULL, ..., call = NULL) {
-  cond <- .semantica_condition(
-    message,
-    subclass = subclass,
-    fields = list(...),
-    warning = TRUE,
-    call = call
-  )
-  warning(cond)
-  invisible(cond)
 }
 
 .semantica_validation_error <- function(arg, expected, value = NULL,

@@ -1,8 +1,5 @@
 # SEMANTICA item generation and embedding helpers.
 
-# Null-coalescing helper
-`%||%` <- function(a, b) if (!is.null(a) && length(a) > 0L) a else b
-
 # Avoid R CMD check notes for non-standard evaluation
 utils::globalVariables(c("item_id", "factor", "item_text", "attempt", "ID", "Dimension", "Facet", "item"))
 

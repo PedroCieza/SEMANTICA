@@ -1,9 +1,5 @@
 # Compute-device helpers for SEMANTICA.
 
-.semantica_compute_or <- function(x, default) {
-  if (!is.null(x) && length(x) > 0L) x else default
-}
-
 .semantica_normalize_device <- function(device = "cpu", arg = "compute_device") {
   if (length(device) != 1L || is.na(device)) {
     stop(sprintf("'%s' must be one device string.", arg), call. = FALSE)
@@ -172,12 +168,8 @@
 
   config <- tryCatch(reticulate::py_config(), error = function(e) NULL)
   if (!is.null(config)) {
-    out$executable <- as.character(
-      .semantica_compute_or(config$python, NA_character_)
-    )
-    out$version <- as.character(
-      .semantica_compute_or(config$version_string, config$version)
-    )
+    out$executable <- as.character(config$python %||% NA_character_)
+    out$version <- as.character(config$version_string %||% config$version)
   }
 
   py_torch <- tryCatch(
@@ -369,11 +361,8 @@ print.semantica_capabilities <- function(x, ...) {
     ))
   }
 
-  capabilities <- .semantica_compute_or(
-    capabilities,
-    semantica_capabilities(deep_python = FALSE)
-  )
-  torch_caps <- .semantica_compute_or(capabilities$r_torch, list())
+  capabilities <- capabilities %||% semantica_capabilities(deep_python = FALSE)
+  torch_caps <- capabilities$r_torch %||% list()
   torch_ready <- isTRUE(torch_caps$package_installed) &&
     isTRUE(torch_caps$runtime_available)
 

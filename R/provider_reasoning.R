@@ -140,9 +140,6 @@
   )
 }
 
-# Backward-compatible singular alias.
-.semantica_item_response_schema <- function() .semantica_items_response_schema()
-
 .semantica_chat_response_format <- function(session, response_format = NULL) {
   if (!identical(response_format, "json") || !isTRUE(session$supports_structured_output)) {
     return(NULL)

@@ -1,7 +1,5 @@
 # SEMANTICA visualization helpers.
-if (!exists("%||%", mode = "function")) {
-  `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0L) a else b
-}
+
 
 # Avoid R CMD check notes for non-standard evaluation in ggplot2
 utils::globalVariables(c(

@@ -4,15 +4,6 @@
 # from participant-based psychometric evidence. Experimental functions are
 # labelled as such in their returned metadata and documentation.
 
-`%||%` <- function(a, b) if (!is.null(a) && length(a) > 0L) a else b
-
-.semantica_safe_names <- function(x, prefix = "item") {
-  x <- as.character(x)
-  bad <- is.na(x) | !nzchar(trimws(x))
-  if (any(bad)) x[bad] <- paste0(prefix, which(bad))
-  make.unique(x)
-}
-
 .semantica_object_md5 <- function(x, version = 3L) {
   tf <- tempfile("semantica-hash-")
   on.exit(unlink(tf), add = TRUE)

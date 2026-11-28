@@ -1,9 +1,5 @@
 # Credential-safe metadata helpers for returned SEMANTICA objects.
 
-.semantica_security_or <- function(x, default) {
-  if (!is.null(x) && length(x) > 0L) x else default
-}
-
 .semantica_sensitive_field_name <- function(name) {
   if (is.null(name) || length(name) != 1L || is.na(name)) return(FALSE)
   normalized <- gsub("[^a-z0-9]", "", tolower(as.character(name)))

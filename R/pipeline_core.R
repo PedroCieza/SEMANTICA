@@ -1,7 +1,5 @@
 # SEMANTICA core ACO-ESEM optimization helpers.
-if (!exists("%||%", mode = "function")) {
-  `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0L) a else b
-}
+
 
 # Avoid R CMD check notes for dynamically referenced names
 utils::globalVariables(c(
@@ -946,16 +944,6 @@ build_population_covariance_modelbased <- function(items_per_factor,
   sigma <- lambda %*% phi %*% t(lambda) + diag(uniqueness, n_items_total)
   dimnames(sigma) <- list(item_names, item_names)
   stabilize_covariance_matrix(sigma)
-}
-
-sample_covariance_from_population <- function(pop_cov, n_obs) {
-  p <- nrow(pop_cov)
-  if (p < 2L || n_obs <= p + 2L) return(NULL)
-  w <- tryCatch(stats::rWishart(1L, df = n_obs - 1L, Sigma = pop_cov)[, , 1L] / (n_obs - 1L),
-                error = function(e) NULL)
-  if (is.null(w)) return(NULL)
-  dimnames(w) <- dimnames(pop_cov)
-  stabilize_covariance_matrix(w)
 }
 
 .semantica_strict_search_reps <- function(dfi_reps, dfi_esem_reps) {
@@ -8702,14 +8690,6 @@ update_elite_archive <- function(archive, entries, elite_k,
   state
 }
 
-.semantica_union_evidence_archives <- function(archives, active_tracks) {
-  active_tracks <- intersect(active_tracks, names(archives))
-  combined <- unlist(archives[active_tracks], recursive = FALSE, use.names = FALSE)
-  if (length(combined) == 0L) return(list())
-  sig <- vapply(combined, function(e) solution_signature(e$vec), character(1L))
-  combined[!duplicated(sig)]
-}
-
 .semantica_stratified_finalists <- function(archives, active_tracks, budget) {
   active_tracks <- intersect(active_tracks, names(archives))
   budget <- as.integer(budget[1L])
@@ -9143,25 +9123,6 @@ fit.function.v2 <- function(selected_vector, run_esem_now = FALSE, effective_ese
     list(score = NA_real_, key = make_solution_key(v), cache_entry = NULL,
          error = conditionMessage(e), elapsed_seconds = proc.time()[["elapsed"]] - started)
   })
-}
-
-# Internal classifier for the legacy pair-perturbation boundary. The raw
-# difference remains available in the public result; this binary label is
-# deliberately described as an uncalibrated heuristic.
-.semantica_pair_perturbation_classify <- function(difference, threshold = 0.10) {
-  difference <- suppressWarnings(as.numeric(difference[1L]))
-  threshold <- suppressWarnings(as.numeric(threshold[1L]))
-  if (!is.finite(difference) || !is.finite(threshold) || threshold <= 0) {
-    return(list(stable = NA, classification = "unavailable", threshold = threshold,
-                threshold_status = "legacy_uncalibrated_heuristic"))
-  }
-  stable <- difference < threshold
-  list(
-    stable = stable,
-    classification = if (stable) "heuristically_stable" else "heuristically_unstable",
-    threshold = threshold,
-    threshold_status = "legacy_uncalibrated_heuristic"
-  )
 }
 
 # =================================================================
